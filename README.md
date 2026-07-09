@@ -51,6 +51,14 @@ npm run test
 npm run build
 ```
 
+Run the local autonomous agent PoC:
+
+```bash
+npm run poc:agent
+```
+
+The PoC creates an in-memory semantic layer, runs a local agent loop over a governed finance use case, checks its autonomy boundary, searches evidence, resolves entities, traverses a bounded graph neighborhood, expands context, and writes a reproducible report to `artifacts/poc/local-agent-use-case-report.json`.
+
 ## Default Local Architecture
 
 ```mermaid
@@ -116,4 +124,3 @@ This project is inspired by and designed to interoperate with the existing ecosy
 - [OpenMetadata](https://github.com/open-metadata/OpenMetadata), [DataHub](https://datahub.com/), and similar metadata platforms for governance lessons.
 
 Semantic Junkyard's wedge is not to replace those systems. It provides the modular semantic control plane that lets an agent safely move across them.
-

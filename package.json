@@ -17,6 +17,7 @@
     "typecheck": "npm run build -w packages/shared && npm run typecheck -w apps/api && npm run typecheck -w apps/web",
     "lint": "npm run typecheck",
     "seed": "npm run seed -w apps/api",
+    "poc:agent": "npm run poc:agent -w apps/api",
     "start": "npm run start -w apps/api"
   },
   "devDependencies": {

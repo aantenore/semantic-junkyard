@@ -1,0 +1,62 @@
+{
+  "useCase": "Local autonomous agent discovery over governed finance semantic context",
+  "question": "Can an autonomous AI agent answer which governed finance context should be used for failed payment analysis, and what is it allowed to do?",
+  "provider": "deterministic-local-agent-loop",
+  "autonomyDecision": "read-only autonomous access allowed; writes and privileged actions require external approval-gated adapters",
+  "steps": [
+    {
+      "step": 1,
+      "tool": "explain_permissions",
+      "rationale": "The agent must discover its autonomy boundary before touching data.",
+      "observation": "read-only autonomous access allowed; writes and privileged actions require external approval-gated adapters"
+    },
+    {
+      "step": 2,
+      "tool": "semantic_search",
+      "rationale": "Find candidate governed context using hybrid lexical, vector, and graph signals.",
+      "observation": "3 evidence candidates returned. Top source: billing-context.html."
+    },
+    {
+      "step": 3,
+      "tool": "entity_lookup",
+      "rationale": "Ground the search result in canonical graph entities before answering.",
+      "observation": "Resolved Billing Pipeline with degree 1."
+    },
+    {
+      "step": 4,
+      "tool": "graph_neighbors",
+      "rationale": "Inspect bounded graph context without giving the agent free graph traversal.",
+      "observation": "2 nodes and 1 edges in the approved neighborhood."
+    },
+    {
+      "step": 5,
+      "tool": "expand_context",
+      "rationale": "Assemble an evidence pack with source spans before producing the final answer.",
+      "observation": "3 evidence spans assembled."
+    }
+  ],
+  "finalAnswer": "Yes. The agent can autonomously answer this read-only discovery question because the capability manifest allows semantic search, entity lookup, bounded graph traversal, context expansion, and evidence opening. For failed payment analysis, the governed finance context is the Finance Semantic Contract plus the Billing Pipeline and Revenue Mart lineage. The local catalog also defines Failed Payment Rate as a governed metric with dimensions such as payment provider, plan, and retry policy. The agent may discover and cite metadata, graph relationships, metric definitions, policies, and source spans. It may not mutate source systems, execute generated SQL, expose secrets, bypass masking, or access restricted raw customer payloads without an approval-gated adapter.",
+  "citations": [
+    {
+      "sourceName": "billing-context.html",
+      "chunkId": "chunk_c33290057c50c9bb",
+      "excerpt": "Billing Pipeline Context The Billing Pipeline writes to the Revenue Mart and uses Retry Policy to handle failed payments. Failed Payment Rate depends on payment attempts, failed payment attempts, payment provider, plan, and retry policy. The Finance Semantic Contract governs r..."
+    },
+    {
+      "sourceName": "semantic-layer-for-agents.md",
+      "chunkId": "chunk_e0532782e9f0e171",
+      "excerpt": "# Semantic Layer For AI Agents Semantic Junkyard connects data catalogs, metadata graphs, semantic contracts, vector search, and knowledge graphs into an agent-safe context layer. An AI agent should not query raw systems without guidance. It needs governed metadata about asset..."
+    },
+    {
+      "sourceName": "agentic-discovery-playbook.txt",
+      "chunkId": "chunk_743cf628f9537cbe",
+      "excerpt": "Agentic discovery starts by profiling available sources, catalog assets, lineage, quality signals, and policies. When an undefined problem arrives, the agent first asks what data assets are relevant, whether the assets are authorized, whether the metric definitions are governe..."
+    }
+  ],
+  "stopConditionsChecked": [
+    "No authorized evidence can support the answer.",
+    "Candidate assets are stale, restricted, or below quality threshold.",
+    "The task requires mutation, external communication, deletion, or privileged access.",
+    "Graph paths contradict source evidence or confidence is too low."
+  ]
+}

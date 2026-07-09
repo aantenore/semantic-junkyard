@@ -9,6 +9,7 @@
     "start": "node dist/server.js",
     "test": "vitest run",
     "seed": "tsx src/seed.ts",
+    "poc:agent": "tsx src/poc/localAgentUseCase.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
