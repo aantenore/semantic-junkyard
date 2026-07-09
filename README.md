@@ -28,6 +28,12 @@ The API exposes agent-friendly tools:
 - `POST /api/tools/expand_context`
 - `GET /api/evidence/:chunkId`
 
+The MCP server exposes the same agent surface over stdio:
+
+- Tools: `explain_permissions`, `semantic_search`, `entity_lookup`, `graph_neighbors`, `find_paths`, `expand_context`, `get_evidence`, `run_discovery`
+- Resources: `semantic-junkyard://status`, `semantic-junkyard://manifest`, `semantic-junkyard://catalog`, `semantic-junkyard://graph`, `semantic-junkyard://evidence/{chunkId}`
+- Prompts: `agent_discovery_brief`, `governed_context_answer`, `semantic_mapping_review`
+
 ## Quick Start
 
 ```bash
@@ -67,6 +73,36 @@ npm run poc:agent:hf
 
 The local model runner autodiscovers `~/.cache/huggingface/hub`, prefers `mlx-community/Qwen3-1.7B-4bit` when present, and executes through `uv` with `mlx-lm`. The UI exposes the same flow in the Agent trace panel. It shows audit-safe operational reasoning summaries, tool choices, discoveries, observations, and citations; it does not expose private chain-of-thought.
 
+Run the MCP agent PoC:
+
+```bash
+npm run poc:agent:mcp
+```
+
+This builds the MCP server, starts it over stdio, connects a real MCP client, lists tools/resources/prompts, calls the read-only discovery tools, opens evidence, and writes `artifacts/poc/mcp-agent-use-case-report.json`.
+
+Start the MCP server for an external agent:
+
+```bash
+npm run build
+npm run mcp
+```
+
+Example client configuration:
+
+```json
+{
+  "mcpServers": {
+    "semantic-junkyard": {
+      "command": "node",
+      "args": ["/absolute/path/to/semantic-junkyard/apps/mcp/dist/server.js"]
+    }
+  }
+}
+```
+
+Use `SEMANTIC_JUNKYARD_DB=/path/to/semantic-junkyard.sqlite` or `--db /path/to/semantic-junkyard.sqlite` to point the MCP server at a specific local database. Without either option, the server uses the product database at `apps/api/data/semantic-junkyard.sqlite`.
+
 ## Default Local Architecture
 
 ```mermaid
@@ -105,6 +141,7 @@ The MVP is embedded by default and pluggable by design:
 
 ```text
 apps/api           Express API, semantic engine, storage adapters
+apps/mcp           MCP stdio server and MCP agent PoC
 apps/web           React workbench
 packages/shared    Shared contracts and types
 docs               Architecture, module specs, market scan, roadmap

@@ -6,18 +6,29 @@ import { demoDocuments } from "./core/demoCorpus.js";
 import { SemanticEngine } from "./core/semanticEngine.js";
 import { loadProviderConfig } from "./config/providers.js";
 import { openApiDocument } from "./api/openapi.js";
-import { toMcpToolDescriptors } from "./api/mcp.js";
+import { mcpCapabilitySnapshot, toMcpToolDescriptors } from "./api/mcp.js";
 import { runLocalAgentUseCase } from "./poc/localAgentUseCase.js";
 import { SemanticRepository } from "./storage/repository.js";
 
-export function createApp(db: Database.Database, options: { seed?: boolean } = {}) {
-  const app = express();
+export interface SemanticRuntime {
+  repository: SemanticRepository;
+  engine: SemanticEngine;
+}
+
+export function createSemanticRuntime(db: Database.Database, options: { seed?: boolean } = {}): SemanticRuntime {
   const repository = new SemanticRepository(db);
   const engine = new SemanticEngine(repository);
 
   if (options.seed ?? true) {
     seedIfEmpty(engine, repository);
   }
+
+  return { repository, engine };
+}
+
+export function createApp(db: Database.Database, options: { seed?: boolean } = {}) {
+  const app = express();
+  const { repository, engine } = createSemanticRuntime(db, options);
 
   app.use(cors());
   app.use(express.json({ limit: "5mb" }));
@@ -75,6 +86,10 @@ export function createApp(db: Database.Database, options: { seed?: boolean } = {
 
   app.get("/api/mcp/tools", (_request, response) => {
     response.json({ tools: toMcpToolDescriptors(engine.agentManifest()) });
+  });
+
+  app.get("/api/mcp/capabilities", (_request, response) => {
+    response.json(mcpCapabilitySnapshot(engine.agentManifest()));
   });
 
   app.get("/api/poc/local-agent", async (request, response, next) => {
