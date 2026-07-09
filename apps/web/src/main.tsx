@@ -12,6 +12,7 @@ import {
   FileSearch,
   Filter,
   GitBranch,
+  GitPullRequest,
   KeyRound,
   Layers3,
   LineChart,
@@ -19,17 +20,19 @@ import {
   Network,
   Play,
   RefreshCw,
+  Route,
   Search,
+  Send,
   Settings,
   ShieldCheck,
   Upload,
   Workflow,
   Zap
 } from "lucide-react";
-import type { SearchResult } from "@semantic-junkyard/shared";
+import type { BusinessActionPlan, BusinessActionRun, SearchResult } from "@semantic-junkyard/shared";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { IconButton } from "./components/IconButton";
-import { curateRelation, ingestText, loadSnapshot, previewIngest, runDiscovery, runLocalAgentPoc, semanticSearch } from "./api/client";
+import { curateRelation, executeBusinessAction, ingestText, loadSnapshot, planBusinessAction, previewIngest, runDiscovery, runLocalAgentPoc, semanticSearch } from "./api/client";
 import type { AppSnapshot, CuratedRelationReport, IngestPreviewReport, PocAgentReport } from "./types/app";
 import { starterText } from "./data/sample";
 import "./styles.css";
@@ -48,6 +51,9 @@ function App() {
   const [curationTarget, setCurationTarget] = useState("Revenue Mart");
   const [curationRationale, setCurationRationale] = useState("Owner-confirmed semantic dependency.");
   const [curatedRelation, setCuratedRelation] = useState<CuratedRelationReport | null>(null);
+  const [businessIntent, setBusinessIntent] = useState("Align Failed Payment Rate definition across Finance and Billing, then make it reflected in source systems.");
+  const [actionPlan, setActionPlan] = useState<BusinessActionPlan | null>(null);
+  const [actionRun, setActionRun] = useState<BusinessActionRun | null>(null);
   const [pocReport, setPocReport] = useState<PocAgentReport | null>(null);
   const [traceProvider, setTraceProvider] = useState<"local-huggingface" | "deterministic">("local-huggingface");
   const [traceBusy, setTraceBusy] = useState(false);
@@ -89,6 +95,7 @@ function App() {
   const latestRun = snapshot?.discoveryRuns[0];
   const selectedEntities = snapshot?.graph.nodes.slice(0, 6) ?? [];
   const moduleLabels: Record<string, string> = {
+    "business-action-router": "Actions",
     connector: "Connectors",
     parser: "Parser",
     chunker: "Chunker",
@@ -100,7 +107,9 @@ function App() {
     "policy-engine": "Policy",
     "ontology-validator": "Ontology",
     "lineage-collector": "Lineage",
-    "agent-protocol": "Agent API"
+    "agent-protocol": "Agent API",
+    "writeback-gateway": "Writeback",
+    "reflection-engine": "Reflection"
   };
 
   async function onIngest() {
@@ -146,6 +155,35 @@ function App() {
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Curation failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onPlanBusinessAction() {
+    setBusy(true);
+    setError(null);
+    try {
+      const plan = await planBusinessAction({ intent: businessIntent, mode: "autonomous", maxAutonomousRisk: "medium" });
+      setActionPlan(plan);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Business action planning failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onExecuteBusinessAction() {
+    setBusy(true);
+    setError(null);
+    try {
+      const run = await executeBusinessAction({ intent: businessIntent, mode: "autonomous", maxAutonomousRisk: "medium" });
+      setActionRun(run);
+      setActionPlan(run.plan);
+      await refresh();
+      await executeSearch(businessIntent, "hybrid");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Business action execution failed");
     } finally {
       setBusy(false);
     }
@@ -199,6 +237,7 @@ function App() {
             ["Dashboard", <Activity size={17} />],
             ["Ingest", <Upload size={17} />],
             ["Discovery", <FileSearch size={17} />],
+            ["Actions", <Route size={17} />],
             ["Graph", <Network size={17} />],
             ["Agents", <Zap size={17} />],
             ["Catalog", <Layers3 size={17} />],
@@ -361,6 +400,60 @@ function App() {
 
             {error ? <div className="error-banner">{error}</div> : null}
 
+            <div className="business-action-panel">
+              <div className="panel-subhead">
+                <h3>Business action router</h3>
+                <span>{actionRun?.status ?? actionPlan?.status ?? `${snapshot?.sourceSystems.length ?? 0} source systems`}</span>
+              </div>
+              <div className="business-intent-row">
+                <input value={businessIntent} onChange={(event) => setBusinessIntent(event.target.value)} />
+                <button className="secondary-action" onClick={onPlanBusinessAction} disabled={busy || !businessIntent.trim()}>
+                  <Route size={15} />
+                  Plan
+                </button>
+                <button className="primary-action compact-action" onClick={onExecuteBusinessAction} disabled={busy || !businessIntent.trim()}>
+                  <Send size={15} />
+                  Execute
+                </button>
+              </div>
+              <div className="action-summary-grid">
+                <div>
+                  <span>Intent resolved</span>
+                  <strong>{actionPlan?.title ?? "Waiting for business intent"}</strong>
+                  <small>{actionPlan?.summary ?? "The router will choose target systems, diffs, risk, autonomy, and reflection checks."}</small>
+                </div>
+                <div>
+                  <span>Reflection</span>
+                  <strong>{actionRun ? `${actionRun.reflections.filter((item) => item.status === "verified").length}/${actionRun.reflections.length} verified` : "not executed"}</strong>
+                  <small>{actionRun?.semanticUpdates[0]?.chunkIds.length ?? 0} semantic chunks refreshed</small>
+                </div>
+              </div>
+              {actionPlan ? (
+                <div className="action-target-list">
+                  {actionPlan.targets.map((target) => (
+                    <div className="action-target" key={target.stepId}>
+                      <div>
+                        <strong>{target.systemName}</strong>
+                        <small>{target.capability} · {target.risk} · {target.autonomy}</small>
+                      </div>
+                      <p>{target.diff.summary}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {actionRun ? (
+                <div className="reflection-list">
+                  {actionRun.writes.slice(0, 4).map((write) => (
+                    <div className="reflection-row" key={write.id}>
+                      <GitPullRequest size={15} />
+                      <span>{write.systemName}</span>
+                      <small>{write.status} · {write.objectType}</small>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+
             <div className="result-table">
               <div className="table-row table-head">
                 <span>Type</span>
@@ -458,6 +551,13 @@ function App() {
                 </div>
                 <small>{snapshot?.mcp.server.transport ?? "stdio"} - {snapshot?.mcp.server.command ?? "node apps/mcp/dist/server.js"}</small>
               </div>
+              <div className="source-surface">
+                <div>
+                  <span>Source writeback</span>
+                  <strong>{snapshot?.sourceRecords.length ?? 0} reflected records</strong>
+                </div>
+                <small>{snapshot?.sourceSystems.map((system) => system.name).slice(0, 3).join(" · ") ?? "loading"}</small>
+              </div>
               <div className="capability-list">
                 {snapshot?.manifest.capabilities.slice(0, 6).map((capability) => (
                   <div key={capability.name} className="capability-row">
@@ -497,6 +597,12 @@ function App() {
               </div>
               <div className="trace-body">
                 <p className="trace-summary">{pocReport?.modelReasoningSummary ?? "Run the PoC to inspect tool use, discoveries, observations, and citations."}</p>
+                {pocReport?.businessAction ? (
+                  <div className="trace-business-action">
+                    <strong>{pocReport.businessAction.status}</strong>
+                    <span>{pocReport.businessAction.writes} writes · {pocReport.businessAction.verifiedReflections} reflections · {pocReport.businessAction.semanticChunksRefreshed} chunks</span>
+                  </div>
+                ) : null}
                 <div className="trace-steps">
                   {pocReport?.steps.map((step) => (
                     <div className="trace-step" key={`${step.step}-${step.tool}`}>

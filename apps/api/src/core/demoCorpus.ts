@@ -8,7 +8,7 @@ Semantic Junkyard connects data catalogs, metadata graphs, semantic contracts, v
 
 An AI agent should not query raw systems without guidance. It needs governed metadata about asset ownership, freshness, quality, sensitivity, lineage, and business definitions.
 
-The platform exposes semantic_search, entity_lookup, graph_neighbors, find_paths, expand_context, open_source_span, and explain_permissions as read-only tools. Generated SQL and source mutations require approval-gated adapters.
+The platform exposes semantic_search, entity_lookup, graph_neighbors, find_paths, expand_context, open_source_span, and explain_permissions as evidence-first tools. It also exposes business_action_plan and business_action_execute for policy-governed source writeback with required source reflection. Generated SQL, destructive changes, and privileged source mutations require approval-gated adapters.
 
 Open Semantic Interchange helps make metrics, dimensions, datasets, and relationships portable across analytics tools. MetricFlow-style metric definitions can be imported as semantic contracts.
 

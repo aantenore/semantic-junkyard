@@ -11,6 +11,16 @@ function defineModule(module: ModuleInput): FabricModule {
 
 export const defaultModules: FabricModule[] = [
   defineModule({
+    id: "business-action-router.semantic",
+    kind: "business-action-router",
+    label: "Semantic Action Router",
+    status: "active",
+    description: "Resolves business intents into source-system targets, diffs, risk, autonomy, and evidence-backed execution plans.",
+    interchangeableWith: ["LangGraph planner", "Temporal workflow router", "custom policy planner"],
+    externalizable: true,
+    risk: "high"
+  }),
+  defineModule({
     id: "connector.inline-text",
     kind: "connector",
     label: "Inline Text Connector",
@@ -189,6 +199,26 @@ export const defaultModules: FabricModule[] = [
     interchangeableWith: ["MCP resources", "OpenAPI", "A2A", "custom agent registry"],
     externalizable: true,
     risk: "medium"
+  }),
+  defineModule({
+    id: "writeback.local-source-gateway",
+    kind: "writeback-gateway",
+    label: "Local Source Writeback Gateway",
+    status: "active",
+    description: "Writes governed business actions into source-system records through capability-specific adapters and autonomy policy.",
+    interchangeableWith: ["OpenMetadata API", "DataHub API", "GitHub PRs", "Jira", "PostgreSQL comments", "ServiceNow"],
+    externalizable: true,
+    risk: "high"
+  }),
+  defineModule({
+    id: "reflection.source-readback",
+    kind: "reflection-engine",
+    label: "Source Reflection Engine",
+    status: "active",
+    description: "Rereads source-system records after writeback and refreshes the semantic read model only when reflection verifies the write.",
+    interchangeableWith: ["CDC", "webhooks", "catalog harvesters", "OpenLineage events", "Temporal activities"],
+    externalizable: true,
+    risk: "high"
   }),
   defineModule({
     id: "observability.local-audit",

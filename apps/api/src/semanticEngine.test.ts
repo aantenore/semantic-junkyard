@@ -32,7 +32,8 @@ describe("Semantic Junkyard engine", () => {
 
     expect(permissions.manifest.modelAgnostic).toBe(true);
     expect(permissions.manifest.capabilities.map((capability) => capability.name)).toContain("semantic_search");
-    expect(permissions.decision).toContain("read-only autonomous access");
+    expect(permissions.manifest.capabilities.map((capability) => capability.name)).toContain("business_action_execute");
+    expect(permissions.decision).toContain("business-action planning");
     expect(permissions.safeNextSteps.length).toBeGreaterThan(2);
   });
 
@@ -71,5 +72,55 @@ describe("Semantic Junkyard engine", () => {
     expect(curated.relation.type).toBe("DEPENDS_ON");
     expect(curated.evidence.chunkId).toBe(ingested.chunks[0]?.id);
     expect(repository.graphSnapshot().edges.some((edge) => edge.id === curated.relation.id)).toBe(true);
+  });
+
+  it("routes business actions to source writeback and reflects them into the semantic read model", () => {
+    const db = openMemoryDatabase();
+    const { engine, repository } = createApp(db, { seed: true });
+    const before = repository.status();
+
+    const plan = engine.planBusinessAction({
+      intent: "Align Failed Payment Rate definition across Finance and Billing, then reflect it in source systems.",
+      mode: "autonomous",
+      maxAutonomousRisk: "medium"
+    });
+
+    expect(plan.targets.map((target) => target.systemName)).toEqual(
+      expect.arrayContaining(["Data Catalog", "dbt Semantic Repository", "Governance Ticketing"])
+    );
+    expect(repository.listSourceSystemRecords()).toHaveLength(0);
+
+    const run = engine.executeBusinessAction({
+      intent: "Align Failed Payment Rate definition across Finance and Billing, then reflect it in source systems.",
+      mode: "autonomous",
+      maxAutonomousRisk: "medium"
+    });
+
+    expect(run.status).toBe("verified");
+    expect(run.writes.length).toBeGreaterThan(0);
+    expect(run.reflections.every((reflection) => reflection.status === "verified")).toBe(true);
+    expect(run.semanticUpdates[0]?.chunkIds.length).toBeGreaterThan(0);
+    expect(repository.listSourceSystemRecords().length).toBe(run.writes.length);
+    expect(repository.listBusinessActionRuns()[0]?.id).toBe(run.id);
+    expect(repository.status().sources).toBeGreaterThan(before.sources);
+
+    const reflectedResults = engine.search({ query: "Business Action Reflection source systems Failed Payment Rate", topK: 5, mode: "hybrid" });
+    expect(reflectedResults.some((result) => result.sourceName.includes("business-action-reflection"))).toBe(true);
+  });
+
+  it("holds higher-risk source writes for approval when autonomy policy is stricter", () => {
+    const db = openMemoryDatabase();
+    const { engine, repository } = createApp(db, { seed: true });
+
+    const run = engine.executeBusinessAction({
+      intent: "Make Billing Pipeline to Revenue Mart traceable end-to-end",
+      mode: "autonomous",
+      maxAutonomousRisk: "low"
+    });
+
+    expect(run.status).toBe("approval_required");
+    expect(run.plan.targets.some((target) => target.risk === "medium" && target.autonomy === "approval_required")).toBe(true);
+    expect(run.writes).toHaveLength(0);
+    expect(repository.listSourceSystemRecords()).toHaveLength(0);
   });
 });

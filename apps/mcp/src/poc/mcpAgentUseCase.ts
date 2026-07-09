@@ -20,12 +20,18 @@ interface McpPocReport {
   promptsAdvertised: string[];
   question: string;
   steps: McpPocStep[];
+  businessAction: {
+    intent: string;
+    status: string;
+    writes: number;
+    verifiedReflections: number;
+  };
   finalAnswer: string;
   citations: Array<{ sourceName: string; chunkId: string; excerpt: string }>;
   promptPreview: string;
 }
 
-const question = "Which governed finance context should be used for failed payment analysis, and what can the agent do autonomously?";
+const question = "Which governed finance context should be used for failed payment analysis, and can the agent perform a reflected business writeback?";
 
 export async function runMcpAgentUseCase(options: { writeReport?: boolean; outputPath?: string } = {}): Promise<McpPocReport> {
   const repoRoot = findRepoRoot();
@@ -80,6 +86,21 @@ export async function runMcpAgentUseCase(options: { writeReport?: boolean; outpu
       steps.push({ step: 6, tool: "get_evidence", observation: `Opened ${openedEvidence.evidence.sourceName} / ${openedEvidence.evidence.chunkId}.` });
     }
 
+    const businessIntent = "Align Failed Payment Rate definition across Finance and Billing, then reflect it in source systems.";
+    const actionPlan = await callStructured<{ targets: Array<{ systemName: string }> }>(client, "business_action_plan", {
+      intent: businessIntent,
+      mode: "autonomous",
+      maxAutonomousRisk: "medium"
+    });
+    steps.push({ step: steps.length + 1, tool: "business_action_plan", observation: `${actionPlan.targets.length} write targets planned: ${actionPlan.targets.map((target) => target.systemName).join(", ")}.` });
+
+    const actionRun = await callStructured<{ status: string; writes: unknown[]; reflections: Array<{ status: string }> }>(client, "business_action_execute", {
+      intent: businessIntent,
+      mode: "autonomous",
+      maxAutonomousRisk: "medium"
+    });
+    steps.push({ step: steps.length + 1, tool: "business_action_execute", observation: `${actionRun.writes.length} source writes executed; ${actionRun.reflections.filter((reflection) => reflection.status === "verified").length} reflected; status ${actionRun.status}.` });
+
     const citations = context.evidence.slice(0, 4).map((item) => ({
       sourceName: item.sourceName,
       chunkId: item.chunkId,
@@ -95,8 +116,14 @@ export async function runMcpAgentUseCase(options: { writeReport?: boolean; outpu
       promptsAdvertised: prompts.prompts.map((item) => item.name),
       question,
       steps,
+      businessAction: {
+        intent: businessIntent,
+        status: actionRun.status,
+        writes: actionRun.writes.length,
+        verifiedReflections: actionRun.reflections.filter((reflection) => reflection.status === "verified").length
+      },
       finalAnswer:
-        "The MCP agent can answer this read-only discovery question using Semantic Junkyard tools. The governed finance context is the Finance Semantic Contract with Billing Pipeline and Revenue Mart lineage, supported by cited evidence. The agent may search metadata, resolve entities, traverse bounded graph neighborhoods, expand context, and open evidence. It must not mutate systems, execute generated SQL, expose secrets, or bypass approval-gated adapters.",
+        "The MCP agent can answer this governed discovery question and execute a configured business writeback using Semantic Junkyard tools. The governed finance context is the Finance Semantic Contract with Billing Pipeline and Revenue Mart lineage, supported by cited evidence. The agent may search metadata, resolve entities, traverse bounded graph neighborhoods, expand context, open evidence, plan source writes, execute policy-governed low/medium-risk writebacks, and rely on the result only after source reflection verifies it. It must not execute generated SQL, expose secrets, bypass masking, mutate restricted production data, or perform destructive changes without approval.",
       citations,
       promptPreview
     };

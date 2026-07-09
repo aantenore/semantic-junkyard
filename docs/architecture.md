@@ -26,6 +26,12 @@ flowchart TB
   I --> J
   J --> K["Agent access layer: REST, MCP-style tools, future GraphQL"]
   K --> L["AI agents"]
+  L --> M["Business action router"]
+  M --> N["Source writeback gateway"]
+  N --> O["Source systems"]
+  O --> R["Reflection engine"]
+  R --> D
+  R --> E
 ```
 
 ## Connection Modes
@@ -53,6 +59,25 @@ Semantic Junkyard separates automatic discovery from authoritative semantics.
 
 Manual curation creates evidence-backed graph assertions rather than opaque edges. If a reviewer adds `Billing Pipeline DEPENDS_ON Revenue Mart`, the system stores a curation evidence chunk, links both entities to it, and adds a typed relation to the graph. This keeps human decisions auditable and available to agents.
 
+## Business Actions And Source Reflection
+
+Semantic Junkyard treats the internal graph as a read model, not as the final source of truth. Business users can ask for operational outcomes such as "align this KPI definition" or "make this dependency traceable". The action layer resolves the intent semantically, chooses the source systems that own the change, writes through capability-specific adapters, rereads those source systems, and refreshes the semantic read model from reflected evidence.
+
+```text
+business intent
+-> semantic target resolution
+-> source-system write plan
+-> policy/autonomy decision
+-> connector writeback
+-> source readback/reflection
+-> semantic read-model refresh
+-> verified business action
+```
+
+The local product ships with configurable source-system shapes for Data Catalog, OpenMetadata-style lineage, a dbt semantic repository, and governance ticketing. They persist to local source records for the PoC, but the same contract maps to real systems through adapters.
+
+Completion is not defined by a successful write API response. A business action is complete only when reflection can reread the target source record and the semantic layer has ingested the reflected state.
+
 ## Core Domain Objects
 
 - `SourceArtifact`: immutable raw or referenced source record.
@@ -67,6 +92,9 @@ Manual curation creates evidence-backed graph assertions rather than opaque edge
 - `LineageEdge`: asset dependency using OpenLineage-style semantics.
 - `OntologyClass`: pragmatic ontology class and constraints.
 - `SemanticContract`: versioned domain package for distributed semantic layers.
+- `SourceSystem`: writeback-capable source with business capabilities, technical operations, risk, autonomy, and reversibility.
+- `BusinessActionPlan`: resolved intent with source-system targets, diffs, autonomy, evidence, and warnings.
+- `BusinessActionRun`: execution journal containing source writes, reflection results, and semantic read-model updates.
 
 ## Agent Autonomy Boundary
 
@@ -77,18 +105,20 @@ Agents can autonomously:
 - Resolve entities and inspect evidence.
 - Expand context packs for answers.
 - Explain what they are allowed to do.
+- Plan business actions before any source write.
+- Execute configured low/medium-risk business writebacks through the source writeback gateway.
+- Verify completion only after source reflection refreshes the semantic read model.
 - Flag stale, low-quality, restricted, or contradictory assets.
 
 Agents cannot autonomously:
 
-- Mutate source systems.
 - Execute generated SQL against production data.
 - Send external communications.
 - Delete data.
 - Bypass policy, masking, lineage, or quality checks.
 - Expose secrets or restricted data.
 
-Those actions require separate approval-gated adapters.
+Privileged writes, destructive operations, access policy changes, and production data mutation require approval-gated adapters or are blocked.
 
 ## Capability-Agnostic Design
 
@@ -106,6 +136,9 @@ Every major capability is replaceable.
 | Policy | Local ABAC rules | OPA, Apache Ranger, OpenFGA, custom PDP |
 | Ontology validation | JSON constraints | SHACL, OWL, RDFS, Apache Jena |
 | Agent protocol | REST + MCP stdio server | GraphQL, SDKs |
+| Business action router | Local semantic action planner | LangGraph, Temporal, custom workflow planner |
+| Source writeback | Local source records | OpenMetadata, DataHub, GitHub PRs, Jira, ServiceNow, PostgreSQL comments |
+| Reflection | Immediate source-record readback | CDC, webhooks, catalog harvesters, OpenLineage events |
 | Observability | SQLite audit/events | OpenTelemetry, Langfuse, Phoenix, SIEM |
 
 ## Why Vector Search Alone Is Not Enough
