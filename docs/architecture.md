@@ -14,9 +14,12 @@ flowchart TB
   B2 --> D["Metadata/context graph"]
   B3 --> D
   C --> E["Chunks with source spans"]
-  E --> F["Entity, relation, claim extraction"]
+  E --> P["Ingestion preview"]
+  P --> F["Entity, relation, claim extraction"]
+  P --> Q["Human semantic curation"]
   D --> G["Semantic contracts, metrics, glossary, policy, lineage"]
   F --> H["Knowledge graph / GraphRAG structures"]
+  Q --> H
   E --> I["Lexical and vector indexes"]
   G --> J["Policy-aware query planner"]
   H --> J
@@ -36,6 +39,19 @@ Semantic Junkyard supports three ingestion modes because not every source should
 | External reference | Systems that must remain external | URI, metadata, tool descriptor, policy boundary | Ask via external MCP/REST/OpenAPI adapter |
 
 This distinction is central to governance. An autonomous agent may discover that a system exists without being authorized to read the full payload.
+
+## Controlled Semantic Creation
+
+Semantic Junkyard separates automatic discovery from authoritative semantics.
+
+| Layer | Owner | Purpose |
+| --- | --- | --- |
+| Ingestion preview | System + human reviewer | Show proposed chunks, entities, relations, claims, and warnings before persistence. |
+| Discovered semantics | Extractors and discovery agents | Candidate graph edges and claims inferred from evidence. |
+| Curated semantics | Human/domain owner | Authoritative relationships such as `DEPENDS_ON`, `WRITES`, `GOVERNS`, or domain-specific relation types. |
+| Catalog semantics | Data/product owner | Governed assets, metric contracts, policies, lineage, and ontology classes. |
+
+Manual curation creates evidence-backed graph assertions rather than opaque edges. If a reviewer adds `Billing Pipeline DEPENDS_ON Revenue Mart`, the system stores a curation evidence chunk, links both entities to it, and adds a typed relation to the graph. This keeps human decisions auditable and available to agents.
 
 ## Core Domain Objects
 
@@ -89,7 +105,7 @@ Every major capability is replaceable.
 | Lineage | Local lineage edges | OpenLineage, Marquez, DataHub, OpenMetadata |
 | Policy | Local ABAC rules | OPA, Apache Ranger, OpenFGA, custom PDP |
 | Ontology validation | JSON constraints | SHACL, OWL, RDFS, Apache Jena |
-| Agent protocol | REST + MCP descriptors | MCP server, GraphQL, SDKs |
+| Agent protocol | REST + MCP stdio server | GraphQL, SDKs |
 | Observability | SQLite audit/events | OpenTelemetry, Langfuse, Phoenix, SIEM |
 
 ## Why Vector Search Alone Is Not Enough
@@ -106,4 +122,3 @@ Vector search can find semantically similar text, but agents also need:
 - How to stop safely when evidence is insufficient.
 
 Semantic Junkyard combines vector retrieval with metadata graph, knowledge graph, ontology constraints, lineage, policy, metric contracts, and evidence spans.
-

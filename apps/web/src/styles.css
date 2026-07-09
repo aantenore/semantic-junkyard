@@ -281,6 +281,10 @@ button {
   gap: 6px;
 }
 
+.compact-field {
+  min-width: 0;
+}
+
 .field span {
   color: #3d4b59;
   font-size: 12px;
@@ -345,9 +349,17 @@ button {
   box-shadow: 0 1px 2px rgba(20, 33, 43, 0.08);
 }
 
+.ingest-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
 .primary-action,
+.secondary-action,
 .small-button,
-.filter-button {
+.filter-button,
+.curation-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -362,9 +374,17 @@ button {
 }
 
 .primary-action:disabled,
+.secondary-action:disabled,
+.curation-button:disabled,
 .small-button:disabled {
   cursor: wait;
   opacity: 0.62;
+}
+
+.secondary-action {
+  border-color: var(--border-strong);
+  background: #ffffff;
+  color: #263747;
 }
 
 .small-button {
@@ -376,6 +396,39 @@ button {
   border-color: var(--border);
   background: var(--surface);
   color: #405061;
+}
+
+.preview-card {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8fbfb;
+  padding: 10px;
+}
+
+.preview-card div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.preview-card strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.preview-card span,
+.preview-card small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.preview-card p {
+  margin: 0;
+  color: #334656;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .module-strip.compact {
@@ -504,6 +557,38 @@ button {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 12px;
+}
+
+.curation-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.curation-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 148px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.curation-button {
+  width: fit-content;
+  min-width: 142px;
+  padding: 0 12px;
+}
+
+.curation-result {
+  margin: 0;
+  border-top: 1px solid var(--border);
+  color: var(--teal-dark);
+  font-size: 12px;
+  font-weight: 720;
+  line-height: 1.35;
+  padding-top: 8px;
 }
 
 .panel-subhead {

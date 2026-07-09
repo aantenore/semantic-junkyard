@@ -21,6 +21,9 @@ The web app is a working dashboard, not a marketing page. You can paste text, in
 
 The API exposes agent-friendly tools:
 
+- `POST /api/ingest/preview`
+- `POST /api/ingest`
+- `POST /api/semantic/relations`
 - `POST /api/tools/semantic_search`
 - `POST /api/tools/entity_lookup`
 - `POST /api/tools/graph_neighbors`
@@ -33,6 +36,38 @@ The MCP server exposes the same agent surface over stdio:
 - Tools: `explain_permissions`, `semantic_search`, `entity_lookup`, `graph_neighbors`, `find_paths`, `expand_context`, `get_evidence`, `run_discovery`
 - Resources: `semantic-junkyard://status`, `semantic-junkyard://manifest`, `semantic-junkyard://catalog`, `semantic-junkyard://graph`, `semantic-junkyard://evidence/{chunkId}`
 - Prompts: `agent_discovery_brief`, `governed_context_answer`, `semantic_mapping_review`
+
+## Controlled Ingestion And Curation
+
+Use ingestion preview when you want to inspect semantics before writing anything:
+
+```bash
+curl -X POST http://localhost:8787/api/ingest/preview \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "payments-note.md",
+    "mimeType": "text/markdown",
+    "ingestionMode": "full_data",
+    "text": "Payments API depends on Billing Pipeline. Billing Pipeline writes Revenue Mart."
+  }'
+```
+
+Use semantic curation when a domain owner wants to control what depends on what:
+
+```bash
+curl -X POST http://localhost:8787/api/semantic/relations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sourceName": "Payments API",
+    "sourceType": "System",
+    "relationType": "DEPENDS_ON",
+    "targetName": "Billing Pipeline",
+    "targetType": "Process",
+    "rationale": "Confirmed by the platform owner."
+  }'
+```
+
+Curated relations are persisted as evidence-backed graph edges. The UI exposes the same workflow in the Ingest preview and Semantic control panels.
 
 ## Quick Start
 
