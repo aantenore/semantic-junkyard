@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createApp } from "../app.js";
 import { openMemoryDatabase } from "../storage/database.js";
+import { generateWithLocalHuggingFace, pickDefaultLocalModel } from "./localHuggingFaceProvider.js";
 
 export interface PocAgentStep {
   step: number;
@@ -15,9 +16,11 @@ export interface PocAgentReport {
   useCase: string;
   question: string;
   provider: string;
+  model: string;
   autonomyDecision: string;
   steps: PocAgentStep[];
   finalAnswer: string;
+  modelReasoningSummary: string;
   citations: Array<{
     sourceName: string;
     chunkId: string;
@@ -29,6 +32,8 @@ export interface PocAgentReport {
 export interface RunPocOptions {
   writeReport?: boolean;
   outputPath?: string;
+  provider?: "deterministic" | "local-huggingface";
+  allowModelFallback?: boolean;
 }
 
 const useCaseQuestion =
@@ -95,19 +100,27 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
     excerpt: compact(item?.text ?? "")
   }));
 
-  const finalAnswer = [
+  const deterministicAnswer = [
     "Yes. The agent can autonomously answer this read-only discovery question because the capability manifest allows semantic search, entity lookup, bounded graph traversal, context expansion, and evidence opening.",
     "For failed payment analysis, the governed finance context is the Finance Semantic Contract plus the Billing Pipeline and Revenue Mart lineage. The local catalog also defines Failed Payment Rate as a governed metric with dimensions such as payment provider, plan, and retry policy.",
     "The agent may discover and cite metadata, graph relationships, metric definitions, policies, and source spans. It may not mutate source systems, execute generated SQL, expose secrets, bypass masking, or access restricted raw customer payloads without an approval-gated adapter."
   ].join(" ");
 
+  const modelResult = maybeGenerateWithLocalModel(options.provider, options.allowModelFallback ?? true, citations);
+  const finalAnswer =
+    modelResult.provider === "local-huggingface-mlx" && modelResult.text
+      ? `${deterministicAnswer} Local Hugging Face model summary: ${modelResult.text}`
+      : deterministicAnswer;
+
   const report: PocAgentReport = {
     useCase: "Local autonomous agent discovery over governed finance semantic context",
     question: useCaseQuestion,
-    provider: "deterministic-local-agent-loop",
+    provider: modelResult.provider,
+    model: modelResult.model,
     autonomyDecision: permissionCheck.decision,
     steps,
     finalAnswer,
+    modelReasoningSummary: modelResult.text,
     citations,
     stopConditionsChecked: permissionCheck.manifest.stopConditions
   };
@@ -121,6 +134,49 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
   return report;
 }
 
+function maybeGenerateWithLocalModel(
+  provider: RunPocOptions["provider"],
+  allowFallback: boolean,
+  citations: PocAgentReport["citations"]
+): { provider: string; model: string; text: string } {
+  if (provider !== "local-huggingface") {
+    return {
+      provider: "deterministic-local-agent-loop",
+      model: "deterministic-rules",
+      text: "Deterministic planner selected safe read-only tools and evidence-backed context."
+    };
+  }
+
+  const model = pickDefaultLocalModel();
+  try {
+    const evidence = citations.map((citation) => `- ${citation.sourceName}: ${citation.excerpt}`).join("\n");
+    const generated = generateWithLocalHuggingFace(
+      [
+        "You are an agent audit summarizer. Do not reveal chain-of-thought.",
+        "Return a concise operational reasoning summary in two bullet points.",
+        "Use only the provided evidence. Do not introduce source names, facts, actions, or systems that are absent from the evidence.",
+        "Do not repeat sentences.",
+        "Question: Which governed finance context should be used for failed payment analysis, and what is the agent allowed to do?",
+        "Evidence:",
+        evidence
+      ].join("\n"),
+      model
+    );
+    return {
+      provider: generated.provider,
+      model: generated.model.id,
+      text: generated.text
+    };
+  } catch (error) {
+    if (!allowFallback) throw error;
+    return {
+      provider: "local-huggingface-mlx-unavailable-fallback",
+      model: model?.id ?? "none",
+      text: `Local Hugging Face generation failed, so deterministic fallback was used. Error: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+
 function defaultReportPath(): string {
   const currentDir = path.dirname(fileURLToPath(import.meta.url));
   return path.resolve(currentDir, "../../../../artifacts/poc/local-agent-use-case-report.json");
@@ -132,6 +188,10 @@ function compact(value: string): string {
 }
 
 if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1]))) {
-  const report = await runLocalAgentUseCase({ writeReport: true });
+  const report = await runLocalAgentUseCase({
+    writeReport: true,
+    provider: process.argv.includes("--local-hf") ? "local-huggingface" : "deterministic",
+    allowModelFallback: !process.argv.includes("--no-fallback")
+  });
   console.log(JSON.stringify(report, null, 2));
 }

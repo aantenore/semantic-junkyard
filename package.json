@@ -18,6 +18,7 @@
     "lint": "npm run typecheck",
     "seed": "npm run seed -w apps/api",
     "poc:agent": "npm run poc:agent -w apps/api",
+    "poc:agent:hf": "npm run poc:agent:hf -w apps/api",
     "start": "npm run start -w apps/api"
   },
   "devDependencies": {

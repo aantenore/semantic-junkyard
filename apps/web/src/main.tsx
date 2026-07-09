@@ -29,8 +29,8 @@ import {
 import type { SearchResult } from "@semantic-junkyard/shared";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { IconButton } from "./components/IconButton";
-import { ingestText, loadSnapshot, runDiscovery, semanticSearch } from "./api/client";
-import type { AppSnapshot } from "./types/app";
+import { ingestText, loadSnapshot, runDiscovery, runLocalAgentPoc, semanticSearch } from "./api/client";
+import type { AppSnapshot, PocAgentReport } from "./types/app";
 import { starterText } from "./data/sample";
 import "./styles.css";
 
@@ -42,6 +42,9 @@ function App() {
   const [text, setText] = useState(starterText);
   const [name, setName] = useState("agent-discovery-note.md");
   const [ingestionMode, setIngestionMode] = useState<"full_data" | "metadata_only" | "external_reference">("full_data");
+  const [pocReport, setPocReport] = useState<PocAgentReport | null>(null);
+  const [traceProvider, setTraceProvider] = useState<"local-huggingface" | "deterministic">("local-huggingface");
+  const [traceBusy, setTraceBusy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -65,7 +68,7 @@ function App() {
 
   useEffect(() => {
     refresh()
-      .then(() => executeSearch())
+      .then(() => Promise.all([executeSearch(), runAgentTrace("local-huggingface")]))
       .catch((err) => setError(err instanceof Error ? err.message : "API unavailable"));
   }, []);
 
@@ -118,6 +121,20 @@ function App() {
       setError(err instanceof Error ? err.message : "Discovery failed");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function runAgentTrace(provider = traceProvider) {
+    setTraceBusy(true);
+    setTraceProvider(provider);
+    setError(null);
+    try {
+      const report = await runLocalAgentPoc(provider);
+      setPocReport(report);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Agent trace failed");
+    } finally {
+      setTraceBusy(false);
     }
   }
 
@@ -344,6 +361,57 @@ function App() {
                     <small>{capability.risk}</small>
                   </div>
                 ))}
+              </div>
+            </section>
+
+            <section className="panel trace-panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Agent trace</h2>
+                  <p>{pocReport ? `${pocReport.provider} - ${pocReport.model}` : "ready"}</p>
+                </div>
+                <div className="trace-actions">
+                  <div className="trace-provider" role="group" aria-label="Agent trace provider">
+                    <button className={traceProvider === "local-huggingface" ? "selected" : ""} onClick={() => setTraceProvider("local-huggingface")}>
+                      Local HF
+                    </button>
+                    <button className={traceProvider === "deterministic" ? "selected" : ""} onClick={() => setTraceProvider("deterministic")}>
+                      Rules
+                    </button>
+                  </div>
+                  <button
+                    className="trace-run-button"
+                    onClick={() => runAgentTrace()}
+                    disabled={busy || traceBusy}
+                    aria-label={traceBusy ? "Agent trace running" : "Run trace"}
+                    title={traceBusy ? "Agent trace running" : "Run trace"}
+                  >
+                    <Play size={14} />
+                  </button>
+                </div>
+              </div>
+              <div className="trace-body">
+                <p className="trace-summary">{pocReport?.modelReasoningSummary ?? "Run the PoC to inspect tool use, discoveries, observations, and citations."}</p>
+                <div className="trace-steps">
+                  {pocReport?.steps.map((step) => (
+                    <div className="trace-step" key={`${step.step}-${step.tool}`}>
+                      <span>{step.step}</span>
+                      <div>
+                        <strong>{step.tool}</strong>
+                        <p>{step.rationale}</p>
+                        <small>{step.observation}</small>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="trace-citations">
+                  {pocReport?.citations.slice(0, 3).map((citation) => (
+                    <div className="trace-citation" key={citation.chunkId}>
+                      <strong>{citation.sourceName}</strong>
+                      <p>{citation.excerpt}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
             </section>
 

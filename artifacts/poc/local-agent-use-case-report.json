@@ -1,7 +1,8 @@
 {
   "useCase": "Local autonomous agent discovery over governed finance semantic context",
   "question": "Can an autonomous AI agent answer which governed finance context should be used for failed payment analysis, and what is it allowed to do?",
-  "provider": "deterministic-local-agent-loop",
+  "provider": "local-huggingface-mlx",
+  "model": "mlx-community/Qwen3-1.7B-4bit",
   "autonomyDecision": "read-only autonomous access allowed; writes and privileged actions require external approval-gated adapters",
   "steps": [
     {
@@ -35,7 +36,8 @@
       "observation": "3 evidence spans assembled."
     }
   ],
-  "finalAnswer": "Yes. The agent can autonomously answer this read-only discovery question because the capability manifest allows semantic search, entity lookup, bounded graph traversal, context expansion, and evidence opening. For failed payment analysis, the governed finance context is the Finance Semantic Contract plus the Billing Pipeline and Revenue Mart lineage. The local catalog also defines Failed Payment Rate as a governed metric with dimensions such as payment provider, plan, and retry policy. The agent may discover and cite metadata, graph relationships, metric definitions, policies, and source spans. It may not mutate source systems, execute generated SQL, expose secrets, bypass masking, or access restricted raw customer payloads without an approval-gated adapter.",
+  "finalAnswer": "Yes. The agent can autonomously answer this read-only discovery question because the capability manifest allows semantic search, entity lookup, bounded graph traversal, context expansion, and evidence opening. For failed payment analysis, the governed finance context is the Finance Semantic Contract plus the Billing Pipeline and Revenue Mart lineage. The local catalog also defines Failed Payment Rate as a governed metric with dimensions such as payment provider, plan, and retry policy. The agent may discover and cite metadata, graph relationships, metric definitions, policies, and source spans. It may not mutate source systems, execute generated SQL, expose secrets, bypass masking, or access restricted raw customer payloads without an approval-gated adapter. Local Hugging Face model summary: - The Finance Semantic Contract governs the finance context for failed payment analysis.  \n- Agents are restricted to governed metadata and policies for data processing.",
+  "modelReasoningSummary": "- The Finance Semantic Contract governs the finance context for failed payment analysis.  \n- Agents are restricted to governed metadata and policies for data processing.",
   "citations": [
     {
       "sourceName": "billing-context.html",
