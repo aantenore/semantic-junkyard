@@ -65,6 +65,7 @@ export function mcpResourceDescriptors(): McpDescriptor[] {
     { name: "manifest", description: "Agent capability manifest, operating rules, and stop conditions." },
     { name: "catalog", description: "Governed assets, metrics, policies, lineage, contracts, and ontology classes." },
     { name: "graph", description: "Current entity and relation graph snapshot." },
+    { name: "source-systems", description: "Configured writeback source systems and reflected source records." },
     { name: "evidence", description: "Evidence chunk resource template: semantic-junkyard://evidence/{chunkId}." }
   ];
 }
@@ -72,7 +73,7 @@ export function mcpResourceDescriptors(): McpDescriptor[] {
 export function mcpPromptDescriptors(): McpDescriptor[] {
   return [
     { name: "agent_discovery_brief", description: "Brief an agent to discover relevant governed context before answering." },
-    { name: "governed_context_answer", description: "Guide an evidence-first answer over semantic contracts, graph, and citations." },
+    { name: "governed_context_answer", description: "Guide an evidence-first answer over semantic contracts, graph, citations, and optional reflected business actions." },
     { name: "semantic_mapping_review", description: "Review whether extracted entities and relationships are sufficient for an agent task." }
   ];
 }

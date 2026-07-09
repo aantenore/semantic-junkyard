@@ -10,28 +10,31 @@
     "find_paths",
     "expand_context",
     "get_evidence",
-    "run_discovery"
+    "run_discovery",
+    "business_action_plan",
+    "business_action_execute"
   ],
   "resourcesAdvertised": [
     "semantic-junkyard://status",
     "semantic-junkyard://manifest",
     "semantic-junkyard://catalog",
     "semantic-junkyard://graph",
+    "semantic-junkyard://source-systems",
     "semantic-junkyard://evidence/chunk_c33290057c50c9bb",
     "semantic-junkyard://evidence/chunk_743cf628f9537cbe",
-    "semantic-junkyard://evidence/chunk_e0532782e9f0e171"
+    "semantic-junkyard://evidence/chunk_b152f60869c09443"
   ],
   "promptsAdvertised": [
     "agent_discovery_brief",
     "governed_context_answer",
     "semantic_mapping_review"
   ],
-  "question": "Which governed finance context should be used for failed payment analysis, and what can the agent do autonomously?",
+  "question": "Which governed finance context should be used for failed payment analysis, and can the agent perform a reflected business writeback?",
   "steps": [
     {
       "step": 1,
       "tool": "explain_permissions",
-      "observation": "read-only autonomous access allowed; writes and privileged actions require external approval-gated adapters"
+      "observation": "read access and business-action planning are autonomous; configured low/medium-risk source writes may execute autonomously through policy-governed writeback, while privileged or destructive actions require approval"
     },
     {
       "step": 2,
@@ -57,9 +60,25 @@
       "step": 6,
       "tool": "get_evidence",
       "observation": "Opened billing-context.html / chunk_c33290057c50c9bb."
+    },
+    {
+      "step": 7,
+      "tool": "business_action_plan",
+      "observation": "3 write targets planned: Data Catalog, dbt Semantic Repository, Governance Ticketing."
+    },
+    {
+      "step": 8,
+      "tool": "business_action_execute",
+      "observation": "3 source writes executed; 3 reflected; status verified."
     }
   ],
-  "finalAnswer": "The MCP agent can answer this read-only discovery question using Semantic Junkyard tools. The governed finance context is the Finance Semantic Contract with Billing Pipeline and Revenue Mart lineage, supported by cited evidence. The agent may search metadata, resolve entities, traverse bounded graph neighborhoods, expand context, and open evidence. It must not mutate systems, execute generated SQL, expose secrets, or bypass approval-gated adapters.",
+  "businessAction": {
+    "intent": "Align Failed Payment Rate definition across Finance and Billing, then reflect it in source systems.",
+    "status": "verified",
+    "writes": 3,
+    "verifiedReflections": 3
+  },
+  "finalAnswer": "The MCP agent can answer this governed discovery question and execute a configured business writeback using Semantic Junkyard tools. The governed finance context is the Finance Semantic Contract with Billing Pipeline and Revenue Mart lineage, supported by cited evidence. The agent may search metadata, resolve entities, traverse bounded graph neighborhoods, expand context, open evidence, plan source writes, execute policy-governed low/medium-risk writebacks, and rely on the result only after source reflection verifies it. It must not execute generated SQL, expose secrets, bypass masking, mutate restricted production data, or perform destructive changes without approval.",
   "citations": [
     {
       "sourceName": "billing-context.html",
@@ -68,7 +87,7 @@
     },
     {
       "sourceName": "semantic-layer-for-agents.md",
-      "chunkId": "chunk_e0532782e9f0e171",
+      "chunkId": "chunk_b152f60869c09443",
       "excerpt": "# Semantic Layer For AI Agents Semantic Junkyard connects data catalogs, metadata graphs, semantic contracts, vector search, and knowledge graphs into an agent-safe context layer. An AI agent should not query raw systems without guidance. It needs governed metadata about asset..."
     },
     {
@@ -77,5 +96,5 @@
       "excerpt": "Agentic discovery starts by profiling available sources, catalog assets, lineage, quality signals, and policies. When an undefined problem arrives, the agent first asks what data assets are relevant, whether the assets are authorized, whether the metric definitions are governe..."
     }
   ],
-  "promptPreview": "Answer this question using Semantic Junkyard MCP tools: Which governed finance context should be used for failed payment analysis, and what can the agent do autonomously?\n\nRequired workflow: explain_permissions -> semantic_search -> entity_lookup -> expand_con"
+  "promptPreview": "Answer this question using Semantic Junkyard MCP tools: Which governed finance context should be used for failed payment analysis, and can the agent perform a reflected business writeback?\n\nRequired workflow: explain_permissions -> semantic_search -> entity_lo"
 }

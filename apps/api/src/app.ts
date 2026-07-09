@@ -56,6 +56,13 @@ export function createApp(db: Database.Database, options: { seed?: boolean } = {
     })));
   });
 
+  app.get("/api/source-systems", (_request, response) => {
+    response.json({
+      systems: engine.sourceSystems(),
+      records: repository.listSourceSystemRecords()
+    });
+  });
+
   app.post("/api/catalog/import", (request, response) => {
     response.json(engine.importCatalog(request.body));
   });
@@ -70,6 +77,18 @@ export function createApp(db: Database.Database, options: { seed?: boolean } = {
 
   app.post("/api/semantic/relations", (request, response) => {
     response.status(201).json(engine.curateRelation(request.body));
+  });
+
+  app.post("/api/business/actions/plan", (request, response) => {
+    response.json(engine.planBusinessAction(request.body));
+  });
+
+  app.post("/api/business/actions/execute", (request, response) => {
+    response.status(201).json(engine.executeBusinessAction(request.body));
+  });
+
+  app.get("/api/business/actions/runs", (_request, response) => {
+    response.json(repository.listBusinessActionRuns());
   });
 
   app.post("/api/discovery/run", (request, response) => {

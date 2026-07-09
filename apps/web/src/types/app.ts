@@ -1,10 +1,14 @@
 import type {
+  BusinessActionPlan,
+  BusinessActionRun,
   CatalogSnapshot,
   DiscoveryRun,
   FabricModule,
   GraphSnapshot,
   ProviderConfig,
   SearchResult,
+  SourceSystem,
+  SourceSystemRecord,
   SystemStatus
 } from "@semantic-junkyard/shared";
 
@@ -32,6 +36,9 @@ export interface AppSnapshot {
   manifest: AgentManifest;
   provider: ProviderConfig;
   mcp: McpCapabilitySnapshot;
+  actionRuns: BusinessActionRun[];
+  sourceSystems: SourceSystem[];
+  sourceRecords: SourceSystemRecord[];
 }
 
 export interface SearchEnvelope {
@@ -44,6 +51,13 @@ export interface PocAgentReport {
   provider: string;
   model: string;
   autonomyDecision: string;
+  businessAction: {
+    intent: string;
+    status: string;
+    writes: number;
+    verifiedReflections: number;
+    semanticChunksRefreshed: number;
+  };
   steps: Array<{
     step: number;
     tool: string;

@@ -21,9 +21,13 @@ The web app is a working dashboard, not a marketing page. You can paste text, in
 
 The API exposes agent-friendly tools:
 
+- `GET /api/source-systems`
 - `POST /api/ingest/preview`
 - `POST /api/ingest`
 - `POST /api/semantic/relations`
+- `POST /api/business/actions/plan`
+- `POST /api/business/actions/execute`
+- `GET /api/business/actions/runs`
 - `POST /api/tools/semantic_search`
 - `POST /api/tools/entity_lookup`
 - `POST /api/tools/graph_neighbors`
@@ -33,8 +37,8 @@ The API exposes agent-friendly tools:
 
 The MCP server exposes the same agent surface over stdio:
 
-- Tools: `explain_permissions`, `semantic_search`, `entity_lookup`, `graph_neighbors`, `find_paths`, `expand_context`, `get_evidence`, `run_discovery`
-- Resources: `semantic-junkyard://status`, `semantic-junkyard://manifest`, `semantic-junkyard://catalog`, `semantic-junkyard://graph`, `semantic-junkyard://evidence/{chunkId}`
+- Tools: `explain_permissions`, `semantic_search`, `entity_lookup`, `graph_neighbors`, `find_paths`, `expand_context`, `get_evidence`, `run_discovery`, `business_action_plan`, `business_action_execute`
+- Resources: `semantic-junkyard://status`, `semantic-junkyard://manifest`, `semantic-junkyard://catalog`, `semantic-junkyard://graph`, `semantic-junkyard://source-systems`, `semantic-junkyard://evidence/{chunkId}`
 - Prompts: `agent_discovery_brief`, `governed_context_answer`, `semantic_mapping_review`
 
 ## Controlled Ingestion And Curation
@@ -69,6 +73,41 @@ curl -X POST http://localhost:8787/api/semantic/relations \
 
 Curated relations are persisted as evidence-backed graph edges. The UI exposes the same workflow in the Ingest preview and Semantic control panels.
 
+## Business Actions With Source Reflection
+
+Semantic Junkyard now supports business-level actions that write to configured source systems and then reread those sources before updating the semantic read model. The user asks for an outcome, not a connector call:
+
+```text
+Align Failed Payment Rate definition across Finance and Billing,
+then make it reflected in source systems.
+```
+
+Plan first:
+
+```bash
+curl -X POST http://localhost:8787/api/business/actions/plan \
+  -H "Content-Type: application/json" \
+  -d '{
+    "intent": "Align Failed Payment Rate definition across Finance and Billing, then make it reflected in source systems.",
+    "mode": "autonomous",
+    "maxAutonomousRisk": "medium"
+  }'
+```
+
+Execute through the writeback gateway:
+
+```bash
+curl -X POST http://localhost:8787/api/business/actions/execute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "intent": "Align Failed Payment Rate definition across Finance and Billing, then make it reflected in source systems.",
+    "mode": "autonomous",
+    "maxAutonomousRisk": "medium"
+  }'
+```
+
+The local product writes source records for Data Catalog, OpenMetadata-style lineage, dbt semantic repository PR proposals, and governance ticketing. It then rereads those records, creates reflection evidence, refreshes search/graph context, and records a business action run. A write is considered complete only when reflection verifies the source state.
+
 ## Quick Start
 
 ```bash
@@ -98,7 +137,7 @@ Run the local autonomous agent PoC:
 npm run poc:agent
 ```
 
-The PoC creates an in-memory semantic layer, runs a local agent loop over a governed finance use case, checks its autonomy boundary, searches evidence, resolves entities, traverses a bounded graph neighborhood, expands context, and writes a reproducible report to `artifacts/poc/local-agent-use-case-report.json`.
+The PoC creates an in-memory semantic layer, runs a local agent loop over a governed finance use case, checks its autonomy boundary, searches evidence, resolves entities, traverses a bounded graph neighborhood, expands context, plans a business action, executes policy-governed source writeback, verifies reflection, refreshes semantic evidence, and writes a reproducible report to `artifacts/poc/local-agent-use-case-report.json`.
 
 Run the same PoC with a local Hugging Face MLX model:
 
@@ -114,7 +153,7 @@ Run the MCP agent PoC:
 npm run poc:agent:mcp
 ```
 
-This builds the MCP server, starts it over stdio, connects a real MCP client, lists tools/resources/prompts, calls the read-only discovery tools, opens evidence, and writes `artifacts/poc/mcp-agent-use-case-report.json`.
+This builds the MCP server, starts it over stdio, connects a real MCP client, lists tools/resources/prompts, calls discovery tools, opens evidence, plans and executes a reflected business action, and writes `artifacts/poc/mcp-agent-use-case-report.json`.
 
 Start the MCP server for an external agent:
 
@@ -155,6 +194,12 @@ flowchart LR
   I --> J["Agent Tool API"]
   I --> K["React Workbench"]
   H --> L["Discovery Agent"]
+  J --> M["Business Action Router"]
+  M --> N["Source Writeback Gateway"]
+  N --> O["Source systems"]
+  O --> P["Reflection Engine"]
+  P --> H
+  P --> I
 ```
 
 ## Adapter Strategy
@@ -171,6 +216,9 @@ The MVP is embedded by default and pluggable by design:
 | Parsing | Text/Markdown/HTML parsers | Docling, Apache Tika, Unstructured |
 | LLM extraction | Deterministic extractor, local Hugging Face MLX PoC | OpenAI-compatible, local Ollama, Anthropic-compatible adapters |
 | Agent access | REST tool endpoints | MCP server, GraphQL, SDKs |
+| Business action routing | Semantic action planner | LangGraph, Temporal, workflow engines |
+| Source writeback | Local source records | OpenMetadata, DataHub, GitHub PRs, Jira, ServiceNow, DB comments |
+| Reflection | Immediate source-record readback | CDC, webhooks, catalog harvesters, OpenLineage events |
 
 ## Repository Layout
 

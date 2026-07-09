@@ -15,7 +15,7 @@ describe("Semantic Junkyard MCP server", () => {
     try {
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name)).toEqual(
-        expect.arrayContaining(["semantic_search", "entity_lookup", "expand_context", "get_evidence", "run_discovery"])
+        expect.arrayContaining(["semantic_search", "entity_lookup", "expand_context", "get_evidence", "run_discovery", "business_action_plan", "business_action_execute"])
       );
 
       const search = await client.callTool({
@@ -25,6 +25,21 @@ describe("Semantic Junkyard MCP server", () => {
       const searchContent = search.structuredContent as { results: Array<{ chunkId: string; sourceName: string }> };
       expect(searchContent.results.length).toBeGreaterThan(0);
       expect(searchContent.results[0]?.sourceName).toBeTruthy();
+
+      const plan = await client.callTool({
+        name: "business_action_plan",
+        arguments: { intent: "Align Failed Payment Rate definition across Finance and Billing", mode: "autonomous", maxAutonomousRisk: "medium" }
+      });
+      const planContent = plan.structuredContent as { targets: Array<{ systemName: string }> };
+      expect(planContent.targets.map((target) => target.systemName)).toContain("Data Catalog");
+
+      const run = await client.callTool({
+        name: "business_action_execute",
+        arguments: { intent: "Align Failed Payment Rate definition across Finance and Billing", mode: "autonomous", maxAutonomousRisk: "medium" }
+      });
+      const runContent = run.structuredContent as { status: string; reflections: Array<{ status: string }> };
+      expect(runContent.status).toBe("verified");
+      expect(runContent.reflections.every((reflection) => reflection.status === "verified")).toBe(true);
 
       const manifest = await client.readResource({ uri: "semantic-junkyard://manifest" });
       const manifestContent = manifest.contents[0];

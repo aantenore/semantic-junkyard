@@ -19,6 +19,13 @@ export interface PocAgentReport {
   model: string;
   autonomyDecision: string;
   steps: PocAgentStep[];
+  businessAction: {
+    intent: string;
+    status: string;
+    writes: number;
+    verifiedReflections: number;
+    semanticChunksRefreshed: number;
+  };
   finalAnswer: string;
   modelReasoningSummary: string;
   citations: Array<{
@@ -37,7 +44,7 @@ export interface RunPocOptions {
 }
 
 const useCaseQuestion =
-  "Can an autonomous AI agent answer which governed finance context should be used for failed payment analysis, and what is it allowed to do?";
+  "Can an autonomous AI agent answer which governed finance context should be used for failed payment analysis, and can it perform a business writeback that reflects into source systems?";
 
 export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise<PocAgentReport> {
   const db = openMemoryDatabase();
@@ -94,6 +101,43 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
     observation: `${contextPack.evidence.length} evidence spans assembled.`
   });
 
+  const businessIntent = "Align Failed Payment Rate definition across Finance and Billing, then reflect it in source systems.";
+  const actionPlan = engine.planBusinessAction({
+    intent: businessIntent,
+    mode: "autonomous",
+    maxAutonomousRisk: "medium"
+  });
+  steps.push({
+    step: 6,
+    tool: "business_action_plan",
+    rationale: "Translate a business request into target source systems, diffs, evidence, risk, and autonomy before writing.",
+    observation: `${actionPlan.targets.length} write targets planned: ${actionPlan.targets.map((target) => target.systemName).join(", ")}.`
+  });
+
+  const actionRun = engine.executeBusinessAction({
+    intent: businessIntent,
+    mode: "autonomous",
+    maxAutonomousRisk: "medium"
+  });
+  steps.push({
+    step: 7,
+    tool: "business_action_execute",
+    rationale: "Execute only through the writeback gateway, reread source records, and refresh the semantic read model from reflection evidence.",
+    observation: `${actionRun.writes.length} source writes executed; ${actionRun.reflections.filter((reflection) => reflection.status === "verified").length} reflections verified; status ${actionRun.status}.`
+  });
+
+  const reflectedSearch = engine.search({
+    query: "Business Action Reflection source systems Failed Payment Rate",
+    topK: 3,
+    mode: "hybrid"
+  });
+  steps.push({
+    step: 8,
+    tool: "semantic_search",
+    rationale: "Confirm the reflected source state is now visible through the semantic read model.",
+    observation: `${reflectedSearch.length} reflected evidence candidates returned.`
+  });
+
   const citations = contextPack.evidence.slice(0, 4).map((item) => ({
     sourceName: item?.sourceName ?? "unknown",
     chunkId: item?.chunkId ?? "unknown",
@@ -101,9 +145,9 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
   }));
 
   const deterministicAnswer = [
-    "Yes. The agent can autonomously answer this read-only discovery question because the capability manifest allows semantic search, entity lookup, bounded graph traversal, context expansion, and evidence opening.",
+    "Yes. The agent can autonomously answer this governed discovery and business-action question because the capability manifest allows semantic search, entity lookup, bounded graph traversal, context expansion, evidence opening, business action planning, and policy-governed writeback.",
     "For failed payment analysis, the governed finance context is the Finance Semantic Contract plus the Billing Pipeline and Revenue Mart lineage. The local catalog also defines Failed Payment Rate as a governed metric with dimensions such as payment provider, plan, and retry policy.",
-    "The agent may discover and cite metadata, graph relationships, metric definitions, policies, and source spans. It may not mutate source systems, execute generated SQL, expose secrets, bypass masking, or access restricted raw customer payloads without an approval-gated adapter."
+    "The agent may discover and cite metadata, graph relationships, metric definitions, policies, and source spans. It may also execute configured low/medium-risk business writebacks through the source writeback gateway, but completion is only valid after source reflection verifies the changed records and the semantic read model is refreshed. It may not execute generated SQL, expose secrets, bypass masking, mutate restricted production data, or perform destructive changes without approval."
   ].join(" ");
 
   const modelResult = maybeGenerateWithLocalModel(options.provider, options.allowModelFallback ?? true, citations);
@@ -119,6 +163,13 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
     model: modelResult.model,
     autonomyDecision: permissionCheck.decision,
     steps,
+    businessAction: {
+      intent: businessIntent,
+      status: actionRun.status,
+      writes: actionRun.writes.length,
+      verifiedReflections: actionRun.reflections.filter((reflection) => reflection.status === "verified").length,
+      semanticChunksRefreshed: actionRun.semanticUpdates.reduce((total, update) => total + update.chunkIds.length, 0)
+    },
     finalAnswer,
     modelReasoningSummary: modelResult.text,
     citations,
@@ -143,7 +194,7 @@ function maybeGenerateWithLocalModel(
     return {
       provider: "deterministic-local-agent-loop",
       model: "deterministic-rules",
-      text: "Deterministic planner selected safe read-only tools and evidence-backed context."
+      text: "Deterministic planner selected evidence-backed discovery tools, policy-governed writeback, and source reflection."
     };
   }
 
@@ -156,7 +207,7 @@ function maybeGenerateWithLocalModel(
         "Return a concise operational reasoning summary in two bullet points.",
         "Use only the provided evidence. Do not introduce source names, facts, actions, or systems that are absent from the evidence.",
         "Do not repeat sentences.",
-        "Question: Which governed finance context should be used for failed payment analysis, and what is the agent allowed to do?",
+        "Question: Which governed finance context should be used for failed payment analysis, and how can the agent execute a reflected business writeback?",
         "Evidence:",
         evidence
       ].join("\n"),

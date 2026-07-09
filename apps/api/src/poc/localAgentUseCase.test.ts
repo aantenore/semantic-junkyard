@@ -10,17 +10,23 @@ describe("local autonomous agent PoC", () => {
 
     expect(report.provider).toBe("deterministic-local-agent-loop");
     expect(report.model).toBe("deterministic-rules");
-    expect(report.autonomyDecision).toContain("read-only autonomous access");
+    expect(report.autonomyDecision).toContain("business-action planning");
     expect(report.steps.map((step) => step.tool)).toEqual([
       "explain_permissions",
       "semantic_search",
       "entity_lookup",
       "graph_neighbors",
-      "expand_context"
+      "expand_context",
+      "business_action_plan",
+      "business_action_execute",
+      "semantic_search"
     ]);
+    expect(report.businessAction.status).toBe("verified");
+    expect(report.businessAction.writes).toBeGreaterThan(0);
+    expect(report.businessAction.verifiedReflections).toBe(report.businessAction.writes);
     expect(report.citations.length).toBeGreaterThan(0);
     expect(report.finalAnswer).toMatch(/Finance Semantic Contract/);
-    expect(report.finalAnswer).toMatch(/may not mutate source systems/);
+    expect(report.finalAnswer).toMatch(/source writeback gateway/);
     expect(report.modelReasoningSummary).toContain("Deterministic planner");
     expect(report.stopConditionsChecked.length).toBeGreaterThan(0);
   });
@@ -31,7 +37,8 @@ describe("local autonomous agent PoC", () => {
     const saved = JSON.parse(fs.readFileSync(outputPath, "utf8")) as typeof report;
 
     expect(saved.useCase).toBe(report.useCase);
-    expect(saved.steps.length).toBe(5);
+    expect(saved.steps.length).toBe(8);
+    expect(saved.businessAction.status).toBe("verified");
     expect(saved.citations[0]?.chunkId).toBeTruthy();
   });
 });

@@ -83,6 +83,50 @@ Local default: ABAC-style rules with allow, mask, deny, and review outcomes.
 
 External options: OPA, Apache Ranger, OpenFGA, custom PDP.
 
+## Business Action Router Adapter
+
+Purpose: translate business intent into an executable, evidence-backed source-system plan.
+
+Required operations:
+
+- `listBusinessActions(actor, scope)`
+- `planBusinessAction(intent, context) -> BusinessActionPlan`
+- `classifyRisk(plan) -> low|medium|high|blocked`
+- `explainTargetSelection(plan)`
+
+The router should reason in business capabilities such as `metric.align_definition`, `lineage.publish_dependency`, `contract.propose_change`, and `governance.request_owner_review`. It should not expose raw connector calls as the primary user-facing interface.
+
+## Source Writeback Gateway Adapter
+
+Purpose: write the planned action to the source system that owns the business object.
+
+Required operations:
+
+- `capabilities(system) -> SourceSystemCapability[]`
+- `dryRun(target) -> diff`
+- `execute(target, approvalContext) -> SourceWrite`
+- `rollbackHint(write) -> text`
+- `readBack(write) -> SourceSystemRecord`
+
+Each capability declares risk, autonomy, reversibility, technical operation, and whether approval is required. Autonomous writes are allowed only when policy, source capability, evidence, and risk thresholds agree.
+
+Local default: source records persisted in SQLite for Data Catalog, OpenMetadata-style lineage, dbt PR proposals, and governance ticketing.
+
+Production options: OpenMetadata/DataHub API updates, GitHub/GitLab PR creation, Jira/ServiceNow ticket creation, PostgreSQL comments, dbt semantic model files, BI annotations, or application APIs.
+
+## Reflection Adapter
+
+Purpose: prove that a source write became visible from the source system and update the semantic read model from that source truth.
+
+Required operations:
+
+- `reflect(write) -> ReflectionResult`
+- `detectDrift(expected, observed)`
+- `buildReflectionEvidence(reflections)`
+- `refreshReadModel(reflectionEvidence)`
+
+A write is complete only after reflection verifies it. If reread fails or differs from the expected diff, the action status must become `missing` or `drift` rather than `verified`.
+
 ## Agent Protocol Adapter
 
 Purpose: expose the semantic layer to agents in controlled ways.
@@ -95,6 +139,7 @@ Current interfaces:
 - MCP capability snapshot at `/api/mcp/capabilities`
 - MCP stdio server in `apps/mcp`
 - Agent capability manifest at `/api/agent/manifest`
+- Business action planning and execution endpoints at `/api/business/actions/*`
 
 Future interfaces:
 

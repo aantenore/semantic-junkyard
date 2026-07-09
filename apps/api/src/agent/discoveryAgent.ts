@@ -72,7 +72,7 @@ export class DiscoveryAgent {
       version: "0.1.0",
       modelAgnostic: true,
       autonomyBoundary:
-        "Agents may autonomously read metadata, search indexed content, traverse approved graph neighborhoods, and assemble evidence. Mutating source systems, changing policies, deleting data, or executing generated SQL requires a separate approval-gated adapter.",
+        "Agents may autonomously read metadata, search indexed content, traverse approved graph neighborhoods, assemble evidence, and plan business actions. Configured low/medium-risk source writes may execute through the policy-governed writeback gateway and must be verified by source reflection. Privileged, destructive, access-policy, secret, or production-data mutations require approval or are blocked.",
       capabilities: [
         {
           name: "semantic_search",
@@ -115,6 +115,20 @@ export class DiscoveryAgent {
           inputSchema: { intent: "string" },
           risk: "read-only",
           evidenceRequired: false
+        },
+        {
+          name: "business_action_plan",
+          description: "Resolve a business intent into target source systems, diffs, evidence, autonomy, and risk before writing.",
+          inputSchema: { intent: "string", mode: "autonomous|approval_required|dry_run", maxAutonomousRisk: "low|medium|high" },
+          risk: "read-only",
+          evidenceRequired: true
+        },
+        {
+          name: "business_action_execute",
+          description: "Execute a policy-governed business action through source writeback, reread source systems, and reflect verified updates into the semantic layer.",
+          inputSchema: { intent: "string", mode: "autonomous|approval_required|dry_run", approved: "boolean", maxAutonomousRisk: "low|medium|high" },
+          risk: "review-required",
+          evidenceRequired: true
         }
       ],
       operatingRules: [
@@ -122,13 +136,14 @@ export class DiscoveryAgent {
         "Prefer governed metadata and semantic contracts over raw table names.",
         "Never answer from a chunk, entity, relation, metric, or claim without evidence.",
         "Check policy, quality, freshness, owner, and sensitivity before recommending an action.",
-        "For undefined problems, first run discovery, then select the smallest safe read-only tools, then assemble evidence.",
-        "Generated SQL, policy updates, source writes, and destructive actions are outside autonomous scope."
+        "For undefined problems, first run discovery, then select the smallest safe tool set, then assemble evidence.",
+        "Generated SQL, policy updates, direct source writes, and destructive actions are outside autonomous scope.",
+        "Never claim an action is complete until source reflection verifies the updated source record and the semantic read model is refreshed."
       ],
       stopConditions: [
         "No authorized evidence can support the answer.",
         "Candidate assets are stale, restricted, or below quality threshold.",
-        "The task requires mutation, external communication, deletion, or privileged access.",
+        "The task requires direct source mutation, external communication, deletion, privileged access, or a write outside configured capabilities.",
         "Graph paths contradict source evidence or confidence is too low."
       ]
     };

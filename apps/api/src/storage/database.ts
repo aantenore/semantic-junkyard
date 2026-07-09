@@ -182,6 +182,33 @@ function migrate(db: Database.Database): void {
       metadata TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS source_system_records (
+      id TEXT PRIMARY KEY,
+      system_id TEXT NOT NULL,
+      system_name TEXT NOT NULL,
+      object_type TEXT NOT NULL,
+      object_key TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(system_id, object_type, object_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS business_action_runs (
+      id TEXT PRIMARY KEY,
+      intent TEXT NOT NULL,
+      action_type TEXT NOT NULL,
+      status TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      risk TEXT NOT NULL,
+      plan TEXT NOT NULL,
+      writes TEXT NOT NULL,
+      reflections TEXT NOT NULL,
+      semantic_updates TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS audit_log (
       id TEXT PRIMARY KEY,
       actor TEXT NOT NULL,
@@ -199,6 +226,8 @@ function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_assets_domain ON semantic_assets(domain);
     CREATE INDEX IF NOT EXISTS idx_lineage_from ON lineage_edges(from_asset_id);
     CREATE INDEX IF NOT EXISTS idx_lineage_to ON lineage_edges(to_asset_id);
+    CREATE INDEX IF NOT EXISTS idx_source_records_system ON source_system_records(system_id);
+    CREATE INDEX IF NOT EXISTS idx_business_action_runs_created ON business_action_runs(created_at);
   `);
 
   const columns = db.prepare("PRAGMA table_info(sources)").all() as Array<{ name: string }>;

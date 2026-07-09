@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const ModuleKindSchema = z.enum([
+  "business-action-router",
   "connector",
   "parser",
   "chunker",
@@ -20,6 +21,8 @@ export const ModuleKindSchema = z.enum([
   "query-planner",
   "agent-tool",
   "agent-protocol",
+  "writeback-gateway",
+  "reflection-engine",
   "observability"
 ]);
 
@@ -286,6 +289,162 @@ export const CuratedRelationResponseSchema = z.object({
 });
 
 export type CuratedRelationResponse = z.infer<typeof CuratedRelationResponseSchema>;
+
+export const BusinessActionRiskSchema = z.enum(["low", "medium", "high", "blocked"]);
+export type BusinessActionRisk = z.infer<typeof BusinessActionRiskSchema>;
+
+export const BusinessActionModeSchema = z.enum(["autonomous", "approval_required", "dry_run"]).default("autonomous");
+export type BusinessActionMode = z.infer<typeof BusinessActionModeSchema>;
+
+export const BusinessActionStatusSchema = z.enum(["planned", "approval_required", "executed", "reflected", "verified", "failed", "blocked"]);
+export type BusinessActionStatus = z.infer<typeof BusinessActionStatusSchema>;
+
+export const SourceSystemCapabilitySchema = z.object({
+  id: z.string(),
+  systemId: z.string(),
+  label: z.string(),
+  businessCapability: z.string(),
+  technicalOperation: z.string(),
+  risk: BusinessActionRiskSchema,
+  autonomous: z.boolean(),
+  requiresApproval: z.boolean(),
+  reversible: z.boolean(),
+  description: z.string()
+});
+
+export type SourceSystemCapability = z.infer<typeof SourceSystemCapabilitySchema>;
+
+export const SourceSystemSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  kind: z.enum(["catalog", "git", "metadata-api", "ticketing", "database", "application", "local"]),
+  description: z.string(),
+  capabilities: z.array(SourceSystemCapabilitySchema)
+});
+
+export type SourceSystem = z.infer<typeof SourceSystemSchema>;
+
+export const SourceSystemRecordSchema = z.object({
+  id: z.string(),
+  systemId: z.string(),
+  systemName: z.string(),
+  objectType: z.string(),
+  objectKey: z.string(),
+  payload: z.record(z.string(), z.unknown()),
+  version: z.number().int().positive(),
+  updatedAt: z.string()
+});
+
+export type SourceSystemRecord = z.infer<typeof SourceSystemRecordSchema>;
+
+export const BusinessActionRequestSchema = z.object({
+  intent: z.string().min(1),
+  mode: BusinessActionModeSchema,
+  approved: z.boolean().default(false),
+  actor: z.string().default("business-user"),
+  maxAutonomousRisk: z.enum(["low", "medium", "high"]).default("medium"),
+  context: z.record(z.string(), z.unknown()).default({})
+});
+
+export type BusinessActionRequest = z.infer<typeof BusinessActionRequestSchema>;
+
+export const BusinessActionDiffSchema = z.object({
+  summary: z.string(),
+  before: z.string().nullable(),
+  after: z.string()
+});
+
+export type BusinessActionDiff = z.infer<typeof BusinessActionDiffSchema>;
+
+export const BusinessActionTargetSchema = z.object({
+  stepId: z.string(),
+  systemId: z.string(),
+  systemName: z.string(),
+  capability: z.string(),
+  technicalOperation: z.string(),
+  objectType: z.string(),
+  objectKey: z.string(),
+  risk: BusinessActionRiskSchema,
+  autonomy: z.enum(["autonomous", "approval_required", "blocked"]),
+  status: BusinessActionStatusSchema,
+  rationale: z.string(),
+  evidenceChunkIds: z.array(z.string()).default([]),
+  diff: BusinessActionDiffSchema
+});
+
+export type BusinessActionTarget = z.infer<typeof BusinessActionTargetSchema>;
+
+export const BusinessActionPlanSchema = z.object({
+  id: z.string(),
+  intent: z.string(),
+  actionType: z.string(),
+  title: z.string(),
+  summary: z.string(),
+  mode: BusinessActionModeSchema,
+  risk: BusinessActionRiskSchema,
+  status: BusinessActionStatusSchema,
+  targets: z.array(BusinessActionTargetSchema),
+  warnings: z.array(z.string()).default([]),
+  createdAt: z.string()
+});
+
+export type BusinessActionPlan = z.infer<typeof BusinessActionPlanSchema>;
+
+export const SourceWriteSchema = z.object({
+  id: z.string(),
+  planId: z.string(),
+  stepId: z.string(),
+  systemId: z.string(),
+  systemName: z.string(),
+  objectType: z.string(),
+  objectKey: z.string(),
+  operation: z.string(),
+  status: z.enum(["executed", "skipped", "failed"]),
+  dryRun: z.boolean(),
+  payload: z.record(z.string(), z.unknown()),
+  createdAt: z.string()
+});
+
+export type SourceWrite = z.infer<typeof SourceWriteSchema>;
+
+export const ReflectionResultSchema = z.object({
+  id: z.string(),
+  writeId: z.string(),
+  sourceRecordId: z.string().nullable(),
+  status: z.enum(["verified", "missing", "drift"]),
+  summary: z.string(),
+  evidenceChunkId: z.string().nullable(),
+  observedAt: z.string()
+});
+
+export type ReflectionResult = z.infer<typeof ReflectionResultSchema>;
+
+export const SemanticUpdateSchema = z.object({
+  sourceId: z.string().nullable(),
+  chunkIds: z.array(z.string()).default([]),
+  entityIds: z.array(z.string()).default([]),
+  relationIds: z.array(z.string()).default([]),
+  searchQuery: z.string()
+});
+
+export type SemanticUpdate = z.infer<typeof SemanticUpdateSchema>;
+
+export const BusinessActionRunSchema = z.object({
+  id: z.string(),
+  intent: z.string(),
+  actionType: z.string(),
+  status: BusinessActionStatusSchema,
+  mode: BusinessActionModeSchema,
+  risk: BusinessActionRiskSchema,
+  plan: BusinessActionPlanSchema,
+  writes: z.array(SourceWriteSchema),
+  reflections: z.array(ReflectionResultSchema),
+  semanticUpdates: z.array(SemanticUpdateSchema),
+  createdAt: z.string(),
+  completedAt: z.string().nullable()
+});
+
+export type BusinessActionRun = z.infer<typeof BusinessActionRunSchema>;
 
 export const SemanticAssetSchema = z.object({
   id: z.string(),

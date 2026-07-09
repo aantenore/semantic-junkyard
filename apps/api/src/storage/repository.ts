@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type {
+  BusinessActionRun,
   CatalogSnapshot,
   Chunk,
   Claim,
@@ -20,6 +21,7 @@ import type {
   SemanticAsset,
   SemanticContract,
   SourceArtifact,
+  SourceSystemRecord,
   SystemStatus
 } from "@semantic-junkyard/shared";
 import { nanoid } from "nanoid";
@@ -68,6 +70,32 @@ interface RelationRow {
   confidence: number;
   evidence_chunk_id: string;
   metadata: string;
+}
+
+interface SourceSystemRecordRow {
+  id: string;
+  system_id: string;
+  system_name: string;
+  object_type: string;
+  object_key: string;
+  payload: string;
+  version: number;
+  updated_at: string;
+}
+
+interface BusinessActionRunRow {
+  id: string;
+  intent: string;
+  action_type: string;
+  status: BusinessActionRun["status"];
+  mode: BusinessActionRun["mode"];
+  risk: BusinessActionRun["risk"];
+  plan: string;
+  writes: string;
+  reflections: string;
+  semantic_updates: string;
+  created_at: string;
+  completed_at: string | null;
 }
 
 export class SemanticRepository {
@@ -546,6 +574,87 @@ export class SemanticRepository {
     return { assets, metrics, policies, lineage, contracts, ontologyClasses };
   }
 
+  saveSourceSystemRecord(record: Omit<SourceSystemRecord, "version"> & { version?: number }): SourceSystemRecord {
+    const existing = this.db
+      .prepare("SELECT * FROM source_system_records WHERE system_id = ? AND object_type = ? AND object_key = ?")
+      .get(record.systemId, record.objectType, record.objectKey) as SourceSystemRecordRow | undefined;
+    const next: SourceSystemRecord = {
+      ...record,
+      id: existing?.id ?? record.id,
+      version: record.version ?? (existing?.version ?? 0) + 1
+    };
+    this.db
+      .prepare(
+        `INSERT INTO source_system_records
+         (id, system_id, system_name, object_type, object_key, payload, version, updated_at)
+         VALUES (@id, @systemId, @systemName, @objectType, @objectKey, @payload, @version, @updatedAt)
+         ON CONFLICT(system_id, object_type, object_key) DO UPDATE SET
+           system_name=excluded.system_name,
+           payload=excluded.payload,
+           version=excluded.version,
+           updated_at=excluded.updated_at`
+      )
+      .run({ ...next, payload: encodeJson(next.payload) });
+    return next;
+  }
+
+  getSourceSystemRecord(systemId: string, objectType: string, objectKey: string): SourceSystemRecord | null {
+    const row = this.db
+      .prepare("SELECT * FROM source_system_records WHERE system_id = ? AND object_type = ? AND object_key = ?")
+      .get(systemId, objectType, objectKey) as SourceSystemRecordRow | undefined;
+    return row ? this.toSourceSystemRecord(row) : null;
+  }
+
+  listSourceSystemRecords(limit = 40): SourceSystemRecord[] {
+    const rows = this.db
+      .prepare("SELECT * FROM source_system_records ORDER BY updated_at DESC LIMIT ?")
+      .all(limit) as SourceSystemRecordRow[];
+    return rows.map((row) => this.toSourceSystemRecord(row));
+  }
+
+  saveBusinessActionRun(run: BusinessActionRun): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO business_action_runs
+         (id, intent, action_type, status, mode, risk, plan, writes, reflections, semantic_updates, created_at, completed_at)
+         VALUES (@id, @intent, @actionType, @status, @mode, @risk, @plan, @writes, @reflections, @semanticUpdates, @createdAt, @completedAt)`
+      )
+      .run({
+        id: run.id,
+        intent: run.intent,
+        actionType: run.actionType,
+        status: run.status,
+        mode: run.mode,
+        risk: run.risk,
+        plan: encodeJson(run.plan),
+        writes: encodeJson(run.writes),
+        reflections: encodeJson(run.reflections),
+        semanticUpdates: encodeJson(run.semanticUpdates),
+        createdAt: run.createdAt,
+        completedAt: run.completedAt
+      });
+  }
+
+  listBusinessActionRuns(limit = 12): BusinessActionRun[] {
+    const rows = this.db
+      .prepare("SELECT * FROM business_action_runs ORDER BY created_at DESC LIMIT ?")
+      .all(limit) as BusinessActionRunRow[];
+    return rows.map((row) => ({
+      id: row.id,
+      intent: row.intent,
+      actionType: row.action_type,
+      status: row.status,
+      mode: row.mode,
+      risk: row.risk,
+      plan: decodeJson<BusinessActionRun["plan"]>(row.plan, {} as BusinessActionRun["plan"]),
+      writes: decodeJson<BusinessActionRun["writes"]>(row.writes, []),
+      reflections: decodeJson<BusinessActionRun["reflections"]>(row.reflections, []),
+      semanticUpdates: decodeJson<BusinessActionRun["semanticUpdates"]>(row.semantic_updates, []),
+      createdAt: row.created_at,
+      completedAt: row.completed_at
+    }));
+  }
+
   status(): SystemStatus {
     const count = (table: string) => (this.db.prepare(`SELECT COUNT(*) AS total FROM ${table}`).get() as { total: number }).total;
     return {
@@ -566,5 +675,18 @@ export class SemanticRepository {
     this.db
       .prepare("INSERT INTO audit_log (id, actor, action, target, decision, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run(`audit_${nanoid(12)}`, actor, action, target, decision, encodeJson(metadata), nowIso());
+  }
+
+  private toSourceSystemRecord(row: SourceSystemRecordRow): SourceSystemRecord {
+    return {
+      id: row.id,
+      systemId: row.system_id,
+      systemName: row.system_name,
+      objectType: row.object_type,
+      objectKey: row.object_key,
+      payload: decodeJson(row.payload, {}),
+      version: row.version,
+      updatedAt: row.updated_at
+    };
   }
 }

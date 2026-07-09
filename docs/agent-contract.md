@@ -16,9 +16,9 @@ Semantic Junkyard is designed so an agent placed above it can understand what it
 - Operating rules.
 - Stop conditions.
 
-## Safe Tool Set
+## Tool Set
 
-Current read-only tools:
+Read and discovery tools:
 
 - `semantic_search`
 - `entity_lookup`
@@ -27,6 +27,11 @@ Current read-only tools:
 - `expand_context`
 - `explain_permissions`
 - `open_source_span` via `/api/evidence/:chunkId`
+
+Business action tools:
+
+- `business_action_plan`: read-only planning that resolves business intent into source targets, diffs, evidence, risk, and autonomy.
+- `business_action_execute`: policy-governed writeback that executes only through configured source-system capabilities and requires reflection before completion.
 
 ## Agent Procedure For Undefined Problems
 
@@ -37,18 +42,22 @@ Current read-only tools:
 5. Use `expand_context` to assemble evidence.
 6. Check freshness, quality, sensitivity, policy, owner, lineage, and contract version.
 7. Answer only with evidence.
-8. Stop if the task requires mutation, restricted data, secrets, unsupported source access, or insufficient evidence.
+8. If the user asks for an action, call `business_action_plan` and inspect target systems, diffs, autonomy, and risk.
+9. Execute only if policy allows the requested autonomy level or approval is present.
+10. Reread source systems through reflection and treat the action as complete only after the semantic read model refreshes from reflected evidence.
+11. Stop if the task requires restricted data, secrets, unsupported source access, destructive mutation, or insufficient evidence.
 
-## Explicit Non-Autonomous Actions
+## Explicit Approval-Gated Or Blocked Actions
 
-These are intentionally outside autonomous scope in the MVP:
+These are intentionally outside direct autonomous scope:
 
-- Applying schema, metric, policy, or ontology changes.
+- Applying physical schema changes.
+- Changing access policies.
+- Lowering data sensitivity classifications.
 - Executing generated SQL on external systems.
-- Sending messages or creating tickets.
+- Sending unapproved external communications.
 - Deleting or overwriting source data.
 - Re-identifying masked data.
 - Modifying access control.
 
-Adapters may implement these later, but they must be approval-gated and audited.
-
+Low/medium-risk writes such as catalog descriptions, reversible lineage metadata, dbt PR proposals, and owner review tickets can run autonomously only when the source-system capability, policy, evidence, and risk threshold allow it. Every write must be audited and reflected back from the source.
