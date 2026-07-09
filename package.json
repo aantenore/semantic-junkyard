@@ -8,14 +8,17 @@
   "workspaces": [
     "apps/api",
     "apps/mcp",
+    "apps/poc",
     "apps/web",
     "packages/shared"
   ],
   "scripts": {
-    "dev": "npm run build -w packages/shared && concurrently -k -n API,WEB -c cyan,green \"npm run dev -w apps/api\" \"npm run dev -w apps/web\"",
-    "build": "npm run build -w packages/shared && npm run build -w apps/api && npm run build -w apps/mcp && npm run build -w apps/web",
+    "dev": "npm run build -w packages/shared && concurrently -k -n API,WEB,POC -c cyan,green,magenta \"npm run dev -w apps/api\" \"npm run dev -w apps/web\" \"npm run dev -w apps/poc\"",
+    "dev:product": "npm run build -w packages/shared && concurrently -k -n API,WEB -c cyan,green \"npm run dev -w apps/api\" \"npm run dev -w apps/web\"",
+    "dev:poc": "npm run build -w packages/shared && concurrently -k -n API,POC -c cyan,magenta \"npm run dev -w apps/api\" \"npm run dev -w apps/poc\"",
+    "build": "npm run build -w packages/shared && npm run build -w apps/api && npm run build -w apps/mcp && npm run build -w apps/web && npm run build -w apps/poc",
     "test": "npm run build -w packages/shared && npm run build -w apps/api && npm run test -w apps/api && npm run test -w apps/mcp",
-    "typecheck": "npm run build -w packages/shared && npm run build -w apps/api && npm run typecheck -w apps/api && npm run typecheck -w apps/mcp && npm run typecheck -w apps/web",
+    "typecheck": "npm run build -w packages/shared && npm run build -w apps/api && npm run typecheck -w apps/api && npm run typecheck -w apps/mcp && npm run typecheck -w apps/web && npm run typecheck -w apps/poc",
     "lint": "npm run typecheck",
     "mcp": "npm run start -w apps/mcp",
     "mcp:build": "npm run build -w apps/mcp",

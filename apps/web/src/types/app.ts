@@ -45,35 +45,6 @@ export interface SearchEnvelope {
   results: SearchResult[];
 }
 
-export interface PocAgentReport {
-  useCase: string;
-  question: string;
-  provider: string;
-  model: string;
-  autonomyDecision: string;
-  businessAction: {
-    intent: string;
-    status: string;
-    writes: number;
-    verifiedReflections: number;
-    semanticChunksRefreshed: number;
-  };
-  steps: Array<{
-    step: number;
-    tool: string;
-    rationale: string;
-    observation: string;
-  }>;
-  finalAnswer: string;
-  modelReasoningSummary: string;
-  citations: Array<{
-    sourceName: string;
-    chunkId: string;
-    excerpt: string;
-  }>;
-  stopConditionsChecked: string[];
-}
-
 export interface IngestPreviewReport {
   profile: {
     mode: "full_data" | "metadata_only" | "external_reference";
