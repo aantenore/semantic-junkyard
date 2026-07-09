@@ -1,4 +1,4 @@
-import type { AppSnapshot, PocAgentReport, SearchEnvelope } from "../types/app";
+import type { AppSnapshot, CuratedRelationReport, IngestPreviewReport, PocAgentReport, SearchEnvelope } from "../types/app";
 import type { CatalogSnapshot, DiscoveryRun, GraphSnapshot, IngestResponse, ProviderConfig, SystemStatus } from "@semantic-junkyard/shared";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
@@ -33,6 +33,20 @@ export async function loadSnapshot(): Promise<AppSnapshot> {
 
 export async function ingestText(input: { name: string; text: string; mimeType: string; ingestionMode: "full_data" | "metadata_only" | "external_reference" }) {
   return request<IngestResponse>("/api/ingest", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function previewIngest(input: { name: string; text: string; mimeType: string; ingestionMode: "full_data" | "metadata_only" | "external_reference" }) {
+  return request<IngestPreviewReport>("/api/ingest/preview", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function curateRelation(input: { sourceName: string; sourceType: string; targetName: string; targetType: string; relationType: string; rationale?: string }) {
+  return request<CuratedRelationReport>("/api/semantic/relations", {
     method: "POST",
     body: JSON.stringify(input)
   });

@@ -10,6 +10,8 @@ export const openApiDocument = {
     "/api/catalog": { get: { summary: "Get semantic assets, metrics, policies, lineage, ontology, and contracts" } },
     "/api/catalog/import": { post: { summary: "Import a semantic catalog snapshot" } },
     "/api/ingest": { post: { summary: "Ingest unstructured text into the semantic fabric" } },
+    "/api/ingest/preview": { post: { summary: "Preview chunks, entities, relations, claims, and warnings before persisting ingestion" } },
+    "/api/semantic/relations": { post: { summary: "Curate an authoritative semantic relation between two concepts with evidence" } },
     "/api/discovery/run": { post: { summary: "Run the discovery agent over current corpus and catalog" } },
     "/api/discovery/runs": { get: { summary: "List recent discovery runs" } },
     "/api/graph": { get: { summary: "Get graph snapshot" } },
@@ -22,6 +24,7 @@ export const openApiDocument = {
     "/api/tools/expand_context": { post: { summary: "Build a citation-ready evidence pack" } },
     "/api/tools/explain_permissions": { post: { summary: "Explain allowed and disallowed actions for an intent" } },
     "/api/evidence/{chunkId}": { get: { summary: "Open a source-spanned evidence chunk" } },
-    "/api/mcp/tools": { get: { summary: "List MCP-style tool descriptors" } }
+    "/api/mcp/tools": { get: { summary: "List MCP-style tool descriptors" } },
+    "/api/mcp/capabilities": { get: { summary: "List MCP server tools, resources, prompts, and command metadata" } }
   }
 };

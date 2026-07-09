@@ -60,6 +60,54 @@ export interface PocAgentReport {
   stopConditionsChecked: string[];
 }
 
+export interface IngestPreviewReport {
+  profile: {
+    mode: "full_data" | "metadata_only" | "external_reference";
+    mimeType: string;
+    chunkCount: number;
+    entityCount: number;
+    relationCount: number;
+    claimCount: number;
+    warnings: string[];
+  };
+  entities: Array<{
+    id: string;
+    canonicalName: string;
+    type: string;
+    confidence: number;
+  }>;
+  relations: Array<{
+    id: string;
+    type: string;
+    confidence: number;
+    sourceEntityId: string;
+    targetEntityId: string;
+  }>;
+}
+
+export interface CuratedRelationReport {
+  relation: {
+    id: string;
+    type: string;
+    confidence: number;
+  };
+  sourceEntity: {
+    id: string;
+    canonicalName: string;
+    type: string;
+  };
+  targetEntity: {
+    id: string;
+    canonicalName: string;
+    type: string;
+  };
+  evidence: {
+    chunkId: string;
+    sourceName: string;
+    text: string;
+  };
+}
+
 export interface McpCapabilitySnapshot {
   server: {
     name: string;

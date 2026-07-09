@@ -212,6 +212,46 @@ export const IngestResponseSchema = z.object({
 
 export type IngestResponse = z.infer<typeof IngestResponseSchema>;
 
+export const IngestPreviewResponseSchema = IngestResponseSchema.extend({
+  elements: z.array(DocumentElementSchema),
+  profile: z.object({
+    mode: SourceArtifactSchema.shape.ingestionMode,
+    mimeType: z.string(),
+    chunkCount: z.number(),
+    entityCount: z.number(),
+    relationCount: z.number(),
+    claimCount: z.number(),
+    warnings: z.array(z.string()).default([])
+  })
+});
+
+export type IngestPreviewResponse = z.infer<typeof IngestPreviewResponseSchema>;
+
+export const CuratedEntityRequestSchema = z.object({
+  canonicalName: z.string().min(1),
+  type: z.string().min(1).default("Concept"),
+  aliases: z.array(z.string()).default([]),
+  confidence: z.number().min(0).max(1).default(1),
+  evidenceChunkIds: z.array(z.string()).default([]),
+  metadata: z.record(z.string(), z.unknown()).default({})
+});
+
+export type CuratedEntityRequest = z.infer<typeof CuratedEntityRequestSchema>;
+
+export const CuratedRelationRequestSchema = z.object({
+  sourceName: z.string().min(1),
+  sourceType: z.string().min(1).default("Concept"),
+  targetName: z.string().min(1),
+  targetType: z.string().min(1).default("Concept"),
+  relationType: z.string().min(1).default("DEPENDS_ON"),
+  confidence: z.number().min(0).max(1).default(1),
+  evidenceChunkId: z.string().optional(),
+  rationale: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).default({})
+});
+
+export type CuratedRelationRequest = z.infer<typeof CuratedRelationRequestSchema>;
+
 export const SystemStatusSchema = z.object({
   sources: z.number(),
   chunks: z.number(),
@@ -237,6 +277,15 @@ export const EvidenceSpanSchema = z.object({
 });
 
 export type EvidenceSpan = z.infer<typeof EvidenceSpanSchema>;
+
+export const CuratedRelationResponseSchema = z.object({
+  sourceEntity: EntitySchema,
+  targetEntity: EntitySchema,
+  relation: RelationSchema,
+  evidence: EvidenceSpanSchema
+});
+
+export type CuratedRelationResponse = z.infer<typeof CuratedRelationResponseSchema>;
 
 export const SemanticAssetSchema = z.object({
   id: z.string(),

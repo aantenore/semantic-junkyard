@@ -29,8 +29,8 @@ import {
 import type { SearchResult } from "@semantic-junkyard/shared";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { IconButton } from "./components/IconButton";
-import { ingestText, loadSnapshot, runDiscovery, runLocalAgentPoc, semanticSearch } from "./api/client";
-import type { AppSnapshot, PocAgentReport } from "./types/app";
+import { curateRelation, ingestText, loadSnapshot, previewIngest, runDiscovery, runLocalAgentPoc, semanticSearch } from "./api/client";
+import type { AppSnapshot, CuratedRelationReport, IngestPreviewReport, PocAgentReport } from "./types/app";
 import { starterText } from "./data/sample";
 import "./styles.css";
 
@@ -42,6 +42,12 @@ function App() {
   const [text, setText] = useState(starterText);
   const [name, setName] = useState("agent-discovery-note.md");
   const [ingestionMode, setIngestionMode] = useState<"full_data" | "metadata_only" | "external_reference">("full_data");
+  const [ingestPreview, setIngestPreview] = useState<IngestPreviewReport | null>(null);
+  const [curationSource, setCurationSource] = useState("Billing Pipeline");
+  const [curationRelation, setCurationRelation] = useState("DEPENDS_ON");
+  const [curationTarget, setCurationTarget] = useState("Revenue Mart");
+  const [curationRationale, setCurationRationale] = useState("Owner-confirmed semantic dependency.");
+  const [curatedRelation, setCuratedRelation] = useState<CuratedRelationReport | null>(null);
   const [pocReport, setPocReport] = useState<PocAgentReport | null>(null);
   const [traceProvider, setTraceProvider] = useState<"local-huggingface" | "deterministic">("local-huggingface");
   const [traceBusy, setTraceBusy] = useState(false);
@@ -101,11 +107,45 @@ function App() {
     setBusy(true);
     setError(null);
     try {
-      await ingestText({ name, text, ingestionMode, mimeType: name.endsWith(".html") ? "text/html" : name.endsWith(".md") ? "text/markdown" : "text/plain" });
+      await ingestText(ingestInput());
+      setIngestPreview(null);
       await refresh();
       await executeSearch(query, mode);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ingest failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onPreviewIngest() {
+    setBusy(true);
+    setError(null);
+    try {
+      setIngestPreview(await previewIngest(ingestInput()));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Preview failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onCurateRelation() {
+    setBusy(true);
+    setError(null);
+    try {
+      const relation = await curateRelation({
+        sourceName: curationSource,
+        sourceType: "Concept",
+        targetName: curationTarget,
+        targetType: "Concept",
+        relationType: curationRelation,
+        rationale: curationRationale
+      });
+      setCuratedRelation(relation);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Curation failed");
     } finally {
       setBusy(false);
     }
@@ -136,6 +176,15 @@ function App() {
     } finally {
       setTraceBusy(false);
     }
+  }
+
+  function ingestInput() {
+    return {
+      name,
+      text,
+      ingestionMode,
+      mimeType: name.endsWith(".html") ? "text/html" : name.endsWith(".json") ? "application/json" : name.endsWith(".md") ? "text/markdown" : "text/plain"
+    };
   }
 
   return (
@@ -238,10 +287,27 @@ function App() {
               <button>MCP/API-ready</button>
               <button>Policy: ABAC</button>
             </div>
-            <button className="primary-action" onClick={onIngest} disabled={busy || text.trim().length === 0}>
-              <Upload size={17} />
-              Ingest
-            </button>
+            <div className="ingest-actions">
+              <button className="secondary-action" onClick={onPreviewIngest} disabled={busy || text.trim().length === 0}>
+                <FileSearch size={17} />
+                Preview
+              </button>
+              <button className="primary-action" onClick={onIngest} disabled={busy || text.trim().length === 0}>
+                <Upload size={17} />
+                Ingest
+              </button>
+            </div>
+
+            {ingestPreview ? (
+              <div className="preview-card">
+                <div>
+                  <strong>Preview</strong>
+                  <span>{ingestPreview.profile.chunkCount} chunks · {ingestPreview.profile.entityCount} entities · {ingestPreview.profile.relationCount} relations</span>
+                </div>
+                <p>{ingestPreview.entities.slice(0, 4).map((entity) => entity.canonicalName).join(", ") || "No entity candidates yet"}</p>
+                {ingestPreview.profile.warnings.map((warning) => <small key={warning}>{warning}</small>)}
+              </div>
+            ) : null}
 
             <div className="module-strip compact">
               {snapshot?.status.modules.slice(0, 6).map((module) => (
@@ -329,6 +395,38 @@ function App() {
                   </div>
                 ))}
               </div>
+            </div>
+
+            <div className="curation-panel">
+              <div className="panel-subhead">
+                <h3>Semantic control</h3>
+                <span>{curatedRelation ? curatedRelation.relation.type : "manual curation"}</span>
+              </div>
+              <div className="curation-grid">
+                <label className="field compact-field">
+                  <span>Source</span>
+                  <input value={curationSource} onChange={(event) => setCurationSource(event.target.value)} />
+                </label>
+                <label className="field compact-field">
+                  <span>Relation</span>
+                  <input value={curationRelation} onChange={(event) => setCurationRelation(event.target.value.toUpperCase().replace(/\s+/g, "_"))} />
+                </label>
+                <label className="field compact-field">
+                  <span>Target</span>
+                  <input value={curationTarget} onChange={(event) => setCurationTarget(event.target.value)} />
+                </label>
+              </div>
+              <label className="field compact-field">
+                <span>Rationale</span>
+                <input value={curationRationale} onChange={(event) => setCurationRationale(event.target.value)} />
+              </label>
+              <button className="curation-button" onClick={onCurateRelation} disabled={busy || !curationSource.trim() || !curationTarget.trim()}>
+                <GitBranch size={15} />
+                Curate relation
+              </button>
+              {curatedRelation ? (
+                <p className="curation-result">{curatedRelation.sourceEntity.canonicalName} {curatedRelation.relation.type} {curatedRelation.targetEntity.canonicalName}</p>
+              ) : null}
             </div>
           </section>
 

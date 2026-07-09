@@ -92,12 +92,27 @@ Current interfaces:
 - REST API
 - OpenAPI JSON
 - MCP-style tool descriptors at `/api/mcp/tools`
+- MCP capability snapshot at `/api/mcp/capabilities`
+- MCP stdio server in `apps/mcp`
 - Agent capability manifest at `/api/agent/manifest`
 
 Future interfaces:
 
-- Real MCP server transport
 - GraphQL
 - Python and TypeScript SDKs
 - Federated context packages for distributed semantic layers
 
+## Curation Adapter
+
+Purpose: let a human or approval workflow turn candidate semantics into authoritative graph facts.
+
+Required operations:
+
+- `previewIngest(source) -> chunks, entities, relations, claims, warnings`
+- `curateRelation(source, relationType, target, evidence, rationale)`
+- `rejectRelation(relationId, rationale)` for future review queues
+- `upsertOntologyRule(rule)` for future controlled extraction
+
+Local default: `POST /api/ingest/preview` and `POST /api/semantic/relations`.
+
+Production options: approval queue, Git-backed semantic contracts, dbt semantic manifests, OpenLineage imports, ontology/SHACL validation, or stewardship workflows in DataHub/OpenMetadata.

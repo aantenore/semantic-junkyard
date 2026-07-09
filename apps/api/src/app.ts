@@ -64,6 +64,14 @@ export function createApp(db: Database.Database, options: { seed?: boolean } = {
     response.status(201).json(engine.ingest(request.body));
   });
 
+  app.post("/api/ingest/preview", (request, response) => {
+    response.json(engine.previewIngest(request.body));
+  });
+
+  app.post("/api/semantic/relations", (request, response) => {
+    response.status(201).json(engine.curateRelation(request.body));
+  });
+
   app.post("/api/discovery/run", (request, response) => {
     response.json(engine.runDiscovery(request.body?.objective));
   });

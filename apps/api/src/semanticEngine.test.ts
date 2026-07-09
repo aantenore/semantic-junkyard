@@ -35,4 +35,41 @@ describe("Semantic Junkyard engine", () => {
     expect(permissions.decision).toContain("read-only autonomous access");
     expect(permissions.safeNextSteps.length).toBeGreaterThan(2);
   });
+
+  it("previews ingestion without persisting and supports manual semantic curation", () => {
+    const db = openMemoryDatabase();
+    const { engine, repository } = createApp(db, { seed: false });
+
+    const before = repository.status();
+    const preview = engine.previewIngest({
+      name: "curation-sample.md",
+      mimeType: "text/markdown",
+      ingestionMode: "full_data",
+      text: "Payments API depends on Billing Pipeline. Billing Pipeline writes Revenue Mart."
+    });
+
+    expect(preview.profile.entityCount).toBeGreaterThan(0);
+    expect(preview.profile.chunkCount).toBeGreaterThan(0);
+    expect(repository.status()).toEqual(before);
+
+    const ingested = engine.ingest({
+      name: "curation-sample.md",
+      mimeType: "text/markdown",
+      ingestionMode: "full_data",
+      text: "Payments API depends on Billing Pipeline. Billing Pipeline writes Revenue Mart."
+    });
+    const curated = engine.curateRelation({
+      sourceName: "Payments API",
+      sourceType: "System",
+      targetName: "Revenue Mart",
+      targetType: "Dataset",
+      relationType: "DEPENDS_ON",
+      evidenceChunkId: ingested.chunks[0]?.id,
+      rationale: "Business owner confirmed the dependency."
+    });
+
+    expect(curated.relation.type).toBe("DEPENDS_ON");
+    expect(curated.evidence.chunkId).toBe(ingested.chunks[0]?.id);
+    expect(repository.graphSnapshot().edges.some((edge) => edge.id === curated.relation.id)).toBe(true);
+  });
 });
