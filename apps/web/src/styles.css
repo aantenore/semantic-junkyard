@@ -588,6 +588,40 @@ button {
   padding: 0 16px 10px;
 }
 
+.mcp-surface {
+  display: grid;
+  gap: 4px;
+  margin: 0 16px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #f8fbfb;
+  padding: 9px 10px;
+}
+
+.mcp-surface div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mcp-surface span,
+.mcp-surface small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.mcp-surface strong {
+  color: var(--teal-dark);
+  font-size: 12px;
+}
+
+.mcp-surface small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .capability-list {
   display: grid;
   gap: 4px;

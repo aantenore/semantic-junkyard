@@ -2,12 +2,16 @@
   "name": "@semantic-junkyard/api",
   "version": "0.1.0",
   "type": "module",
-  "main": "dist/server.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
-    "test": "vitest run",
+    "test": "vitest run src",
     "seed": "tsx src/seed.ts",
     "poc:agent": "tsx src/poc/localAgentUseCase.ts",
     "poc:agent:hf": "tsx src/poc/localAgentUseCase.ts --local-hf",

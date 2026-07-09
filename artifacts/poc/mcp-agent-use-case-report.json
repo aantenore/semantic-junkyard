@@ -1,0 +1,81 @@
+{
+  "useCase": "MCP agent discovery over Semantic Junkyard governed finance context",
+  "transport": "mcp-stdio",
+  "serverCommand": "node apps/mcp/dist/server.js --memory",
+  "toolsAdvertised": [
+    "explain_permissions",
+    "semantic_search",
+    "entity_lookup",
+    "graph_neighbors",
+    "find_paths",
+    "expand_context",
+    "get_evidence",
+    "run_discovery"
+  ],
+  "resourcesAdvertised": [
+    "semantic-junkyard://status",
+    "semantic-junkyard://manifest",
+    "semantic-junkyard://catalog",
+    "semantic-junkyard://graph",
+    "semantic-junkyard://evidence/chunk_c33290057c50c9bb",
+    "semantic-junkyard://evidence/chunk_743cf628f9537cbe",
+    "semantic-junkyard://evidence/chunk_e0532782e9f0e171"
+  ],
+  "promptsAdvertised": [
+    "agent_discovery_brief",
+    "governed_context_answer",
+    "semantic_mapping_review"
+  ],
+  "question": "Which governed finance context should be used for failed payment analysis, and what can the agent do autonomously?",
+  "steps": [
+    {
+      "step": 1,
+      "tool": "explain_permissions",
+      "observation": "read-only autonomous access allowed; writes and privileged actions require external approval-gated adapters"
+    },
+    {
+      "step": 2,
+      "tool": "semantic_search",
+      "observation": "3 candidates. Top source: billing-context.html."
+    },
+    {
+      "step": 3,
+      "tool": "entity_lookup",
+      "observation": "Resolved Billing Pipeline with degree 1."
+    },
+    {
+      "step": 4,
+      "tool": "graph_neighbors",
+      "observation": "2 nodes and 1 edges returned."
+    },
+    {
+      "step": 5,
+      "tool": "expand_context",
+      "observation": "3 evidence spans assembled. Use these evidence spans as citations. If evidence is insufficient, stop instead of guessing."
+    },
+    {
+      "step": 6,
+      "tool": "get_evidence",
+      "observation": "Opened billing-context.html / chunk_c33290057c50c9bb."
+    }
+  ],
+  "finalAnswer": "The MCP agent can answer this read-only discovery question using Semantic Junkyard tools. The governed finance context is the Finance Semantic Contract with Billing Pipeline and Revenue Mart lineage, supported by cited evidence. The agent may search metadata, resolve entities, traverse bounded graph neighborhoods, expand context, and open evidence. It must not mutate systems, execute generated SQL, expose secrets, or bypass approval-gated adapters.",
+  "citations": [
+    {
+      "sourceName": "billing-context.html",
+      "chunkId": "chunk_c33290057c50c9bb",
+      "excerpt": "Billing Pipeline Context The Billing Pipeline writes to the Revenue Mart and uses Retry Policy to handle failed payments. Failed Payment Rate depends on payment attempts, failed payment attempts, payment provider, plan, and retry policy. The Finance Semantic Contract governs r..."
+    },
+    {
+      "sourceName": "semantic-layer-for-agents.md",
+      "chunkId": "chunk_e0532782e9f0e171",
+      "excerpt": "# Semantic Layer For AI Agents Semantic Junkyard connects data catalogs, metadata graphs, semantic contracts, vector search, and knowledge graphs into an agent-safe context layer. An AI agent should not query raw systems without guidance. It needs governed metadata about asset..."
+    },
+    {
+      "sourceName": "agentic-discovery-playbook.txt",
+      "chunkId": "chunk_743cf628f9537cbe",
+      "excerpt": "Agentic discovery starts by profiling available sources, catalog assets, lineage, quality signals, and policies. When an undefined problem arrives, the agent first asks what data assets are relevant, whether the assets are authorized, whether the metric definitions are governe..."
+    }
+  ],
+  "promptPreview": "Answer this question using Semantic Junkyard MCP tools: Which governed finance context should be used for failed payment analysis, and what can the agent do autonomously?\n\nRequired workflow: explain_permissions -> semantic_search -> entity_lookup -> expand_con"
+}

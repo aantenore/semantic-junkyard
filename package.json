@@ -7,15 +7,19 @@
   "type": "module",
   "workspaces": [
     "apps/api",
+    "apps/mcp",
     "apps/web",
     "packages/shared"
   ],
   "scripts": {
     "dev": "npm run build -w packages/shared && concurrently -k -n API,WEB -c cyan,green \"npm run dev -w apps/api\" \"npm run dev -w apps/web\"",
-    "build": "npm run build -w packages/shared && npm run build -w apps/api && npm run build -w apps/web",
-    "test": "npm run build -w packages/shared && npm run test -w apps/api",
-    "typecheck": "npm run build -w packages/shared && npm run typecheck -w apps/api && npm run typecheck -w apps/web",
+    "build": "npm run build -w packages/shared && npm run build -w apps/api && npm run build -w apps/mcp && npm run build -w apps/web",
+    "test": "npm run build -w packages/shared && npm run build -w apps/api && npm run test -w apps/api && npm run test -w apps/mcp",
+    "typecheck": "npm run build -w packages/shared && npm run build -w apps/api && npm run typecheck -w apps/api && npm run typecheck -w apps/mcp && npm run typecheck -w apps/web",
     "lint": "npm run typecheck",
+    "mcp": "npm run start -w apps/mcp",
+    "mcp:build": "npm run build -w apps/mcp",
+    "poc:agent:mcp": "npm run build -w packages/shared && npm run build -w apps/api && npm run build -w apps/mcp && npm run poc:agent:mcp -w apps/mcp",
     "seed": "npm run seed -w apps/api",
     "poc:agent": "npm run poc:agent -w apps/api",
     "poc:agent:hf": "npm run poc:agent:hf -w apps/api",

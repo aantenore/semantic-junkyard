@@ -31,6 +31,7 @@ export interface AppSnapshot {
   discoveryRuns: DiscoveryRun[];
   manifest: AgentManifest;
   provider: ProviderConfig;
+  mcp: McpCapabilitySnapshot;
 }
 
 export interface SearchEnvelope {
@@ -57,6 +58,28 @@ export interface PocAgentReport {
     excerpt: string;
   }>;
   stopConditionsChecked: string[];
+}
+
+export interface McpCapabilitySnapshot {
+  server: {
+    name: string;
+    version: string;
+    transport: string;
+    command: string;
+  };
+  summary: string;
+  tools: Array<{
+    name: string;
+    description: string;
+  }>;
+  resources: Array<{
+    name: string;
+    description: string;
+  }>;
+  prompts: Array<{
+    name: string;
+    description: string;
+  }>;
 }
 
 export type ModuleGroup = Record<string, FabricModule[]>;

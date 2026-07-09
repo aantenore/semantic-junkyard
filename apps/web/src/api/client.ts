@@ -19,15 +19,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function loadSnapshot(): Promise<AppSnapshot> {
-  const [status, catalog, graph, discoveryRuns, manifest, provider] = await Promise.all([
+  const [status, catalog, graph, discoveryRuns, manifest, provider, mcp] = await Promise.all([
     request<SystemStatus>("/api/status"),
     request<CatalogSnapshot>("/api/catalog"),
     request<GraphSnapshot>("/api/graph"),
     request<DiscoveryRun[]>("/api/discovery/runs"),
     request<AppSnapshot["manifest"]>("/api/agent/manifest"),
-    request<ProviderConfig>("/api/providers")
+    request<ProviderConfig>("/api/providers"),
+    request<AppSnapshot["mcp"]>("/api/mcp/capabilities")
   ]);
-  return { status, catalog, graph, discoveryRuns, manifest, provider };
+  return { status, catalog, graph, discoveryRuns, manifest, provider, mcp };
 }
 
 export async function ingestText(input: { name: string; text: string; mimeType: string; ingestionMode: "full_data" | "metadata_only" | "external_reference" }) {

@@ -353,6 +353,13 @@ function App() {
                 <LockKeyhole size={18} />
               </div>
               <p className="manifest-copy">{snapshot?.manifest.autonomyBoundary}</p>
+              <div className="mcp-surface">
+                <div>
+                  <span>MCP server</span>
+                  <strong>{snapshot?.mcp.summary ?? "loading"}</strong>
+                </div>
+                <small>{snapshot?.mcp.server.transport ?? "stdio"} - {snapshot?.mcp.server.command ?? "node apps/mcp/dist/server.js"}</small>
+              </div>
               <div className="capability-list">
                 {snapshot?.manifest.capabilities.slice(0, 6).map((capability) => (
                   <div key={capability.name} className="capability-row">
