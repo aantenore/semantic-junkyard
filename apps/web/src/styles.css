@@ -387,6 +387,17 @@ button {
   color: #263747;
 }
 
+.primary-action svg,
+.secondary-action svg,
+.small-button svg,
+.action-state svg {
+  flex: 0 0 auto;
+}
+
+.spin-icon {
+  animation: spin 0.9s linear infinite;
+}
+
 .small-button {
   height: 36px;
   padding: 0 12px;
@@ -574,6 +585,71 @@ button {
   padding: 12px;
 }
 
+.business-action-panel.action-planning,
+.business-action-panel.action-executing {
+  border-color: #8bbfba;
+  box-shadow: 0 0 0 3px rgba(0, 127, 121, 0.08);
+}
+
+.business-action-panel.action-verified {
+  border-color: #9fcfbd;
+  background: #fbfffd;
+}
+
+.action-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  background: #eef6f5;
+  color: var(--teal-dark);
+  font-size: 11px;
+  font-weight: 780;
+  padding: 5px 8px;
+  text-transform: capitalize;
+}
+
+.action-state.failed,
+.action-state.approval_required {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.action-feedback {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #f8fbfb;
+  padding: 10px;
+}
+
+.action-feedback div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.action-feedback strong {
+  color: var(--teal-dark);
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.action-feedback span,
+.action-feedback small {
+  color: #4d5d6c;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.action-feedback small {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
 .business-intent-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 108px 118px;
@@ -587,6 +663,65 @@ button {
   border-radius: 7px;
   color: var(--text);
   padding: 0 10px;
+}
+
+.action-stepper {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.action-step {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #ffffff;
+  padding: 8px;
+}
+
+.action-step > span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #edf2f4;
+  color: #667483;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.action-step.done > span {
+  background: var(--teal);
+  color: #ffffff;
+}
+
+.action-step.active {
+  border-color: #8bbfba;
+  background: #f4fbfa;
+}
+
+.action-step strong,
+.action-step small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.action-step strong {
+  color: #23313e;
+  font-size: 12px;
+}
+
+.action-step small {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .action-summary-grid {
@@ -638,6 +773,31 @@ button {
   color: #3f4f5e;
   font-size: 12px;
   line-height: 1.35;
+}
+
+.target-status {
+  display: inline-flex;
+  width: fit-content;
+  border-radius: 999px;
+  background: #edf2f4;
+  color: #526270;
+  font-size: 11px;
+  font-weight: 760;
+  padding: 4px 7px;
+  text-transform: capitalize;
+}
+
+.target-status.verified,
+.target-status.executed {
+  background: var(--teal-soft);
+  color: var(--teal-dark);
+}
+
+.target-status.approval_required,
+.target-status.failed,
+.target-status.blocked {
+  background: var(--amber-soft);
+  color: var(--amber);
 }
 
 .reflection-list {
@@ -1166,6 +1326,7 @@ button {
   .action-summary-grid,
   .action-target-list,
   .reflection-list,
+  .action-stepper,
   .curation-grid {
     grid-template-columns: 1fr;
   }
@@ -1181,5 +1342,11 @@ button {
 
   .bottom-dock {
     display: none;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
   }
 }

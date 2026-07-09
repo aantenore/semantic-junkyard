@@ -16,6 +16,7 @@ import {
   KeyRound,
   Layers3,
   LineChart,
+  Loader2,
   LockKeyhole,
   Network,
   Play,
@@ -54,6 +55,9 @@ function App() {
   const [businessIntent, setBusinessIntent] = useState("Align Failed Payment Rate definition across Finance and Billing, then make it reflected in source systems.");
   const [actionPlan, setActionPlan] = useState<BusinessActionPlan | null>(null);
   const [actionRun, setActionRun] = useState<BusinessActionRun | null>(null);
+  const [actionPhase, setActionPhase] = useState<"idle" | "planning" | "planned" | "executing" | "verified" | "approval_required" | "failed">("idle");
+  const [actionNotice, setActionNotice] = useState("Write a business request, then plan it before execution.");
+  const [lastActionAt, setLastActionAt] = useState<string | null>(null);
   const [pocReport, setPocReport] = useState<PocAgentReport | null>(null);
   const [traceProvider, setTraceProvider] = useState<"local-huggingface" | "deterministic">("local-huggingface");
   const [traceBusy, setTraceBusy] = useState(false);
@@ -94,6 +98,32 @@ function App() {
 
   const latestRun = snapshot?.discoveryRuns[0];
   const selectedEntities = snapshot?.graph.nodes.slice(0, 6) ?? [];
+  const actionSteps = [
+    {
+      label: "Resolve intent",
+      done: Boolean(actionPlan || actionRun),
+      active: actionPhase === "planning",
+      detail: actionPlan?.actionType ?? "waiting"
+    },
+    {
+      label: "Plan writes",
+      done: Boolean(actionPlan?.targets.length || actionRun?.writes.length),
+      active: actionPhase === "planned",
+      detail: actionPlan ? `${actionPlan.targets.length} targets` : "not planned"
+    },
+    {
+      label: "Write sources",
+      done: Boolean(actionRun?.writes.length),
+      active: actionPhase === "executing",
+      detail: actionRun ? `${actionRun.writes.length} writes` : "not executed"
+    },
+    {
+      label: "Reflect read model",
+      done: actionRun?.status === "verified",
+      active: actionPhase === "verified",
+      detail: actionRun ? `${actionRun.reflections.filter((item) => item.status === "verified").length}/${actionRun.reflections.length} verified` : "not reflected"
+    }
+  ];
   const moduleLabels: Record<string, string> = {
     "business-action-router": "Actions",
     connector: "Connectors",
@@ -163,10 +193,18 @@ function App() {
   async function onPlanBusinessAction() {
     setBusy(true);
     setError(null);
+    setActionRun(null);
+    setActionPhase("planning");
+    setActionNotice("Planning source writes from the business intent...");
     try {
       const plan = await planBusinessAction({ intent: businessIntent, mode: "autonomous", maxAutonomousRisk: "medium" });
       setActionPlan(plan);
+      setActionPhase(plan.status === "approval_required" ? "approval_required" : "planned");
+      setActionNotice(`${plan.targets.length} source targets planned. Review the diffs, then execute.`);
+      setLastActionAt(new Date().toLocaleTimeString());
     } catch (err) {
+      setActionPhase("failed");
+      setActionNotice("Planning failed. Check the error banner.");
       setError(err instanceof Error ? err.message : "Business action planning failed");
     } finally {
       setBusy(false);
@@ -176,13 +214,24 @@ function App() {
   async function onExecuteBusinessAction() {
     setBusy(true);
     setError(null);
+    setActionPhase("executing");
+    setActionNotice("Executing through writeback gateway, then rereading source systems...");
     try {
       const run = await executeBusinessAction({ intent: businessIntent, mode: "autonomous", maxAutonomousRisk: "medium" });
       setActionRun(run);
       setActionPlan(run.plan);
+      setActionPhase(run.status === "verified" ? "verified" : run.status === "approval_required" ? "approval_required" : "failed");
+      setActionNotice(
+        run.status === "verified"
+          ? `${run.writes.length} source writes executed and ${run.reflections.filter((item) => item.status === "verified").length}/${run.reflections.length} reflections verified. Search results were refreshed from source evidence.`
+          : `Action finished with status ${run.status}. Review target autonomy and approval policy.`
+      );
+      setLastActionAt(new Date().toLocaleTimeString());
       await refresh();
       await executeSearch(businessIntent, "hybrid");
     } catch (err) {
+      setActionPhase("failed");
+      setActionNotice("Execution failed. Check the error banner.");
       setError(err instanceof Error ? err.message : "Business action execution failed");
     } finally {
       setBusy(false);
@@ -223,6 +272,15 @@ function App() {
       ingestionMode,
       mimeType: name.endsWith(".html") ? "text/html" : name.endsWith(".json") ? "application/json" : name.endsWith(".md") ? "text/markdown" : "text/plain"
     };
+  }
+
+  function writeForStep(stepId: string) {
+    return actionRun?.writes.find((write) => write.stepId === stepId);
+  }
+
+  function reflectionForStep(stepId: string) {
+    const write = writeForStep(stepId);
+    return write ? actionRun?.reflections.find((reflection) => reflection.writeId === write.id) : undefined;
   }
 
   return (
@@ -400,21 +458,42 @@ function App() {
 
             {error ? <div className="error-banner">{error}</div> : null}
 
-            <div className="business-action-panel">
+            <div className={`business-action-panel action-${actionPhase}`} aria-busy={actionPhase === "planning" || actionPhase === "executing"}>
               <div className="panel-subhead">
                 <h3>Business action router</h3>
-                <span>{actionRun?.status ?? actionPlan?.status ?? `${snapshot?.sourceSystems.length ?? 0} source systems`}</span>
+                <span className={`action-state ${actionPhase}`}>
+                  {(actionPhase === "planning" || actionPhase === "executing") ? <Loader2 className="spin-icon" size={13} /> : null}
+                  {actionRun?.status ?? actionPlan?.status ?? `${snapshot?.sourceSystems.length ?? 0} source systems`}
+                </span>
+              </div>
+              <div className="action-feedback">
+                <div>
+                  <strong>{actionPhase === "idle" ? "Ready" : actionPhase === "planned" ? "Plan ready" : actionPhase === "verified" ? "Completed" : actionPhase.replace("_", " ")}</strong>
+                  <span>{actionNotice}</span>
+                </div>
+                {lastActionAt ? <small>{lastActionAt}</small> : null}
               </div>
               <div className="business-intent-row">
                 <input value={businessIntent} onChange={(event) => setBusinessIntent(event.target.value)} />
                 <button className="secondary-action" onClick={onPlanBusinessAction} disabled={busy || !businessIntent.trim()}>
-                  <Route size={15} />
-                  Plan
+                  {actionPhase === "planning" ? <Loader2 className="spin-icon" size={15} /> : <Route size={15} />}
+                  {actionPhase === "planning" ? "Planning" : actionPlan ? "Replan" : "Plan"}
                 </button>
                 <button className="primary-action compact-action" onClick={onExecuteBusinessAction} disabled={busy || !businessIntent.trim()}>
-                  <Send size={15} />
-                  Execute
+                  {actionPhase === "executing" ? <Loader2 className="spin-icon" size={15} /> : <Send size={15} />}
+                  {actionPhase === "executing" ? "Executing" : actionRun?.status === "verified" ? "Run again" : "Execute"}
                 </button>
+              </div>
+              <div className="action-stepper">
+                {actionSteps.map((step, index) => (
+                  <div className={`action-step ${step.done ? "done" : ""} ${step.active ? "active" : ""}`} key={step.label}>
+                    <span>{step.done ? <CheckCircle2 size={14} /> : index + 1}</span>
+                    <div>
+                      <strong>{step.label}</strong>
+                      <small>{step.detail}</small>
+                    </div>
+                  </div>
+                ))}
               </div>
               <div className="action-summary-grid">
                 <div>
@@ -437,6 +516,9 @@ function App() {
                         <small>{target.capability} · {target.risk} · {target.autonomy}</small>
                       </div>
                       <p>{target.diff.summary}</p>
+                      <span className={`target-status ${reflectionForStep(target.stepId)?.status ?? writeForStep(target.stepId)?.status ?? target.status}`}>
+                        {reflectionForStep(target.stepId)?.status ?? writeForStep(target.stepId)?.status ?? target.status}
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -447,7 +529,7 @@ function App() {
                     <div className="reflection-row" key={write.id}>
                       <GitPullRequest size={15} />
                       <span>{write.systemName}</span>
-                      <small>{write.status} · {write.objectType}</small>
+                      <small>{actionRun.reflections.find((reflection) => reflection.writeId === write.id)?.status ?? write.status} · {write.objectType}</small>
                     </div>
                   ))}
                 </div>
