@@ -1,0 +1,208 @@
+import Database from "better-sqlite3";
+import fs from "node:fs";
+import path from "node:path";
+
+export function openDatabase(filePath = process.env.SEMANTIC_JUNKYARD_DB ?? "data/semantic-junkyard.sqlite"): Database.Database {
+  const resolved = path.resolve(filePath);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  const db = new Database(resolved);
+  db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
+  migrate(db);
+  return db;
+}
+
+export function openMemoryDatabase(): Database.Database {
+  const db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  migrate(db);
+  return db;
+}
+
+function migrate(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sources (
+      id TEXT PRIMARY KEY,
+      uri TEXT NOT NULL,
+      name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      text TEXT NOT NULL,
+      ingestion_mode TEXT NOT NULL DEFAULT 'full_data',
+      metadata TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS elements (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,
+      text TEXT NOT NULL,
+      start_offset INTEGER NOT NULL,
+      end_offset INTEGER NOT NULL,
+      metadata TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS chunks (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+      text TEXT NOT NULL,
+      start_offset INTEGER NOT NULL,
+      end_offset INTEGER NOT NULL,
+      token_count INTEGER NOT NULL,
+      summary TEXT NOT NULL,
+      metadata TEXT NOT NULL
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(
+      chunk_id UNINDEXED,
+      text,
+      summary,
+      tokenize = 'porter unicode61'
+    );
+
+    CREATE TABLE IF NOT EXISTS vectors (
+      chunk_id TEXT PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
+      vector TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS entities (
+      id TEXT PRIMARY KEY,
+      canonical_name TEXT NOT NULL UNIQUE,
+      type TEXT NOT NULL,
+      aliases TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      metadata TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS entity_chunks (
+      entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+      chunk_id TEXT NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+      PRIMARY KEY (entity_id, chunk_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS relations (
+      id TEXT PRIMARY KEY,
+      source_entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+      target_entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      evidence_chunk_id TEXT NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+      metadata TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS claims (
+      id TEXT PRIMARY KEY,
+      text TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      evidence_chunk_id TEXT NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+      entity_ids TEXT NOT NULL,
+      metadata TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS discovery_runs (
+      id TEXT PRIMARY KEY,
+      objective TEXT NOT NULL,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS discovery_events (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES discovery_runs(id) ON DELETE CASCADE,
+      step INTEGER NOT NULL,
+      tool TEXT NOT NULL,
+      title TEXT NOT NULL,
+      detail TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS semantic_assets (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      name TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      owner TEXT NOT NULL,
+      description TEXT NOT NULL,
+      sensitivity TEXT NOT NULL,
+      freshness TEXT NOT NULL,
+      quality_score REAL NOT NULL,
+      uri TEXT,
+      metadata TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS metrics (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      label TEXT NOT NULL,
+      description TEXT NOT NULL,
+      expression TEXT NOT NULL,
+      dimensions TEXT NOT NULL,
+      owner TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      contract_version TEXT NOT NULL,
+      metadata TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS policies (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      effect TEXT NOT NULL,
+      applies_to TEXT NOT NULL,
+      condition TEXT NOT NULL,
+      rationale TEXT NOT NULL,
+      metadata TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS lineage_edges (
+      id TEXT PRIMARY KEY,
+      from_asset_id TEXT NOT NULL,
+      to_asset_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      metadata TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS ontology_classes (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      description TEXT NOT NULL,
+      parent_id TEXT,
+      constraints TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS semantic_contracts (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      version TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      status TEXT NOT NULL,
+      metadata TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id TEXT PRIMARY KEY,
+      actor TEXT NOT NULL,
+      action TEXT NOT NULL,
+      target TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      metadata TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chunks_source_id ON chunks(source_id);
+    CREATE INDEX IF NOT EXISTS idx_entity_chunks_chunk_id ON entity_chunks(chunk_id);
+    CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_entity_id);
+    CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_entity_id);
+    CREATE INDEX IF NOT EXISTS idx_assets_domain ON semantic_assets(domain);
+    CREATE INDEX IF NOT EXISTS idx_lineage_from ON lineage_edges(from_asset_id);
+    CREATE INDEX IF NOT EXISTS idx_lineage_to ON lineage_edges(to_asset_id);
+  `);
+
+  const columns = db.prepare("PRAGMA table_info(sources)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "ingestion_mode")) {
+    db.exec("ALTER TABLE sources ADD COLUMN ingestion_mode TEXT NOT NULL DEFAULT 'full_data'");
+  }
+}
