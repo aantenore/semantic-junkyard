@@ -37,4 +37,26 @@ export interface SearchEnvelope {
   results: SearchResult[];
 }
 
+export interface PocAgentReport {
+  useCase: string;
+  question: string;
+  provider: string;
+  model: string;
+  autonomyDecision: string;
+  steps: Array<{
+    step: number;
+    tool: string;
+    rationale: string;
+    observation: string;
+  }>;
+  finalAnswer: string;
+  modelReasoningSummary: string;
+  citations: Array<{
+    sourceName: string;
+    chunkId: string;
+    excerpt: string;
+  }>;
+  stopConditionsChecked: string[];
+}
+
 export type ModuleGroup = Record<string, FabricModule[]>;

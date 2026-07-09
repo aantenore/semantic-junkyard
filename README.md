@@ -17,7 +17,7 @@ The current ecosystem is powerful but fragmented. GraphRAG-style projects build 
 
 ## Product Surface
 
-The web app is a working dashboard, not a marketing page. You can paste text, ingest it, run discovery, search semantically, inspect entities, open evidence, and see the generated graph.
+The web app is a working dashboard, not a marketing page. You can paste text, ingest it, run discovery, search semantically, inspect entities, open evidence, see the generated graph, and inspect an agent trace with selected tools, observations, citations, and a model-produced operational reasoning summary.
 
 The API exposes agent-friendly tools:
 
@@ -59,6 +59,14 @@ npm run poc:agent
 
 The PoC creates an in-memory semantic layer, runs a local agent loop over a governed finance use case, checks its autonomy boundary, searches evidence, resolves entities, traverses a bounded graph neighborhood, expands context, and writes a reproducible report to `artifacts/poc/local-agent-use-case-report.json`.
 
+Run the same PoC with a local Hugging Face MLX model:
+
+```bash
+npm run poc:agent:hf
+```
+
+The local model runner autodiscovers `~/.cache/huggingface/hub`, prefers `mlx-community/Qwen3-1.7B-4bit` when present, and executes through `uv` with `mlx-lm`. The UI exposes the same flow in the Agent trace panel. It shows audit-safe operational reasoning summaries, tool choices, discoveries, observations, and citations; it does not expose private chain-of-thought.
+
 ## Default Local Architecture
 
 ```mermaid
@@ -90,7 +98,7 @@ The MVP is embedded by default and pluggable by design:
 | Graph traversal | SQLite graph tables | Neo4j, Kuzu, Memgraph, Apache AGE |
 | Raw objects | Local text rows | Filesystem, S3, MinIO |
 | Parsing | Text/Markdown/HTML parsers | Docling, Apache Tika, Unstructured |
-| LLM extraction | Deterministic extractor | OpenAI-compatible, local Ollama, Anthropic-compatible adapters |
+| LLM extraction | Deterministic extractor, local Hugging Face MLX PoC | OpenAI-compatible, local Ollama, Anthropic-compatible adapters |
 | Agent access | REST tool endpoints | MCP server, GraphQL, SDKs |
 
 ## Repository Layout

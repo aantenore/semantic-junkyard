@@ -7,6 +7,7 @@ import { SemanticEngine } from "./core/semanticEngine.js";
 import { loadProviderConfig } from "./config/providers.js";
 import { openApiDocument } from "./api/openapi.js";
 import { toMcpToolDescriptors } from "./api/mcp.js";
+import { runLocalAgentUseCase } from "./poc/localAgentUseCase.js";
 import { SemanticRepository } from "./storage/repository.js";
 
 export function createApp(db: Database.Database, options: { seed?: boolean } = {}) {
@@ -74,6 +75,15 @@ export function createApp(db: Database.Database, options: { seed?: boolean } = {
 
   app.get("/api/mcp/tools", (_request, response) => {
     response.json({ tools: toMcpToolDescriptors(engine.agentManifest()) });
+  });
+
+  app.get("/api/poc/local-agent", async (request, response, next) => {
+    try {
+      const provider = request.query.provider === "local-huggingface" ? "local-huggingface" : "deterministic";
+      response.json(await runLocalAgentUseCase({ provider, writeReport: false }));
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post("/api/tools/semantic_search", (request, response) => {

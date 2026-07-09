@@ -9,6 +9,7 @@ describe("local autonomous agent PoC", () => {
     const report = await runLocalAgentUseCase();
 
     expect(report.provider).toBe("deterministic-local-agent-loop");
+    expect(report.model).toBe("deterministic-rules");
     expect(report.autonomyDecision).toContain("read-only autonomous access");
     expect(report.steps.map((step) => step.tool)).toEqual([
       "explain_permissions",
@@ -20,6 +21,7 @@ describe("local autonomous agent PoC", () => {
     expect(report.citations.length).toBeGreaterThan(0);
     expect(report.finalAnswer).toMatch(/Finance Semantic Contract/);
     expect(report.finalAnswer).toMatch(/may not mutate source systems/);
+    expect(report.modelReasoningSummary).toContain("Deterministic planner");
     expect(report.stopConditionsChecked.length).toBeGreaterThan(0);
   });
 
