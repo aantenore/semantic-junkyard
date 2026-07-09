@@ -1,0 +1,392 @@
+import { StrictMode, useEffect, useMemo, useState } from "react";
+import { createRoot } from "react-dom/client";
+import {
+  Activity,
+  Bell,
+  Boxes,
+  Braces,
+  CheckCircle2,
+  ChevronDown,
+  CircleDot,
+  Database,
+  FileSearch,
+  Filter,
+  GitBranch,
+  KeyRound,
+  Layers3,
+  LineChart,
+  LockKeyhole,
+  Network,
+  Play,
+  RefreshCw,
+  Search,
+  Settings,
+  ShieldCheck,
+  Upload,
+  Workflow,
+  Zap
+} from "lucide-react";
+import type { SearchResult } from "@semantic-junkyard/shared";
+import { GraphCanvas } from "./components/GraphCanvas";
+import { IconButton } from "./components/IconButton";
+import { ingestText, loadSnapshot, runDiscovery, semanticSearch } from "./api/client";
+import type { AppSnapshot } from "./types/app";
+import { starterText } from "./data/sample";
+import "./styles.css";
+
+function App() {
+  const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [query, setQuery] = useState("Which semantic contract governs failed payment rate?");
+  const [mode, setMode] = useState<"hybrid" | "lexical" | "vector" | "graph">("hybrid");
+  const [text, setText] = useState(starterText);
+  const [name, setName] = useState("agent-discovery-note.md");
+  const [ingestionMode, setIngestionMode] = useState<"full_data" | "metadata_only" | "external_reference">("full_data");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function refresh() {
+    const next = await loadSnapshot();
+    setSnapshot(next);
+  }
+
+  async function executeSearch(nextQuery = query, nextMode = mode) {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await semanticSearch(nextQuery, nextMode);
+      setSearchResults(response.results);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Search failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    refresh()
+      .then(() => executeSearch())
+      .catch((err) => setError(err instanceof Error ? err.message : "API unavailable"));
+  }, []);
+
+  const groupedModules = useMemo(() => {
+    const modules = snapshot?.status.modules ?? [];
+    return modules.reduce<Record<string, typeof modules>>((acc, module) => {
+      acc[module.kind] = [...(acc[module.kind] ?? []), module];
+      return acc;
+    }, {});
+  }, [snapshot]);
+
+  const latestRun = snapshot?.discoveryRuns[0];
+  const selectedEntities = snapshot?.graph.nodes.slice(0, 6) ?? [];
+  const moduleLabels: Record<string, string> = {
+    connector: "Connectors",
+    parser: "Parser",
+    chunker: "Chunker",
+    embedding: "Embedding",
+    "metadata-store": "Metadata",
+    "lexical-store": "Lexical",
+    "vector-store": "Vector",
+    "graph-store": "Graph",
+    "policy-engine": "Policy",
+    "ontology-validator": "Ontology",
+    "lineage-collector": "Lineage",
+    "agent-protocol": "Agent API"
+  };
+
+  async function onIngest() {
+    setBusy(true);
+    setError(null);
+    try {
+      await ingestText({ name, text, ingestionMode, mimeType: name.endsWith(".html") ? "text/html" : name.endsWith(".md") ? "text/markdown" : "text/plain" });
+      await refresh();
+      await executeSearch(query, mode);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Ingest failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onDiscovery() {
+    setBusy(true);
+    setError(null);
+    try {
+      await runDiscovery("Discover what an autonomous agent can safely do with this semantic layer.");
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Discovery failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <Database size={24} />
+          <span>Semantic Junkyard</span>
+        </div>
+        <nav className="nav-list">
+          {[
+            ["Dashboard", <Activity size={17} />],
+            ["Ingest", <Upload size={17} />],
+            ["Discovery", <FileSearch size={17} />],
+            ["Graph", <Network size={17} />],
+            ["Agents", <Zap size={17} />],
+            ["Catalog", <Layers3 size={17} />],
+            ["Policies", <ShieldCheck size={17} />],
+            ["Lineage", <GitBranch size={17} />]
+          ].map(([label, icon], index) => (
+            <button className={`nav-item ${index === 0 ? "active" : ""}`} key={String(label)}>
+              {icon}
+              <span>{label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="system-nav">
+          <span>SYSTEM</span>
+          <button className="nav-item">
+            <Boxes size={17} />
+            <span>Modules</span>
+          </button>
+          <button className="nav-item">
+            <KeyRound size={17} />
+            <span>Access</span>
+          </button>
+          <button className="nav-item">
+            <Settings size={17} />
+            <span>Settings</span>
+          </button>
+        </div>
+        <div className="workspace-card">
+          <span>Workspace</span>
+          <strong>Local Junkyard</strong>
+          <small>Role: owner</small>
+        </div>
+      </aside>
+
+      <main className="workspace">
+        <header className="topbar">
+          <div className="topbar-section">
+            <span className="meta-label">Workspace</span>
+            <strong className="mobile-product-name">Semantic Junkyard</strong>
+            <strong>Agentic Semantic Layer</strong>
+            <span className="status-pill">Active</span>
+          </div>
+          <div className="topbar-section wide">
+            <span className="meta-label">Provider</span>
+            <strong>{snapshot?.provider.kind ?? "deterministic"} · {snapshot?.provider.model ?? "loading"}</strong>
+            <span className="dot" />
+          </div>
+          <div className="topbar-actions">
+            <IconButton icon={<RefreshCw size={17} />} label="Refresh" onClick={() => refresh()} />
+            <IconButton icon={<Bell size={17} />} label="Notifications" />
+            <IconButton icon={<Braces size={17} />} label="OpenAPI" onClick={() => window.open("/api/openapi.json", "_blank")} />
+            <div className="avatar">SJ</div>
+          </div>
+        </header>
+
+        <section className="content-grid">
+          <section className="ingest-panel panel">
+            <div className="panel-header">
+              <div>
+                <h2>Ingest</h2>
+                <p>Source-spanned semantic capture</p>
+              </div>
+              <Upload size={18} />
+            </div>
+            <label className="field">
+              <span>Source name</span>
+              <input value={name} onChange={(event) => setName(event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Paste unstructured data</span>
+              <textarea value={text} onChange={(event) => setText(event.target.value)} />
+            </label>
+            <div className="segmented vertical">
+              {([
+                ["full_data", "Full data"],
+                ["metadata_only", "Metadata only"],
+                ["external_reference", "External reference"]
+              ] as const).map(([value, label]) => (
+                <button key={value} className={ingestionMode === value ? "selected" : ""} onClick={() => setIngestionMode(value)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="segmented vertical subtle">
+              <button className="selected">Parser: local</button>
+              <button>MCP/API-ready</button>
+              <button>Policy: ABAC</button>
+            </div>
+            <button className="primary-action" onClick={onIngest} disabled={busy || text.trim().length === 0}>
+              <Upload size={17} />
+              Ingest
+            </button>
+
+            <div className="module-strip compact">
+              {snapshot?.status.modules.slice(0, 6).map((module) => (
+                <div className="module-row" key={module.id}>
+                  <CircleDot size={14} />
+                  <span>{module.label}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="search-panel panel">
+            <div className="search-bar">
+              <Search size={19} />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") executeSearch();
+                }}
+              />
+              <button className="small-button" onClick={() => executeSearch()} disabled={busy}>
+                <Play size={15} />
+                Search
+              </button>
+              <button className="small-button" onClick={onDiscovery} disabled={busy}>
+                <Zap size={15} />
+                Run discovery
+              </button>
+            </div>
+            <div className="toolbar">
+              <div className="segmented">
+                {(["hybrid", "lexical", "vector", "graph"] as const).map((item) => (
+                  <button
+                    key={item}
+                    className={mode === item ? "selected" : ""}
+                    onClick={() => {
+                      setMode(item);
+                      executeSearch(query, item);
+                    }}
+                  >
+                    {item}
+                  </button>
+                ))}
+              </div>
+              <button className="filter-button">
+                <Filter size={15} />
+                Policy-aware
+              </button>
+            </div>
+
+            {error ? <div className="error-banner">{error}</div> : null}
+
+            <div className="result-table">
+              <div className="table-row table-head">
+                <span>Type</span>
+                <span>Evidence / snippet</span>
+                <span>Source</span>
+                <span>Score</span>
+              </div>
+              {searchResults.map((result) => (
+                <div className="table-row" key={result.chunkId}>
+                  <span className="type-chip">Chunk</span>
+                  <span>
+                    <strong>{result.summary}</strong>
+                    <small>{result.text.slice(0, 150)}{result.text.length > 150 ? "..." : ""}</small>
+                  </span>
+                  <span>{result.sourceName}</span>
+                  <span>{result.hybridScore.toFixed(3)}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="entities-panel">
+              <div className="panel-subhead">
+                <h3>Discovered entities</h3>
+                <span>{snapshot?.status.entities ?? 0} total</span>
+              </div>
+              <div className="entity-grid">
+                {selectedEntities.map((entity) => (
+                  <div className="entity-row" key={entity.id}>
+                    <span>{entity.label}</span>
+                    <small>{entity.type}</small>
+                    <strong>{entity.degree}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <aside className="right-rail">
+            <section className="panel graph-panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Knowledge graph</h2>
+                  <p>{snapshot?.graph.nodes.length ?? 0} nodes · {snapshot?.graph.edges.length ?? 0} edges</p>
+                </div>
+                <span className="live-pill">Live</span>
+              </div>
+              <GraphCanvas graph={snapshot?.graph ?? { nodes: [], edges: [] }} />
+            </section>
+
+            <section className="panel agent-panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Agent autonomy</h2>
+                  <p>Capability manifest</p>
+                </div>
+                <LockKeyhole size={18} />
+              </div>
+              <p className="manifest-copy">{snapshot?.manifest.autonomyBoundary}</p>
+              <div className="capability-list">
+                {snapshot?.manifest.capabilities.slice(0, 6).map((capability) => (
+                  <div key={capability.name} className="capability-row">
+                    <CheckCircle2 size={15} />
+                    <span>{capability.name}</span>
+                    <small>{capability.risk}</small>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="panel timeline-panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Discovery timeline</h2>
+                  <p>{latestRun?.status ?? "waiting"}</p>
+                </div>
+                <Workflow size={18} />
+              </div>
+              <div className="timeline">
+                {latestRun?.events.slice().reverse().map((event) => (
+                  <div className={`timeline-item ${event.severity}`} key={event.id}>
+                    <span />
+                    <div>
+                      <strong>{event.title}</strong>
+                      <p>{event.detail}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </aside>
+        </section>
+
+        <footer className="bottom-dock">
+          {Object.entries(groupedModules).slice(0, 8).map(([kind, modules]) => (
+            <div className="dock-item" key={kind}>
+              {kind.includes("graph") ? <Network size={18} /> : kind.includes("policy") ? <ShieldCheck size={18} /> : kind.includes("metric") ? <LineChart size={18} /> : <Database size={18} />}
+              <span>{moduleLabels[kind] ?? kind}</span>
+              <strong>{modules.length} active</strong>
+              <ChevronDown size={14} />
+            </div>
+          ))}
+        </footer>
+      </main>
+    </div>
+  );
+}
+
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>
+);
