@@ -1,4 +1,4 @@
-import type { AppSnapshot, CuratedRelationReport, IngestPreviewReport, PocAgentReport, SearchEnvelope } from "../types/app";
+import type { AppSnapshot, CuratedRelationReport, IngestPreviewReport, SearchEnvelope } from "../types/app";
 import type { BusinessActionPlan, BusinessActionRun, CatalogSnapshot, DiscoveryRun, GraphSnapshot, IngestResponse, ProviderConfig, SourceSystem, SourceSystemRecord, SystemStatus } from "@semantic-junkyard/shared";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
@@ -80,8 +80,4 @@ export async function semanticSearch(query: string, mode: "hybrid" | "lexical" |
     method: "POST",
     body: JSON.stringify({ query, mode, topK: 8 })
   });
-}
-
-export async function runLocalAgentPoc(provider: "deterministic" | "local-huggingface" = "deterministic") {
-  return request<PocAgentReport>(`/api/poc/local-agent?provider=${provider}`);
 }

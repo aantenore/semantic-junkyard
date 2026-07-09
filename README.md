@@ -15,9 +15,14 @@ The current ecosystem is powerful but fragmented. GraphRAG-style projects build 
 - Expose query/navigation tools that agents can use safely.
 - Keep every result tied to evidence, confidence, module versions, and permissions.
 
-## Product Surface
+## Product And PoC Surfaces
 
-The web app is a working dashboard, not a marketing page. You can paste text, ingest it, run discovery, search semantically, inspect entities, open evidence, see the generated graph, and inspect an agent trace with selected tools, observations, citations, and a model-produced operational reasoning summary.
+Semantic Junkyard now ships as two separate frontend apps over the same product API:
+
+- Product workbench: [http://localhost:5173](http://localhost:5173). This is the actual semantic-layer dashboard for ingestion, discovery, semantic search, graph inspection, semantic curation, business action planning, writeback, and reflected readback.
+- PoC cockpit: [http://localhost:5174](http://localhost:5174). This is a separate external client that talks to the product API. It provides a conversational audit chat where a user asks for a business outcome and the PoC app narrates each product tool call as it happens: permission check, discovery, semantic search, entity lookup, graph neighborhood, context expansion, business-action plan, writeback execution, snapshot refresh, and reflected semantic search.
+
+This separation is intentional. The product does not embed PoC state or agent-test controls. The PoC behaves like a real outside application using Semantic Junkyard through REST.
 
 The API exposes agent-friendly tools:
 
@@ -115,7 +120,21 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173). The API runs on [http://localhost:8787](http://localhost:8787).
+Open the product at [http://localhost:5173](http://localhost:5173) and the PoC cockpit at [http://localhost:5174](http://localhost:5174). The API runs on [http://localhost:8787](http://localhost:8787).
+
+Useful frontend environment variables are `VITE_API_URL`, `VITE_PRODUCT_URL`, `VITE_POC_URL`, and `VITE_POC_ENTITY_HINTS` for configuring API routing, cross-app links, and PoC graph-grounding hints.
+
+Run only the product surface:
+
+```bash
+npm run dev:product
+```
+
+Run only the PoC cockpit plus API:
+
+```bash
+npm run dev:poc
+```
 
 Seed the demo corpus:
 
@@ -145,7 +164,7 @@ Run the same PoC with a local Hugging Face MLX model:
 npm run poc:agent:hf
 ```
 
-The local model runner autodiscovers `~/.cache/huggingface/hub`, prefers `mlx-community/Qwen3-1.7B-4bit` when present, and executes through `uv` with `mlx-lm`. The UI exposes the same flow in the Agent trace panel. It shows audit-safe operational reasoning summaries, tool choices, discoveries, observations, and citations; it does not expose private chain-of-thought.
+The local model runner autodiscovers `~/.cache/huggingface/hub`, prefers `mlx-community/Qwen3-1.7B-4bit` when present, and executes through `uv` with `mlx-lm`. The PoC cockpit exposes the same flow as an external app. It shows audit-safe operational reasoning summaries, tool choices, discoveries, observations, and citations; it does not expose private chain-of-thought.
 
 Run the MCP agent PoC:
 
