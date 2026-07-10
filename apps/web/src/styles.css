@@ -1309,8 +1309,33 @@ a:focus-visible {
   }
 
   .content-grid {
-    grid-template-columns: 1fr;
+    width: 100%;
+    max-width: 100%;
+    grid-template-columns: minmax(0, 1fr);
     overflow: visible;
+  }
+
+  .search-panel,
+  .search-bar,
+  .toolbar,
+  .business-action-panel,
+  .panel-subhead {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .search-bar input {
+    width: 100%;
+  }
+
+  .toolbar,
+  .panel-subhead {
+    flex-wrap: wrap;
+  }
+
+  .action-state,
+  .action-feedback span {
+    overflow-wrap: anywhere;
   }
 
   .search-bar {
