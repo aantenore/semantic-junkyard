@@ -25,6 +25,21 @@ export const test = base.extend<E2EFixtures>({
           }
         )
         .toBe(200);
+      await expect
+        .poll(
+          async () => {
+            const response = await request.get("/api/source-resources", { failOnStatusCode: false });
+            if (!response.ok()) {
+              await response.dispose();
+              return 0;
+            }
+            const resources = (await response.json()) as unknown[];
+            await response.dispose();
+            return resources.length;
+          },
+          { message: "The real reference connectors should finish their initial synchronization", timeout: 60_000 }
+        )
+        .toBeGreaterThanOrEqual(4);
 
       const browserErrors: string[] = [];
       const blockedModelRequests: string[] = [];
@@ -36,7 +51,7 @@ export const test = base.extend<E2EFixtures>({
         browserErrors.push(`pageerror: ${error.message}`);
       });
 
-      await page.route(/\/api\/poc\/local-agent(?:\?.*)?$/, async (route) => {
+      await page.route(/\/api\/(?:poc\/local-agent|agent\/interpret)(?:\?.*)?$/, async (route) => {
         let provider: unknown;
         try {
           provider = route.request().postDataJSON()?.provider;
@@ -44,7 +59,7 @@ export const test = base.extend<E2EFixtures>({
           provider = undefined;
         }
 
-        if (provider !== "deterministic") {
+        if (provider === "local-huggingface") {
           blockedModelRequests.push(`${route.request().method()} ${route.request().url()}`);
           await route.abort("blockedbyclient");
           return;

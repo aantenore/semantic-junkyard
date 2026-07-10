@@ -11,7 +11,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
-    "test": "vitest run src",
+    "test": "vitest run src --no-file-parallelism --maxWorkers=1",
     "seed": "tsx src/seed.ts",
     "poc:agent": "tsx src/poc/localAgentUseCase.ts",
     "poc:agent:hf": "tsx src/poc/localAgentUseCase.ts --local-hf",
@@ -24,6 +24,8 @@
     "express": "^5.2.1",
     "helmet": "^8.1.0",
     "nanoid": "^5.1.6",
+    "pdf-parse": "^2.4.5",
+    "yaml": "^2.9.0",
     "zod": "^4.1.13"
   },
   "devDependencies": {

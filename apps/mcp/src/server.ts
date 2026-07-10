@@ -12,9 +12,9 @@ try {
   const db = args.has("--memory") ? openMemoryDatabase() : openDatabase(dbPath);
   const runtimeConfig = loadRuntimeConfig(process.env, { validateHttpSecurity: false });
   const runtime = createSemanticRuntime(db, {
-    seed: !args.has("--no-seed"),
+    seed: args.has("--memory") && !args.has("--no-seed"),
     maxAutonomousRisk: runtimeConfig.maxAutonomousRisk,
-    sourceSystems: loadSourceSystems(runtimeConfig.sourceSystemsFile)
+    sourceSystems: runtimeConfig.sourceSystemsFile ? loadSourceSystems(runtimeConfig.sourceSystemsFile) : []
   });
   const server = createSemanticJunkyardMcpServer(runtime);
   await server.connect(new StdioServerTransport());

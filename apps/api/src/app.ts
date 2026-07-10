@@ -2,8 +2,9 @@ import cors from "cors";
 import express from "express";
 import helmet from "helmet";
 import type Database from "better-sqlite3";
+import path from "node:path";
 import { z } from "zod";
-import { DiscoveryRequestSchema, ExplainPermissionsRequestSchema } from "@semantic-junkyard/shared";
+import { AgentIntentRequestSchema, DiscoveryRequestSchema, ExplainPermissionsRequestSchema } from "@semantic-junkyard/shared";
 import { defaultCatalogSnapshot } from "./core/catalogSeed.js";
 import { demoDocuments } from "./core/demoCorpus.js";
 import { SemanticEngine } from "./core/semanticEngine.js";
@@ -13,12 +14,24 @@ import { loadSourceSystems } from "./config/sourceSystems.js";
 import type { SourceSystem } from "@semantic-junkyard/shared";
 import { openApiDocument } from "./api/openapi.js";
 import { mcpCapabilitySnapshot, toMcpToolDescriptors } from "./api/mcp.js";
-import { apiTokenMiddleware, createCorsOptions, errorHandler, HttpError, notFoundHandler, requestActor, requestIdMiddleware, requireApprovalRole } from "./api/http.js";
+import { apiTokenMiddleware, createCorsOptions, errorHandler, HttpError, notFoundHandler, requestActor, requestActorContext, requestIdMiddleware, requireApprovalRole, requireOperatorRole } from "./api/http.js";
 import { runLocalAgentUseCase } from "./poc/localAgentUseCase.js";
 import { SemanticRepository } from "./storage/repository.js";
+import { SourceConnectionRepository } from "./sources/connectionRepository.js";
+import { SourceManager, type SemanticEnrichmentProvider } from "./sources/sourceManager.js";
+import type { SourceConnector } from "./sources/connector.js";
+import { FilesystemConnector } from "./sources/filesystemConnector.js";
+import { GitConnector } from "./sources/gitConnector.js";
+import { SqliteConnector } from "./sources/sqliteConnector.js";
+import { LocalSourceSemanticEnrichmentProvider } from "./ai/sourceManagerEnricher.js";
+import { ensureSupplyChainDemoSources } from "./sources/demoSources.js";
+import { interpretAgentIntent } from "./agent/localIntentInterpreter.js";
+import { discoverLocalHuggingFaceModels, LocalModelExecutionError, pickDefaultLocalModel, pickSemanticEnrichmentModel } from "./poc/localHuggingFaceProvider.js";
 
 export interface SemanticRuntime {
   repository: SemanticRepository;
+  connectionRepository: SourceConnectionRepository;
+  sourceManager: SourceManager;
   engine: SemanticEngine;
 }
 
@@ -26,36 +39,60 @@ export interface SemanticRuntimeOptions {
   seed?: boolean;
   maxAutonomousRisk?: RuntimeConfig["maxAutonomousRisk"];
   sourceSystems?: SourceSystem[];
+  connectors?: SourceConnector[];
+  semanticEnricher?: SemanticEnrichmentProvider | null;
 }
 
 export interface CreateAppOptions extends SemanticRuntimeOptions {
   runtimeConfig?: RuntimeConfig;
+  bootstrapReferenceSources?: boolean;
+  referenceSourcesRoot?: string;
 }
 
 export function createSemanticRuntime(db: Database.Database, options: SemanticRuntimeOptions = {}): SemanticRuntime {
   const repository = new SemanticRepository(db);
+  const connectionRepository = new SourceConnectionRepository(db);
+  const semanticEnricher = options.semanticEnricher === undefined
+    ? new LocalSourceSemanticEnrichmentProvider()
+    : options.semanticEnricher ?? undefined;
+  const sourceManager = new SourceManager(connectionRepository, repository, {
+    connectors: options.connectors ?? [new FilesystemConnector(), new SqliteConnector(), new GitConnector()],
+    enricher: semanticEnricher
+  });
   const engine = new SemanticEngine(repository, {
     maxAutonomousRisk: options.maxAutonomousRisk,
-    sourceSystems: options.sourceSystems ?? loadSourceSystems()
+    sourceSystems: options.sourceSystems ?? loadSourceSystems(),
+    sourceManager
   });
 
   if (options.seed ?? true) {
     seedIfEmpty(engine, repository);
   }
 
-  return { repository, engine };
+  return { repository, connectionRepository, sourceManager, engine };
 }
 
 export function createApp(db: Database.Database, options: CreateAppOptions = {}) {
   const app = express();
   const config = options.runtimeConfig ?? loadRuntimeConfig();
   const providerConfig = loadProviderConfig();
-  const { repository, engine } = createSemanticRuntime(db, {
-    seed: options.seed,
+  const seedLegacyDemo = options.seed ?? config.databasePath === ":memory:";
+  const runtime = createSemanticRuntime(db, {
+    seed: seedLegacyDemo,
     maxAutonomousRisk: options.maxAutonomousRisk ?? config.maxAutonomousRisk,
-    sourceSystems: options.sourceSystems ?? loadSourceSystems(config.sourceSystemsFile)
+    sourceSystems: options.sourceSystems ?? (config.sourceSystemsFile ? loadSourceSystems(config.sourceSystemsFile) : seedLegacyDemo ? loadSourceSystems() : [])
   });
+  const { repository, engine } = runtime;
+  const bootstrapReferenceSources =
+    options.bootstrapReferenceSources ?? (options.seed !== false && db.name !== ":memory:" && config.databasePath !== ":memory:");
+  const ready = bootstrapReferenceSources
+    ? seedReferenceSources(
+        engine,
+        options.referenceSourcesRoot ?? path.resolve(path.dirname(config.databasePath), "reference-sources")
+      )
+    : Promise.resolve();
   let localPocRun: Promise<Awaited<ReturnType<typeof runLocalAgentUseCase>>> | null = null;
+  let localIntentRun: Promise<Awaited<ReturnType<typeof interpretAgentIntent>>> | null = null;
 
   app.disable("x-powered-by");
   app.use(helmet());
@@ -92,12 +129,27 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
     response.json(providerConfig);
   });
 
-  app.get("/api/catalog", (_request, response) => {
-    response.json(repository.catalog());
+  app.get("/api/models/local", (_request, response) => {
+    const models = discoverLocalHuggingFaceModels();
+    const selected = pickDefaultLocalModel(models);
+    const enrichmentModel = pickSemanticEnrichmentModel(models);
+    response.json({
+      available: models.length > 0,
+      selectedModelId: selected?.id ?? null,
+      selectedModels: {
+        intentInterpreter: selected?.id ?? null,
+        semanticEnricher: enrichmentModel?.id ?? null
+      },
+      models: models.map(({ id, modelType, architecture, quantization }) => ({ id, modelType, architecture, quantization }))
+    });
   });
 
-  app.get("/api/sources", (_request, response) => {
-    response.json(engine.getSources());
+  app.get("/api/catalog", (request, response) => {
+    response.json(engine.catalogForActor(requestActorContext(request)));
+  });
+
+  app.get("/api/sources", (request, response) => {
+    response.json(engine.getSources(requestActorContext(request)));
   });
 
   app.get("/api/source-systems", (_request, response) => {
@@ -107,20 +159,65 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
     }));
   });
 
-  app.post("/api/catalog/import", (request, response) => {
+  app.post("/api/catalog/import", requireOperatorRole, (request, response) => {
     response.json(engine.importCatalog(request.body));
   });
 
-  app.post("/api/ingest", (request, response) => {
+  app.post("/api/ingest", requireOperatorRole, (request, response) => {
     response.status(201).json(engine.ingest(request.body));
   });
 
-  app.post("/api/ingest/preview", (request, response) => {
+  app.post("/api/ingest/preview", requireOperatorRole, (request, response) => {
     response.json(engine.previewIngest(request.body));
   });
 
-  app.post("/api/semantic/relations", (request, response) => {
+  app.post("/api/semantic/relations", requireOperatorRole, (request, response) => {
     response.status(201).json(engine.curateRelation(request.body));
+  });
+
+  app.get("/api/source-connections", requireOperatorRole, (_request, response) => {
+    response.json(engine.listSourceConnections());
+  });
+
+  app.post("/api/source-connections", requireOperatorRole, (request, response) => {
+    response.status(201).json(engine.createSourceConnection(request.body));
+  });
+
+  app.post("/api/source-connections/:connectionId/test", requireOperatorRole, (request, response) => {
+    response.json(engine.testSourceConnection(z.string().parse(request.params.connectionId)));
+  });
+
+  app.post("/api/source-connections/:connectionId/sync", requireOperatorRole, async (request, response) => {
+    response.json(await engine.syncSourceConnection(z.string().parse(request.params.connectionId), request.body ?? {}));
+  });
+
+  app.delete("/api/source-connections/:connectionId", requireOperatorRole, (request, response) => {
+    engine.deleteSourceConnection(z.string().parse(request.params.connectionId), requestActor(request));
+    response.status(204).end();
+  });
+
+  app.get("/api/source-resources", (request, response) => {
+    const connectionId = z.string().min(1).optional().parse(request.query.connectionId);
+    response.json(engine.sourceResourcesForActor(requestActorContext(request), connectionId));
+  });
+
+  app.get("/api/source-sync-runs", (request, response) => {
+    const connectionId = z.string().min(1).optional().parse(request.query.connectionId);
+    response.json(engine.redactOperationalData(engine.sourceSyncRuns(connectionId)));
+  });
+
+  app.get("/api/semantic/proposals", requireOperatorRole, (request, response) => {
+    const filters = z
+      .object({
+        connectionId: z.string().min(1).optional(),
+        status: z.enum(["proposed", "accepted", "rejected", "superseded"]).optional()
+      })
+      .parse(request.query);
+    response.json(engine.redactOperationalData(engine.semanticProposals(filters)));
+  });
+
+  app.post("/api/semantic/proposals/:proposalId/decision", requireOperatorRole, (request, response) => {
+    response.json(engine.decideSemanticProposal(z.string().parse(request.params.proposalId), request.body, requestActor(request)));
   });
 
   app.post("/api/business/actions/plan", (request, response) => {
@@ -157,12 +254,38 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
     response.json(engine.redactOperationalData(repository.listDiscoveryRuns()));
   });
 
-  app.get("/api/graph", (_request, response) => {
-    response.json(repository.graphSnapshot());
+  app.get("/api/graph", (request, response) => {
+    response.json(engine.graphForActor(requestActorContext(request)));
   });
 
   app.get("/api/agent/manifest", (_request, response) => {
     response.json(engine.agentManifest());
+  });
+
+  app.post("/api/agent/interpret", async (request, response) => {
+    const input = AgentIntentRequestSchema.parse(request.body ?? {});
+    if (input.provider === "local-huggingface" && localIntentRun) {
+      throw new HttpError(409, "LOCAL_MODEL_ALREADY_RUNNING", "A local model interpretation is already in progress.");
+    }
+    const operation = interpretAgentIntent(input, engine.sourceResourcesForActor(requestActorContext(request)));
+    if (input.provider === "local-huggingface") localIntentRun = operation;
+    try {
+      const plan = await operation;
+      repository.audit(requestActor(request), "agent.interpret", "conversation", "allow", {
+        provider: plan.provider,
+        modelId: plan.modelId,
+        requestedAction: plan.requestedAction,
+        confidence: plan.confidence
+      });
+      response.json(plan);
+    } catch (error) {
+      if (error instanceof LocalModelExecutionError) {
+        throw new HttpError(503, error.code, error.message);
+      }
+      throw new HttpError(422, "INVALID_MODEL_INTENT_PLAN", error instanceof Error ? error.message : "The model intent plan was invalid.");
+    } finally {
+      if (input.provider === "local-huggingface") localIntentRun = null;
+    }
   });
 
   app.get("/api/openapi.json", (_request, response) => {
@@ -190,23 +313,27 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
   });
 
   app.post("/api/tools/semantic_search", (request, response) => {
-    response.json({ results: engine.search(request.body) });
+    response.json({ results: engine.search(request.body, requestActorContext(request)) });
+  });
+
+  app.post("/api/tools/source_resource_search", (request, response) => {
+    response.json({ resources: engine.searchSourceResources(request.body, requestActorContext(request)) });
   });
 
   app.post("/api/tools/entity_lookup", (request, response) => {
-    response.json({ entities: engine.entityLookup(request.body) });
+    response.json({ entities: engine.entityLookup(request.body, requestActorContext(request)) });
   });
 
   app.post("/api/tools/graph_neighbors", (request, response) => {
-    response.json(engine.graphNeighbors(request.body));
+    response.json(engine.graphNeighbors(request.body, undefined, requestActorContext(request)));
   });
 
   app.post("/api/tools/find_paths", (request, response) => {
-    response.json({ path: engine.findPaths(request.body) });
+    response.json({ path: engine.findPaths(request.body, undefined, undefined, requestActorContext(request)) });
   });
 
   app.post("/api/tools/expand_context", (request, response) => {
-    response.json(engine.expandContext(request.body ?? {}));
+    response.json(engine.expandContext(request.body ?? {}, requestActorContext(request)));
   });
 
   app.post("/api/tools/explain_permissions", (request, response) => {
@@ -215,7 +342,7 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
   });
 
   app.get("/api/evidence/:chunkId", (request, response) => {
-    const evidence = engine.getEvidence(request.params.chunkId);
+    const evidence = engine.getEvidence(z.string().parse(request.params.chunkId), requestActorContext(request));
     if (!evidence) {
       response.status(404).json({ error: "Evidence chunk not found" });
       return;
@@ -226,7 +353,7 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
   app.use(notFoundHandler);
   app.use(errorHandler);
 
-  return { app, repository, engine, config };
+  return { app, repository, engine, config, ready };
 }
 
 function seedIfEmpty(engine: SemanticEngine, repository: SemanticRepository): void {
@@ -246,4 +373,64 @@ function seedIfEmpty(engine: SemanticEngine, repository: SemanticRepository): vo
     }
     engine.runDiscovery("Initial semantic fabric discovery over demo corpus and seeded catalog.");
   }
+}
+
+async function seedReferenceSources(engine: SemanticEngine, rootPath: string): Promise<void> {
+  if (engine.listSourceConnections().length > 0) return;
+  const demo = ensureSupplyChainDemoSources(rootPath);
+  const connections = [
+    engine.createSourceConnection({
+      name: "Supply Chain Knowledge",
+      description: "Real local files containing policy, CSV reference data, and an OpenLineage event.",
+      config: {
+        kind: "filesystem",
+        rootPath: demo.knowledgePath,
+        recursive: true,
+        maxFiles: 250,
+        maxFileBytes: 2_000_000,
+        ingestionMode: "full_data"
+      }
+    }),
+    engine.createSourceConnection({
+      name: "Operations Database",
+      description: "Real SQLite operational source used for schema discovery and bounded record updates.",
+      config: {
+        kind: "sqlite",
+        databasePath: demo.operationsDatabasePath,
+        includeTables: [],
+        sampleRows: 2,
+        writeMode: "autonomous",
+        writeRules: [
+          {
+            table: "orders",
+            aliases: ["order"],
+            keyColumn: "order_id",
+            allowedColumns: ["status"],
+            risk: "low"
+          }
+        ]
+      }
+    }),
+    engine.createSourceConnection({
+      name: "Semantic Contract Repository",
+      description: "Real Git repository with versioned semantic contracts and commit-based readback.",
+      config: {
+        kind: "git",
+        repositoryPath: demo.semanticRepositoryPath,
+        includePaths: ["contracts"],
+        maxFiles: 250,
+        maxFileBytes: 2_000_000,
+        writeMode: "approval_required",
+        semanticContractPaths: [demo.semanticContractPath]
+      }
+    })
+  ];
+  await Promise.all(
+    connections.map((connection) =>
+      engine.syncSourceConnection(connection.id, {
+        objective: "Discover supply-chain assets, metric definitions, lineage, governance signals, and safe source actions.",
+        provider: "deterministic"
+      })
+    )
+  );
 }

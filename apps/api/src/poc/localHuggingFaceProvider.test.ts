@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { discoverLocalHuggingFaceModels, generateWithLocalHuggingFace, LocalModelExecutionError, pickDefaultLocalModel } from "./localHuggingFaceProvider.js";
+import { discoverLocalHuggingFaceModels, generateWithLocalHuggingFace, LocalModelExecutionError, pickDefaultLocalModel, pickSemanticEnrichmentModel } from "./localHuggingFaceProvider.js";
 
 describe("local Hugging Face provider", () => {
   const tempDirs: string[] = [];
@@ -17,6 +17,7 @@ describe("local Hugging Face provider", () => {
     const cacheRoot = makeCacheRoot();
     writeSnapshot(cacheRoot, "mlx-community/Qwen3-4B-4bit", "qwen3", "Qwen3ForCausalLM", true);
     writeSnapshot(cacheRoot, "mlx-community/Qwen3-1.7B-4bit", "qwen3", "Qwen3ForCausalLM", true);
+    writeSnapshot(cacheRoot, "mlx-community/Qwen3-1.7B-4bit", "qwen3", "Qwen3ForCausalLM", true, "duplicate-snapshot");
     writeSnapshot(cacheRoot, "mlx-community/metadata-only", "qwen3", "Qwen3ForCausalLM", false);
 
     const models = discoverLocalHuggingFaceModels(cacheRoot);
@@ -24,6 +25,7 @@ describe("local Hugging Face provider", () => {
     expect(models.map((model) => model.id)).toEqual(["mlx-community/Qwen3-1.7B-4bit", "mlx-community/Qwen3-4B-4bit"]);
     expect(models[0]?.quantization).toBe("4bit/group64");
     expect(pickDefaultLocalModel(models)?.id).toBe("mlx-community/Qwen3-1.7B-4bit");
+    expect(pickSemanticEnrichmentModel(models)?.id).toBe("mlx-community/Qwen3-4B-4bit");
   });
 
   it("does not echo prompts or model paths when the local runtime cannot start", async () => {
@@ -55,8 +57,8 @@ describe("local Hugging Face provider", () => {
   }
 });
 
-function writeSnapshot(cacheRoot: string, repoId: string, modelType: string, architecture: string, includeWeights: boolean) {
-  const snapshotDir = path.join(cacheRoot, `models--${repoId.replaceAll("/", "--")}`, "snapshots", "test-snapshot");
+function writeSnapshot(cacheRoot: string, repoId: string, modelType: string, architecture: string, includeWeights: boolean, snapshot = "test-snapshot") {
+  const snapshotDir = path.join(cacheRoot, `models--${repoId.replaceAll("/", "--")}`, "snapshots", snapshot);
   fs.mkdirSync(snapshotDir, { recursive: true });
   fs.writeFileSync(
     path.join(snapshotDir, "config.json"),

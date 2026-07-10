@@ -119,12 +119,25 @@ export const ClaimSchema = z.object({
 
 export type Claim = z.infer<typeof ClaimSchema>;
 
+export const GraphAnnotationSchema = z.object({
+  proposalId: z.string(),
+  kind: z.string(),
+  predicate: z.string(),
+  value: z.record(z.string(), z.unknown()).default({}),
+  confidence: z.number().min(0).max(1),
+  explanation: z.string(),
+  evidenceResourceIds: z.array(z.string()).default([])
+});
+
+export type GraphAnnotation = z.infer<typeof GraphAnnotationSchema>;
+
 export const GraphNodeSchema = z.object({
   id: z.string(),
   label: z.string(),
   type: z.string(),
   confidence: z.number(),
-  degree: z.number().default(0)
+  degree: z.number().default(0),
+  annotations: z.array(GraphAnnotationSchema).default([])
 });
 
 export type GraphNode = z.infer<typeof GraphNodeSchema>;
@@ -135,7 +148,9 @@ export const GraphEdgeSchema = z.object({
   target: z.string(),
   label: z.string(),
   confidence: z.number(),
-  evidenceChunkId: z.string()
+  evidenceChunkId: z.string().nullable(),
+  lifecycle: z.enum(["proposed", "accepted", "rejected", "superseded"]).optional(),
+  authoritative: z.boolean().optional()
 });
 
 export type GraphEdge = z.infer<typeof GraphEdgeSchema>;
@@ -208,6 +223,29 @@ export const DiscoveryRequestSchema = z
   .object({ objective: z.string().trim().min(1).max(2_000).optional() })
   .strict();
 
+export const AgentIntentRequestSchema = z
+  .object({
+    message: z.string().trim().min(1).max(4_000),
+    provider: z.enum(["deterministic", "local-huggingface"]).default("deterministic")
+  })
+  .strict();
+export type AgentIntentRequest = z.infer<typeof AgentIntentRequestSchema>;
+
+export const AgentIntentPlanSchema = z.object({
+  provider: z.enum(["deterministic", "local-huggingface-mlx"]),
+  modelId: z.string().nullable(),
+  objective: z.string(),
+  resourceQuery: z.string(),
+  searchQuery: z.string(),
+  entityQuery: z.string().nullable(),
+  actionIntent: z.string().nullable(),
+  requestedAction: z.boolean(),
+  confidence: z.number().min(0).max(1),
+  summary: z.string(),
+  warnings: z.array(z.string()).default([])
+});
+export type AgentIntentPlan = z.infer<typeof AgentIntentPlanSchema>;
+
 export const SearchResultSchema = z.object({
   chunkId: z.string(),
   sourceId: z.string(),
@@ -218,7 +256,17 @@ export const SearchResultSchema = z.object({
   vectorScore: z.number(),
   graphBoost: z.number(),
   hybridScore: z.number(),
-  entityIds: z.array(z.string()).default([])
+  entityIds: z.array(z.string()).default([]),
+  governance: z
+    .object({
+      decision: z.enum(["allow", "mask", "deny", "review"]),
+      reason: z.string(),
+      sensitivity: z.enum(["public", "internal", "confidential", "restricted"]),
+      owner: z.string().nullable(),
+      freshness: z.enum(["fresh", "aging", "stale", "unknown"]),
+      qualityScore: z.number().min(0).max(1)
+    })
+    .optional()
 });
 
 export type SearchResult = z.infer<typeof SearchResultSchema>;
@@ -247,14 +295,21 @@ export const DiscoveryRunSchema = z.object({
 
 export type DiscoveryRun = z.infer<typeof DiscoveryRunSchema>;
 
-export const IngestRequestSchema = z.object({
-  name: z.string().trim().min(1).max(255),
-  text: z.string().min(1).max(5_000_000),
-  uri: z.string().trim().min(1).max(2_048).optional(),
-  mimeType: z.string().trim().min(1).max(255).default("text/plain"),
-  ingestionMode: z.enum(["full_data", "metadata_only", "external_reference"]).default("full_data"),
-  metadata: z.record(z.string(), z.unknown()).default({})
-}).strict();
+export const IngestRequestSchema = z
+  .object({
+    name: z.string().trim().min(1).max(255),
+    text: z.string().max(5_000_000).default(""),
+    uri: z.string().trim().min(1).max(2_048).optional(),
+    mimeType: z.string().trim().min(1).max(255).default("text/plain"),
+    ingestionMode: z.enum(["full_data", "metadata_only", "external_reference"]).default("full_data"),
+    metadata: z.record(z.string(), z.unknown()).default({})
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (request.ingestionMode === "full_data" && request.text.length === 0) {
+      context.addIssue({ code: "custom", path: ["text"], message: "Full-data ingestion requires text." });
+    }
+  });
 
 export type IngestRequest = z.infer<typeof IngestRequestSchema>;
 
@@ -318,6 +373,9 @@ export const SystemStatusSchema = z.object({
   metrics: z.number(),
   policies: z.number(),
   lineageEdges: z.number(),
+  connections: z.number().default(0),
+  resources: z.number().default(0),
+  proposals: z.number().default(0),
   modules: z.array(FabricModuleSchema)
 });
 
@@ -390,6 +448,203 @@ export const SourceSystemRecordSchema = z.object({
 
 export type SourceSystemRecord = z.infer<typeof SourceSystemRecordSchema>;
 
+export const SourceConnectionKindSchema = z.enum(["filesystem", "sqlite", "git"]);
+export type SourceConnectionKind = z.infer<typeof SourceConnectionKindSchema>;
+
+export const SourceWriteModeSchema = z.enum(["read_only", "approval_required", "autonomous"]);
+export type SourceWriteMode = z.infer<typeof SourceWriteModeSchema>;
+
+export const SqliteWriteRuleSchema = z
+  .object({
+    table: z.string().trim().min(1).max(255),
+    aliases: z.array(z.string().trim().min(1).max(100)).max(20).default([]),
+    keyColumn: z.string().trim().min(1).max(255),
+    allowedColumns: z.array(z.string().trim().min(1).max(255)).min(1).max(100),
+    risk: z.enum(["low", "medium", "high"]).default("medium")
+  })
+  .strict();
+
+export const FilesystemConnectionConfigSchema = z
+  .object({
+    kind: z.literal("filesystem"),
+    rootPath: z.string().trim().min(1).max(4_096),
+    recursive: z.boolean().default(true),
+    maxFiles: z.number().int().positive().max(10_000).default(250),
+    maxFileBytes: z.number().int().positive().max(50_000_000).default(2_000_000),
+    ingestionMode: z.enum(["full_data", "metadata_only", "external_reference"]).default("full_data")
+  })
+  .strict();
+
+export const SqliteConnectionConfigSchema = z
+  .object({
+    kind: z.literal("sqlite"),
+    databasePath: z.string().trim().min(1).max(4_096),
+    includeTables: z.array(z.string().trim().min(1).max(255)).max(500).default([]),
+    sampleRows: z.number().int().min(0).max(20).default(0),
+    writeMode: SourceWriteModeSchema.default("read_only"),
+    writeRules: z.array(SqliteWriteRuleSchema).max(100).default([])
+  })
+  .strict();
+
+export const GitConnectionConfigSchema = z
+  .object({
+    kind: z.literal("git"),
+    repositoryPath: z.string().trim().min(1).max(4_096),
+    includePaths: z.array(z.string().trim().min(1).max(1_024)).max(500).default([]),
+    maxFiles: z.number().int().positive().max(10_000).default(250),
+    maxFileBytes: z.number().int().positive().max(50_000_000).default(2_000_000),
+    writeMode: SourceWriteModeSchema.default("approval_required"),
+    semanticContractPaths: z.array(z.string().trim().min(1).max(1_024)).max(100).default([])
+  })
+  .strict();
+
+export const SourceConnectionConfigSchema = z.discriminatedUnion("kind", [
+  FilesystemConnectionConfigSchema,
+  SqliteConnectionConfigSchema,
+  GitConnectionConfigSchema
+]);
+export type SourceConnectionConfig = z.infer<typeof SourceConnectionConfigSchema>;
+
+export const CreateSourceConnectionRequestSchema = z
+  .object({
+    name: z.string().trim().min(1).max(255),
+    description: z.string().trim().max(2_000).default(""),
+    config: SourceConnectionConfigSchema
+  })
+  .strict();
+export type CreateSourceConnectionRequest = z.infer<typeof CreateSourceConnectionRequestSchema>;
+
+export const SourceConnectionSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  kind: SourceConnectionKindSchema,
+  config: SourceConnectionConfigSchema,
+  status: z.enum(["configured", "ready", "syncing", "degraded", "error"]),
+  lastTestedAt: z.string().nullable(),
+  lastSyncAt: z.string().nullable(),
+  lastError: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+export type SourceConnection = z.infer<typeof SourceConnectionSchema>;
+
+export const SourceConnectionTestResultSchema = z.object({
+  connectionId: z.string(),
+  ok: z.boolean(),
+  message: z.string(),
+  details: z.record(z.string(), z.unknown()).default({}),
+  testedAt: z.string()
+});
+export type SourceConnectionTestResult = z.infer<typeof SourceConnectionTestResultSchema>;
+
+export const SourceResourceSchema = z.object({
+  id: z.string(),
+  connectionId: z.string(),
+  externalId: z.string(),
+  parentId: z.string().nullable(),
+  kind: z.enum(["database", "table", "column", "file", "document", "dataset", "job", "metric", "semantic_contract"]),
+  name: z.string(),
+  qualifiedName: z.string(),
+  dataType: z.string().nullable(),
+  description: z.string(),
+  uri: z.string(),
+  sensitivity: z.enum(["public", "internal", "confidential", "restricted"]),
+  writable: z.boolean(),
+  profile: z.record(z.string(), z.unknown()).default({}),
+  evidenceChunkIds: z.array(z.string()).default([]),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+  observedAt: z.string()
+});
+export type SourceResource = z.infer<typeof SourceResourceSchema>;
+
+export const GovernedSourceResourceSchema = SourceResourceSchema.extend({
+  governance: z.object({
+    decision: z.enum(["allow", "mask", "deny", "review"]),
+    reason: z.string(),
+    sensitivity: z.enum(["public", "internal", "confidential", "restricted"])
+  })
+});
+export type GovernedSourceResource = z.infer<typeof GovernedSourceResourceSchema>;
+
+export const SourceResourceSearchRequestSchema = z
+  .object({
+    query: z.string().trim().min(1).max(2_000),
+    kinds: z.array(SourceResourceSchema.shape.kind).max(20).default([]),
+    connectionId: z.string().trim().min(1).max(255).optional(),
+    topK: z.number().int().positive().max(50).default(10)
+  })
+  .strict();
+export type SourceResourceSearchRequest = z.infer<typeof SourceResourceSearchRequestSchema>;
+
+export const SourceSyncEventSchema = z.object({
+  id: z.string(),
+  runId: z.string(),
+  step: z.number().int().positive(),
+  phase: z.enum(["connect", "inspect", "profile", "parse", "extract", "propose", "publish", "complete"]),
+  title: z.string(),
+  detail: z.string(),
+  severity: z.enum(["info", "warning", "success", "error"]),
+  evidenceResourceIds: z.array(z.string()).default([]),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+  createdAt: z.string()
+});
+export type SourceSyncEvent = z.infer<typeof SourceSyncEventSchema>;
+
+export const SourceSyncRunSchema = z.object({
+  id: z.string(),
+  connectionId: z.string(),
+  objective: z.string(),
+  provider: z.enum(["deterministic", "local-huggingface"]),
+  status: z.enum(["running", "completed", "partial", "failed"]),
+  resourcesDiscovered: z.number().int().nonnegative(),
+  assetsPublished: z.number().int().nonnegative(),
+  proposalsCreated: z.number().int().nonnegative(),
+  startedAt: z.string(),
+  completedAt: z.string().nullable(),
+  events: z.array(SourceSyncEventSchema).default([])
+});
+export type SourceSyncRun = z.infer<typeof SourceSyncRunSchema>;
+
+export const SyncSourceConnectionRequestSchema = z
+  .object({
+    objective: z.string().trim().min(1).max(2_000).default("Discover source structure, semantics, governance signals, and safe action capabilities."),
+    provider: z.enum(["deterministic", "local-huggingface"]).default("deterministic")
+  })
+  .strict();
+export type SyncSourceConnectionRequest = z.infer<typeof SyncSourceConnectionRequestSchema>;
+
+export const SemanticProposalSchema = z.object({
+  id: z.string(),
+  connectionId: z.string(),
+  runId: z.string(),
+  kind: z.enum(["relation", "classification", "description", "ontology_class", "metric", "conflict"]),
+  subjectId: z.string(),
+  predicate: z.string(),
+  objectId: z.string().nullable(),
+  value: z.record(z.string(), z.unknown()).default({}),
+  confidence: z.number().min(0).max(1),
+  explanation: z.string(),
+  origin: z.enum(["source_fact", "deterministic_inference", "local_model", "manual"]),
+  authoritative: z.boolean().default(false),
+  status: z.enum(["proposed", "accepted", "rejected", "superseded"]),
+  evidenceResourceIds: z.array(z.string()).default([]),
+  evidenceChunkIds: z.array(z.string()).default([]),
+  createdAt: z.string(),
+  decidedAt: z.string().nullable(),
+  decidedBy: z.string().nullable(),
+  decisionRationale: z.string().nullable()
+});
+export type SemanticProposal = z.infer<typeof SemanticProposalSchema>;
+
+export const SemanticProposalDecisionRequestSchema = z
+  .object({
+    decision: z.enum(["accepted", "rejected"]),
+    rationale: z.string().trim().min(1).max(2_000)
+  })
+  .strict();
+export type SemanticProposalDecisionRequest = z.infer<typeof SemanticProposalDecisionRequestSchema>;
+
 export const BusinessActionRequestSchema = z.object({
   intent: z.string().trim().min(1).max(4_000),
   mode: BusinessActionModeSchema,
@@ -420,6 +675,7 @@ export const BusinessActionTargetSchema = z.object({
   status: BusinessActionStatusSchema,
   rationale: z.string(),
   evidenceChunkIds: z.array(z.string()).default([]),
+  parameters: z.record(z.string(), z.unknown()).default({}),
   diff: BusinessActionDiffSchema
 });
 
@@ -613,7 +869,8 @@ export const OntologyClassSchema = z.object({
   label: z.string(),
   description: z.string(),
   parentId: z.string().nullable(),
-  constraints: z.array(z.string()).default([])
+  constraints: z.array(z.string()).default([]),
+  metadata: z.record(z.string(), z.unknown()).optional()
 });
 
 export type OntologyClass = z.infer<typeof OntologyClassSchema>;
@@ -724,4 +981,38 @@ export function createJsonRequester(baseUrl = "", timeoutMs = 15_000) {
       init.signal?.removeEventListener("abort", abortFromCaller);
     }
   };
+}
+
+export interface ApiStartupRetryOptions {
+  timeoutMs?: number;
+  initialDelayMs?: number;
+  maxDelayMs?: number;
+}
+
+export async function retryApiStartup<T>(
+  operation: () => Promise<T>,
+  options: ApiStartupRetryOptions = {}
+): Promise<T> {
+  const timeoutMs = options.timeoutMs ?? 120_000;
+  const maxDelayMs = options.maxDelayMs ?? 2_000;
+  let delayMs = options.initialDelayMs ?? 250;
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    try {
+      return await operation();
+    } catch (error) {
+      const apiError = findApiRequestError(error);
+      const retryable = !apiError || apiError.status === 0 || apiError.status >= 500;
+      if (!retryable || Date.now() >= deadline) throw error;
+      await new Promise((resolve) => globalThis.setTimeout(resolve, Math.min(delayMs, Math.max(0, deadline - Date.now()))));
+      delayMs = Math.min(maxDelayMs, delayMs * 2);
+    }
+  }
+}
+
+function findApiRequestError(error: unknown): ApiRequestError | null {
+  if (error instanceof ApiRequestError) return error;
+  if (error instanceof Error && error.cause && error.cause !== error) return findApiRequestError(error.cause);
+  return null;
 }

@@ -1,4 +1,5 @@
 import type {
+  AgentIntentPlan,
   AuditEvent,
   BusinessActionPlan,
   BusinessActionRun,
@@ -8,6 +9,8 @@ import type {
   GraphSnapshot,
   ProviderConfig,
   SearchResult,
+  SourceResource,
+  SourceSyncRun,
   SourceSystem,
   SourceSystemRecord,
   SystemStatus
@@ -18,8 +21,19 @@ export interface PocSnapshot {
   provider: ProviderConfig;
   sourceSystems: SourceSystem[];
   sourceRecords: SourceSystemRecord[];
+  sourceResources: SourceResource[];
+  sourceSyncRuns: SourceSyncRun[];
   actionRuns: BusinessActionRun[];
   auditEvents: AuditEvent[];
+}
+
+export interface SourceSystemsEnvelope {
+  systems: SourceSystem[];
+  records: SourceSystemRecord[];
+}
+
+export interface SourceResourceSearchEnvelope {
+  resources: SourceResource[];
 }
 
 export interface SearchEnvelope {
@@ -53,50 +67,17 @@ export interface PermissionEnvelope {
   };
 }
 
-export interface PocAgentReport {
-  useCase: string;
-  question: string;
-  provider: string;
-  model: string;
-  orchestrationProvider: "deterministic-policy-harness";
-  modelRole: "trace-summarizer" | "deterministic-summary";
-  overallStatus: "completed" | "degraded" | "blocked" | "failed";
-  autonomyDecision: string;
-  businessAction: {
-    intent: string;
-    status: string;
-    writes: number;
-    verifiedReflections: number;
-    semanticChunksRefreshed: number;
-  };
-  steps: Array<{
-    step: number;
-    tool: string;
-    rationale: string;
-    observation: string;
-  }>;
-  finalAnswer: string;
-  modelReasoningSummary: string;
-  citations: Array<{
-    sourceName: string;
-    chunkId: string;
-    excerpt: string;
-  }>;
-  stopConditionsChecked: string[];
-  stopConditionEvaluations: Array<{
-    condition: string;
-    status: "passed" | "triggered" | "not_evaluated";
-    detail: string;
-  }>;
-}
-
-export type ToolProvider = "local-huggingface" | "deterministic";
+export type IntentInterpreterProvider = "local-huggingface" | "deterministic";
 
 export type {
+  AgentIntentPlan,
   BusinessActionPlan,
   BusinessActionRun,
   DiscoveryRun,
+  EvidenceSpan,
   GraphSnapshot,
   SearchResult,
+  SourceResource,
+  SourceSyncRun,
   SourceSystemRecord
 };

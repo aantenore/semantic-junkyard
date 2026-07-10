@@ -4,6 +4,7 @@ import {
   BusinessActionPlanSchema,
   BusinessActionRunSchema,
   EvidenceSpanSchema,
+  GovernedSourceResourceSchema,
   GraphSnapshotSchema,
   SearchResultSchema
 } from "@semantic-junkyard/shared";
@@ -22,6 +23,7 @@ const ContextEnvelopeSchema = z.object({
   evidence: z.array(EvidenceSpanSchema),
   guidance: z.string()
 }).passthrough();
+const ResourceEnvelopeSchema = z.object({ resources: z.array(GovernedSourceResourceSchema) }).strict();
 
 interface McpPocStep {
   step: number;
@@ -50,7 +52,7 @@ interface McpPocReport {
   promptPreview: string;
 }
 
-const question = "Which governed finance context should be used for failed payment analysis, and can the agent perform a reflected business writeback?";
+const question = "Which governed source defines dispatch eligibility, and can the agent update order ORD-1001 through verified source writeback?";
 
 export async function runMcpAgentUseCase(options: { writeReport?: boolean; outputPath?: string } = {}): Promise<McpPocReport> {
   const repoRoot = findRepoRoot();
@@ -73,36 +75,47 @@ export async function runMcpAgentUseCase(options: { writeReport?: boolean; outpu
     const permissions = await callStructured(client, "explain_permissions", { intent: question }, PermissionResultSchema);
     steps.push({ step: 1, tool: "explain_permissions", observation: permissions.decision });
 
+    const sourceResources = await callStructured(client, "source_resource_search", {
+      query: "ORD-1001 orders dispatch_eligible status Operations Database",
+      topK: 8,
+      kinds: ["table", "column", "document", "metric", "semantic_contract"]
+    }, ResourceEnvelopeSchema);
+    const actionResources = sourceResources.resources.filter((resource) => /orders|dispatch_eligible|status/i.test(`${resource.name} ${resource.qualifiedName} ${resource.description}`));
+    const groundedChunkIds = [...new Set(actionResources.flatMap((resource) => resource.evidenceChunkIds))];
+    if (groundedChunkIds.length === 0) throw new Error("No source-linked evidence chunks were resolved for the operations action.");
+    steps.push({ step: 2, tool: "source_resource_search", observation: `${sourceResources.resources.length} governed resources matched; ${actionResources.length} directly grounded ${groundedChunkIds.length} evidence chunks.` });
+
     const search = await callStructured(client, "semantic_search", {
-      query: "failed payment rate finance semantic contract billing pipeline revenue mart policy",
+      query: "ORD-1001 orders dispatch_eligible status Operations Database",
       topK: 5,
       mode: "hybrid"
     }, SearchEnvelopeSchema);
-    steps.push({ step: 2, tool: "semantic_search", observation: `${search.results.length} candidates. Top source: ${search.results[0]?.sourceName ?? "none"}.` });
+    steps.push({ step: 3, tool: "semantic_search", observation: `${search.results.length} candidates. Top source: ${search.results[0]?.sourceName ?? "none"}.` });
 
-    const entities = await callStructured(client, "entity_lookup", { name: "Billing Pipeline" }, EntityEnvelopeSchema);
+    const entities = await callStructured(client, "entity_lookup", { name: "orders" }, EntityEnvelopeSchema);
     const primaryEntity = entities.entities[0];
-    steps.push({ step: 3, tool: "entity_lookup", observation: primaryEntity ? `Resolved ${primaryEntity.canonicalName} with degree ${primaryEntity.degree}.` : "No Billing Pipeline entity resolved." });
+    steps.push({ step: 4, tool: "entity_lookup", observation: primaryEntity ? `Resolved ${primaryEntity.canonicalName} with degree ${primaryEntity.degree}.` : "No operations table entity resolved." });
 
     const neighbors = primaryEntity
       ? await callStructured(client, "graph_neighbors", { entityId: primaryEntity.id, depth: 1 }, GraphSnapshotSchema)
       : { nodes: [], edges: [] };
-    steps.push({ step: 4, tool: "graph_neighbors", observation: `${neighbors.nodes.length} nodes and ${neighbors.edges.length} edges returned.` });
+    steps.push({ step: 5, tool: "graph_neighbors", observation: `${neighbors.nodes.length} nodes and ${neighbors.edges.length} edges returned.` });
 
     const context = await callStructured(client, "expand_context", {
-      query: "Finance Semantic Contract Failed Payment Rate Billing Pipeline Revenue Mart",
+      query: "ORD-1001 orders dispatch_eligible status Operations Database",
+      chunkIds: groundedChunkIds,
       entityIds: primaryEntity ? [primaryEntity.id] : []
     }, ContextEnvelopeSchema);
-    steps.push({ step: 5, tool: "expand_context", observation: `${context.evidence.length} evidence spans assembled. ${context.guidance}` });
+    steps.push({ step: 6, tool: "expand_context", observation: `${context.evidence.length} evidence spans assembled. ${context.guidance}` });
 
     const openedEvidence = context.evidence[0]
       ? await callStructured(client, "get_evidence", { chunkId: context.evidence[0].chunkId }, z.object({ evidence: EvidenceSpanSchema }).strict())
       : null;
     if (openedEvidence) {
-      steps.push({ step: 6, tool: "get_evidence", observation: `Opened ${openedEvidence.evidence.sourceName} / ${openedEvidence.evidence.chunkId}.` });
+      steps.push({ step: steps.length + 1, tool: "get_evidence", observation: `Opened ${openedEvidence.evidence.sourceName} / ${openedEvidence.evidence.chunkId}.` });
     }
 
-    const businessIntent = "Align Failed Payment Rate definition across Finance and Billing, then reflect it in source systems.";
+    const businessIntent = "Set order ORD-1001 status to dispatched";
     const actionPlan = await callStructured(client, "business_action_plan", {
       intent: businessIntent,
       mode: "autonomous",
@@ -116,20 +129,22 @@ export async function runMcpAgentUseCase(options: { writeReport?: boolean; outpu
       intent: actionPlan.intent,
       mode: actionPlan.mode,
       maxAutonomousRisk: actionPlan.maxAutonomousRisk,
-      idempotencyKey: `${actionPlan.id}-mcp-poc`
+      idempotencyKey: `${actionPlan.id}-${actionPlan.fingerprint.slice(0, 16)}-mcp-poc`
     }, BusinessActionRunSchema);
     steps.push({ step: steps.length + 1, tool: "business_action_execute", observation: `${actionRun.writes.length} source writes executed; ${actionRun.reflections.filter((reflection) => reflection.status === "verified").length} reflected; status ${actionRun.status}.` });
 
-    const citations = context.evidence.slice(0, 4).map((item) => ({
+    const groundedChunkSet = new Set(groundedChunkIds);
+    const citations = context.evidence.filter((item) => groundedChunkSet.has(item.chunkId)).slice(0, 4).map((item) => ({
       sourceName: item.sourceName,
       chunkId: item.chunkId,
       excerpt: compact(item.text)
     }));
 
     const writebackVerified = actionRun.status === "verified" && actionRun.writes.length > 0 && actionRun.reflections.every((reflection) => reflection.status === "verified");
-    const overallStatus: McpPocReport["overallStatus"] = actionRun.status === "blocked" || actionRun.status === "approval_required" ? "blocked" : writebackVerified ? "completed" : "failed";
+    const evidenceVerified = citations.length > 0;
+    const overallStatus: McpPocReport["overallStatus"] = actionRun.status === "blocked" || actionRun.status === "approval_required" ? "blocked" : writebackVerified && evidenceVerified ? "completed" : "failed";
     const report: McpPocReport = {
-      useCase: "MCP agent discovery over Semantic Junkyard governed finance context",
+      useCase: "MCP agent discovery and verified writeback over real supply-chain sources",
       transport: "mcp-stdio",
       serverCommand: formatServerCommand(repoRoot, server),
       toolsAdvertised: tools.tools.map((tool) => tool.name),
@@ -144,9 +159,9 @@ export async function runMcpAgentUseCase(options: { writeReport?: boolean; outpu
         verifiedReflections: actionRun.reflections.filter((reflection) => reflection.status === "verified").length
       },
       overallStatus,
-      finalAnswer: writebackVerified
-        ? "The MCP client found governed finance evidence and completed the configured business writeback with verified source reflection. The governed context is the Finance Semantic Contract with Billing Pipeline and Revenue Mart lineage."
-        : `The MCP client found governed finance evidence, but no completed writeback can be claimed because the product returned ${actionRun.status}.`,
+      finalAnswer: writebackVerified && evidenceVerified
+        ? "The MCP client grounded the request in the real operations SQLite source and supply-chain semantic evidence, updated ORD-1001, reread the authoritative row, and refreshed the semantic read model only after the postcondition passed."
+        : `The MCP client cannot claim end-to-end completion: action status ${actionRun.status}, grounded citations ${citations.length}.`,
       citations,
       promptPreview
     };
@@ -185,7 +200,10 @@ function textFromToolResult(result: { content?: Array<{ type: string; text?: str
 
 function resolveServerCommand(repoRoot: string): { command: string; args: string[] } {
   const tsxCli = path.join(repoRoot, "node_modules/tsx/dist/cli.mjs");
-  return { command: process.execPath, args: [tsxCli, path.join(repoRoot, "apps/mcp/src/server.ts"), "--memory"] };
+  return {
+    command: process.execPath,
+    args: [tsxCli, path.join(repoRoot, "apps/mcp/src/server.ts"), "--db", path.join(repoRoot, "apps/api/data/semantic-junkyard.sqlite")]
+  };
 }
 
 async function withTimeout<T>(operation: Promise<T>, label: string): Promise<T> {

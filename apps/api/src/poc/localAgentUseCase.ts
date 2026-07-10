@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createApp } from "../app.js";
@@ -49,14 +50,35 @@ export interface RunPocOptions {
   outputPath?: string;
   provider?: "deterministic" | "local-huggingface";
   allowModelFallback?: boolean;
+  temporaryRoot?: string;
 }
 
 const useCaseQuestion =
-  "Can an autonomous AI agent answer which governed finance context should be used for failed payment analysis, and can it perform a business writeback that reflects into source systems?";
+  "Which governed data and policy control order dispatch, and can the agent set order ORD-1001 to dispatched with verified source reflection?";
 
 export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise<PocAgentReport> {
+  const temporaryRoot = options.temporaryRoot ?? os.tmpdir();
+  fs.mkdirSync(temporaryRoot, { recursive: true });
+  const sourceRoot = fs.mkdtempSync(path.join(temporaryRoot, "semantic-junkyard-agent-"));
   const db = openMemoryDatabase();
-  const { engine } = createApp(db, { seed: true });
+  try {
+    const { engine, ready } = createApp(db, {
+      seed: false,
+      bootstrapReferenceSources: true,
+      referenceSourcesRoot: sourceRoot
+    });
+    await ready;
+    return await executeLocalAgentUseCase(engine, options);
+  } finally {
+    db.close();
+    fs.rmSync(sourceRoot, { recursive: true, force: true });
+  }
+}
+
+async function executeLocalAgentUseCase(
+  engine: ReturnType<typeof createApp>["engine"],
+  options: RunPocOptions
+): Promise<PocAgentReport> {
   const steps: PocAgentStep[] = [];
 
   const permissionCheck = engine.explainPermissions(useCaseQuestion);
@@ -68,7 +90,7 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
   });
 
   const searchResults = engine.search({
-    query: "failed payment rate finance semantic contract billing pipeline revenue mart policy",
+    query: "order dispatch status carrier SLA policy operations database",
     topK: 5,
     mode: "hybrid"
   });
@@ -79,7 +101,7 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
     observation: `${searchResults.length} evidence candidates returned. Top source: ${searchResults[0]?.sourceName ?? "none"}.`
   });
 
-  const entityCandidates = engine.entityLookup({ name: "Billing Pipeline", topK: 5 });
+  const entityCandidates = engine.entityLookup({ name: "Operations Database.orders", topK: 5 });
   const primaryEntity = entityCandidates[0] ?? null;
   steps.push({
     step: 3,
@@ -87,7 +109,7 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
     rationale: "Ground the search result in canonical graph entities before answering.",
     observation: primaryEntity
       ? `Resolved ${primaryEntity.canonicalName} with degree ${primaryEntity.degree}.`
-      : "No canonical Billing Pipeline entity was resolved."
+      : "No canonical orders entity was resolved."
   });
 
   const neighbors = primaryEntity ? engine.graphNeighbors({ entityId: primaryEntity.id, depth: 1 }) : { nodes: [], edges: [] };
@@ -99,7 +121,7 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
   });
 
   const contextPack = engine.expandContext({
-    query: "Finance Semantic Contract Failed Payment Rate Billing Pipeline Revenue Mart",
+    query: "order dispatch policy status carrier SLA Operations Database orders",
     entityIds: primaryEntity ? [primaryEntity.id] : []
   });
   steps.push({
@@ -109,7 +131,7 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
     observation: `${contextPack.evidence.length} evidence spans assembled.`
   });
 
-  const businessIntent = "Align Failed Payment Rate definition across Finance and Billing, then reflect it in source systems.";
+  const businessIntent = "Set order ORD-1001 status to dispatched.";
   const actionPlan = engine.planBusinessAction({
     intent: businessIntent,
     mode: "autonomous",
@@ -138,7 +160,7 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
   });
 
   const reflectedSearch = engine.search({
-    query: "Business Action Reflection source systems Failed Payment Rate",
+    query: "ORD-1001 dispatched Business Action Reflection Operations Database",
     topK: 3,
     mode: "hybrid"
   });
@@ -161,8 +183,8 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
     writebackVerified
       ? "Yes. This run found authorized evidence and completed the configured business action with verified source reflection."
       : `No completed writeback can be claimed for this run. The product returned action status ${actionRun.status} with ${verifiedReflections}/${actionRun.reflections.length} verified reflections.`,
-    "For failed payment analysis, the governed finance context is the Finance Semantic Contract plus the Billing Pipeline and Revenue Mart lineage. The local catalog also defines Failed Payment Rate as a governed metric with dimensions such as payment provider, plan, and retry policy.",
-    "The agent may discover and cite metadata, graph relationships, metric definitions, policies, and source spans. It may also execute configured low/medium-risk business writebacks through the source writeback gateway, but completion is only valid after source reflection verifies the changed records and the semantic read model is refreshed. It may not execute generated SQL, expose secrets, bypass masking, mutate restricted production data, or perform destructive changes without approval."
+    "The governed dispatch context combines the Operations Database orders table, dispatch policy, carrier SLA reference data, and discovered lineage. The write changed only the allowlisted status field for ORD-1001.",
+    "The agent may discover and cite metadata, graph relationships, policies, and source spans. It may execute a configured low-risk record update through the source writeback gateway, but completion is valid only after an independent source reread verifies the exact value and the semantic read model is refreshed. It may not execute generated SQL, expose secrets, bypass masking, or write outside configured connector capabilities."
   ].join(" ");
 
   const modelResult = await maybeGenerateWithLocalModel(options.provider, options.allowModelFallback ?? true, citations);
@@ -179,7 +201,7 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
       : deterministicAnswer;
 
   const report: PocAgentReport = {
-    useCase: "Local autonomous agent discovery over governed finance semantic context",
+    useCase: "Local autonomous agent discovery and verified order writeback",
     question: useCaseQuestion,
     provider: modelResult.provider,
     model: modelResult.model,
@@ -239,7 +261,7 @@ async function maybeGenerateWithLocalModel(
         "Return a concise operational reasoning summary in two bullet points.",
         "Use only the provided evidence. Do not introduce source names, facts, actions, or systems that are absent from the evidence.",
         "Do not repeat sentences.",
-        "Question: Which governed finance context should be used for failed payment analysis, and how can the agent execute a reflected business writeback?",
+        "Question: Which governed sources control order dispatch, and how did the agent verify the ORD-1001 writeback?",
         "Evidence:",
         evidence
       ].join("\n"),

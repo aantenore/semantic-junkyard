@@ -7,7 +7,18 @@ export class LocalTextParser implements Parser {
   id = "parser.local-text-markdown-html";
 
   supports(mimeType: string): boolean {
-    return ["text/plain", "text/markdown", "text/html", "application/json"].includes(mimeType);
+    return [
+      "text/plain",
+      "text/markdown",
+      "text/html",
+      "text/csv",
+      "text/yaml",
+      "application/json",
+      "application/x-ndjson",
+      "application/yaml",
+      "application/x-yaml",
+      "application/pdf"
+    ].includes(mimeType);
   }
 
   parse(input: { sourceId: string; text: string; mimeType: string }): DocumentElement[] {
@@ -30,7 +41,8 @@ export class LocalTextParser implements Parser {
         startOffset,
         endOffset,
         metadata: {
-          parser: this.id
+          parser: this.id,
+          offsetBasis: input.mimeType === "text/html" ? "normalized-extracted-text" : "normalized-source-text"
         }
       });
     }
@@ -47,4 +59,3 @@ function inferElementKind(text: string): DocumentElement["kind"] {
   if (/^```/.test(text) || /\b(class|function|const|interface)\b/.test(text)) return "code";
   return "paragraph";
 }
-

@@ -6,14 +6,19 @@ export class InlineTextConnector {
 
   createSource(request: IngestRequest): SourceArtifact {
     const uri = request.uri ?? `inline://${encodeURIComponent(request.name)}`;
-    const contentHash = sha256(request.text);
+    const retainedText = request.ingestionMode === "full_data" ? request.text : "";
+    const contentHash = sha256(
+      request.ingestionMode === "full_data"
+        ? request.text
+        : JSON.stringify({ uri, name: request.name, mimeType: request.mimeType, ingestionMode: request.ingestionMode, metadata: request.metadata })
+    );
     return {
       id: stableId("src", `${uri}:${contentHash}`),
       uri,
       name: request.name,
       mimeType: request.mimeType,
       contentHash,
-      text: request.text,
+      text: retainedText,
       ingestionMode: request.ingestionMode,
       metadata: {
         ...request.metadata,

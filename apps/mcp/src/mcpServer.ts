@@ -15,14 +15,24 @@ import {
   FindPathsRequestSchema,
   GraphNeighborsRequestSchema,
   GraphSnapshotSchema,
+  GovernedSourceResourceSchema,
   SearchRequestSchema,
-  SearchResultSchema
+  SearchResultSchema,
+  SemanticProposalSchema,
+  SourceResourceSearchRequestSchema,
+  SourceSyncRunSchema,
+  SyncSourceConnectionRequestSchema
 } from "@semantic-junkyard/shared";
 import { z } from "zod";
 
 const MAX_CATALOG_RESOURCE_ITEMS = 500;
 const MAX_GRAPH_RESOURCE_NODES = 500;
 const MAX_GRAPH_RESOURCE_EDGES = 1_000;
+const mcpActor = {
+  actor: "mcp-agent",
+  roles: ["semantic-reader", "business-action-planner"],
+  clearance: "confidential" as const
+};
 
 export function createSemanticJunkyardMcpServer(runtime: SemanticRuntime): McpServer {
   const server = new McpServer(
@@ -89,6 +99,18 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
   );
 
   server.registerTool(
+    "source_resource_search",
+    {
+      title: "Search Source Resources",
+      description: "Find observed tables, columns, files, datasets, jobs, metrics, and semantic contracts before selecting evidence or actions.",
+      inputSchema: SourceResourceSearchRequestSchema,
+      outputSchema: z.object({ resources: z.array(GovernedSourceResourceSchema) }).strict(),
+      annotations: readOnlyAnnotations
+    },
+    ({ query, kinds, connectionId, topK }) => toolResult({ resources: engine.searchSourceResources({ query, kinds, connectionId, topK }) })
+  );
+
+  server.registerTool(
     "entity_lookup",
     {
       title: "Entity Lookup",
@@ -137,7 +159,7 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
     "get_evidence",
     {
       title: "Get Evidence",
-      description: "Open a single evidence chunk by ID and return source-spanned text for citation.",
+      description: "Open one policy-filtered transformed-text evidence chunk with source identity for citation.",
       inputSchema: z.object({ chunkId: z.string().trim().min(1).max(255) }).strict(),
       outputSchema: z.object({ evidence: EvidenceSpanSchema }).strict(),
       annotations: readOnlyAnnotations
@@ -159,6 +181,35 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
       annotations: persistedRunAnnotations
     },
     ({ objective }) => toolResult(engine.runDiscovery(objective))
+  );
+
+  server.registerTool(
+    "sync_source",
+    {
+      title: "Synchronize Configured Source",
+      description: "Run connector discovery for an existing operator-configured source. This persists resources, evidence, source facts, and reviewable semantic proposals.",
+      inputSchema: SyncSourceConnectionRequestSchema.extend({ connectionId: z.string().trim().min(1).max(255) }).strict(),
+      outputSchema: SourceSyncRunSchema,
+      annotations: persistedRunAnnotations
+    },
+    async ({ connectionId, objective, provider }) => operationalToolResult(await engine.syncSourceConnection(connectionId, { objective, provider }))
+  );
+
+  server.registerTool(
+    "list_semantic_proposals",
+    {
+      title: "List Semantic Proposals",
+      description: "Inspect evidence-bound semantic proposals and their review lifecycle. This tool cannot accept or reject proposals.",
+      inputSchema: z
+        .object({
+          connectionId: z.string().trim().min(1).max(255).optional(),
+          status: z.enum(["proposed", "accepted", "rejected", "superseded"]).optional()
+        })
+        .strict(),
+      outputSchema: z.object({ proposals: z.array(SemanticProposalSchema) }).strict(),
+      annotations: readOnlyAnnotations
+    },
+    ({ connectionId, status }) => operationalToolResult({ proposals: engine.semanticProposals({ connectionId, status }) })
   );
 
   server.registerTool(
@@ -190,8 +241,12 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
 function registerResources(server: McpServer, engine: SemanticEngine, repository: SemanticRepository): void {
   registerJsonResource(server, "status", "semantic-junkyard://status", "System Status", "Current semantic fabric counts and active modules.", () => repository.status());
   registerJsonResource(server, "manifest", "semantic-junkyard://manifest", "Agent Manifest", "Agent capability manifest, operating rules, and stop conditions.", () => engine.agentManifest());
-  registerJsonResource(server, "catalog", "semantic-junkyard://catalog", "Catalog", "Bounded governed catalog snapshot with total counts.", () => boundedCatalogResource(repository));
-  registerJsonResource(server, "graph", "semantic-junkyard://graph", "Graph", "Bounded entity and relation graph snapshot with total counts.", () => boundedGraphResource(repository));
+  registerJsonResource(server, "catalog", "semantic-junkyard://catalog", "Catalog", "Bounded governed catalog snapshot with total counts.", () => boundedCatalogResource(engine));
+  registerJsonResource(server, "graph", "semantic-junkyard://graph", "Graph", "Bounded entity and relation graph snapshot with total counts.", () => boundedGraphResource(engine));
+  registerJsonResource(server, "source-resources", "semantic-junkyard://source-resources", "Source Resources", "Bounded observed resource inventory from configured connectors.", () => {
+    const resources = engine.sourceResourcesForActor(mcpActor);
+    return { count: resources.length, truncated: resources.length > MAX_CATALOG_RESOURCE_ITEMS, resources: resources.slice(0, MAX_CATALOG_RESOURCE_ITEMS) };
+  });
   registerJsonResource(server, "source-systems", "semantic-junkyard://source-systems", "Source Systems", "Configured writeback source systems and recent reflected records.", () => ({
     systems: engine.sourceSystems(),
     records: engine.redactOperationalData(repository.listSourceSystemRecords())
@@ -296,8 +351,8 @@ function asStructuredContent(data: unknown): Record<string, unknown> {
   return { value: data };
 }
 
-function boundedCatalogResource(repository: SemanticRepository) {
-  const catalog = repository.catalog();
+function boundedCatalogResource(engine: SemanticEngine) {
+  const catalog = engine.catalogForActor(mcpActor);
   const counts = {
     assets: catalog.assets.length,
     metrics: catalog.metrics.length,
@@ -320,8 +375,8 @@ function boundedCatalogResource(repository: SemanticRepository) {
   };
 }
 
-function boundedGraphResource(repository: SemanticRepository) {
-  const graph = repository.graphSnapshot();
+function boundedGraphResource(engine: SemanticEngine) {
+  const graph = engine.graphForActor(mcpActor);
   const nodes = graph.nodes.slice(0, MAX_GRAPH_RESOURCE_NODES);
   const nodeIds = new Set(nodes.map((node) => node.id));
   const matchingEdges = graph.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));

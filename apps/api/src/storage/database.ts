@@ -172,7 +172,8 @@ function migrate(db: Database.Database): void {
       label TEXT NOT NULL,
       description TEXT NOT NULL,
       parent_id TEXT,
-      constraints TEXT NOT NULL
+      constraints TEXT NOT NULL,
+      metadata TEXT NOT NULL DEFAULT '{}'
     );
 
     CREATE TABLE IF NOT EXISTS semantic_contracts (
@@ -194,6 +195,88 @@ function migrate(db: Database.Database): void {
       version INTEGER NOT NULL,
       updated_at TEXT NOT NULL,
       UNIQUE(system_id, object_type, object_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS source_connections (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      config TEXT NOT NULL,
+      status TEXT NOT NULL,
+      last_tested_at TEXT,
+      last_sync_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS source_resources (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL REFERENCES source_connections(id) ON DELETE CASCADE,
+      external_id TEXT NOT NULL,
+      parent_id TEXT,
+      kind TEXT NOT NULL,
+      name TEXT NOT NULL,
+      qualified_name TEXT NOT NULL,
+      data_type TEXT,
+      description TEXT NOT NULL,
+      uri TEXT NOT NULL,
+      sensitivity TEXT NOT NULL,
+      writable INTEGER NOT NULL,
+      profile TEXT NOT NULL,
+      evidence_chunk_ids TEXT NOT NULL,
+      metadata TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      UNIQUE(connection_id, external_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS source_sync_runs (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL REFERENCES source_connections(id) ON DELETE CASCADE,
+      objective TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      status TEXT NOT NULL,
+      resources_discovered INTEGER NOT NULL,
+      assets_published INTEGER NOT NULL,
+      proposals_created INTEGER NOT NULL,
+      started_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS source_sync_events (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES source_sync_runs(id) ON DELETE CASCADE,
+      step INTEGER NOT NULL,
+      phase TEXT NOT NULL,
+      title TEXT NOT NULL,
+      detail TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      evidence_resource_ids TEXT NOT NULL,
+      metadata TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS semantic_proposals (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL REFERENCES source_connections(id) ON DELETE CASCADE,
+      run_id TEXT NOT NULL REFERENCES source_sync_runs(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,
+      subject_id TEXT NOT NULL,
+      predicate TEXT NOT NULL,
+      object_id TEXT,
+      value TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      explanation TEXT NOT NULL,
+      origin TEXT NOT NULL,
+      authoritative INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      evidence_resource_ids TEXT NOT NULL,
+      evidence_chunk_ids TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      decided_at TEXT,
+      decided_by TEXT,
+      decision_rationale TEXT
     );
 
     CREATE TABLE IF NOT EXISTS business_action_runs (
@@ -241,6 +324,10 @@ function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_lineage_from ON lineage_edges(from_asset_id);
     CREATE INDEX IF NOT EXISTS idx_lineage_to ON lineage_edges(to_asset_id);
     CREATE INDEX IF NOT EXISTS idx_source_records_system ON source_system_records(system_id);
+    CREATE INDEX IF NOT EXISTS idx_source_resources_connection ON source_resources(connection_id, kind);
+    CREATE INDEX IF NOT EXISTS idx_source_sync_runs_connection ON source_sync_runs(connection_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_source_sync_events_run ON source_sync_events(run_id, step);
+    CREATE INDEX IF NOT EXISTS idx_semantic_proposals_status ON semantic_proposals(status, connection_id);
     CREATE INDEX IF NOT EXISTS idx_business_action_runs_created ON business_action_runs(created_at);
     CREATE INDEX IF NOT EXISTS idx_business_action_approvals_plan ON business_action_approvals(plan_id, plan_fingerprint, status);
     CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at);
@@ -257,4 +344,9 @@ function migrate(db: Database.Database): void {
     db.exec("UPDATE business_action_runs SET idempotency_key = id WHERE idempotency_key IS NULL");
   }
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_business_action_runs_idempotency ON business_action_runs(idempotency_key)");
+
+  const ontologyColumns = db.prepare("PRAGMA table_info(ontology_classes)").all() as Array<{ name: string }>;
+  if (!ontologyColumns.some((column) => column.name === "metadata")) {
+    db.exec("ALTER TABLE ontology_classes ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'");
+  }
 }

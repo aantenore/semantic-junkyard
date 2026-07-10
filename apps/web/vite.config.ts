@@ -20,8 +20,15 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           configure(proxy) {
             proxy.on("proxyReq", (proxyRequest, request) => {
-              const approvalPath = request.url?.startsWith("/api/business/actions/approve") ?? false;
-              const token = approvalPath ? approvalToken : apiToken;
+              const operatorPath = [
+                "/api/business/actions/approve",
+                "/api/catalog/import",
+                "/api/ingest",
+                "/api/semantic/relations",
+                "/api/semantic/proposals",
+                "/api/source-connections"
+              ].some((prefix) => request.url?.startsWith(prefix));
+              const token = operatorPath ? approvalToken : apiToken;
               if (token) proxyRequest.setHeader("Authorization", `Bearer ${token}`);
             });
           }

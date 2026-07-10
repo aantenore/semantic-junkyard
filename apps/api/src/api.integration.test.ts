@@ -1,4 +1,4 @@
-import request from "supertest";
+import request, { type Test } from "supertest";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import type { RuntimeConfig } from "./config/runtime.js";
@@ -67,6 +67,28 @@ describe("Semantic Junkyard HTTP boundary", () => {
     expect(humanApproval.body.approvedBy).toBe("authenticated-approver");
     expect((await request(authenticated).get("/api/business/actions/approvals").set("Authorization", `Bearer ${token}`)).status).toBe(403);
     expect((await request(authenticated).get("/api/business/actions/approvals").set("Authorization", `Bearer ${approvalToken}`)).status).toBe(200);
+  });
+
+  it("separates agent reads and governed actions from operator configuration mutations", async () => {
+    const apiToken = "c".repeat(32);
+    const operatorToken = "d".repeat(32);
+    const { app } = testApp({ apiToken, approvalToken: operatorToken });
+    const agent = (operation: Test) => operation.set("Authorization", `Bearer ${apiToken}`);
+    const operator = (operation: Test) => operation.set("Authorization", `Bearer ${operatorToken}`);
+
+    expect((await agent(request(app).post("/api/ingest").send({ name: "blocked.txt", text: "blocked" }))).status).toBe(403);
+    expect((await agent(request(app).post("/api/catalog/import").send({}))).status).toBe(403);
+    expect(
+      (
+        await agent(
+          request(app)
+            .post("/api/source-connections")
+            .send({ name: "blocked", description: "", config: { kind: "filesystem", rootPath: "/tmp" } })
+        )
+      ).status
+    ).toBe(403);
+    expect((await agent(request(app).get("/api/source-resources"))).status).toBe(200);
+    expect((await operator(request(app).post("/api/ingest").send({ name: "allowed.txt", text: "Operator-owned ingestion" }))).status).toBe(201);
   });
 
   it("validates tool inputs instead of coercing them into bulk disclosure", async () => {

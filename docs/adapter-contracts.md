@@ -1,256 +1,245 @@
 # Adapter Contracts
 
-This document separates contracts that exist in code from proposed contracts for future production adapters. The repository is organized into capability modules, but it does not yet have a configuration-driven adapter registry or a common provider interface for every capability.
+This document distinguishes implemented local adapters from requirements for future production connectors. The current runtime has a typed source connector registry, but it is compiled into the API/MCP composition root rather than loaded dynamically from plugins.
 
 ## Implemented Composition
 
-`SemanticEngine` currently constructs these implementations directly:
-
-| Capability | Implementation | Effective contract |
+| Capability | Implementation | Current contract |
 | --- | --- | --- |
-| Source input | `InlineTextConnector` | `createSource(IngestRequest) -> SourceArtifact` |
-| Parsing | `LocalTextParser` | `supports(mimeType)` and `parse({ sourceId, text, mimeType }) -> DocumentElement[]` |
-| Chunking | `SemanticWindowChunker` | `chunk(sourceId, elements) -> Chunk[]` |
-| Extraction | `DeterministicSemanticExtractor` | `extract(chunks) -> { entities, relations, claims }` |
-| Embeddings | `embedText` | `string -> number[128]` |
-| Retrieval | `HybridQueryPlanner` | `search(SearchRequest) -> SearchResult[]` |
-| Policy | `PolicyEngine` | Filter and mask repository-backed results and direct reads. |
-| Persistence | `SemanticRepository` | Concrete SQLite CRUD, transactions, graph snapshots, action records, approvals, and audit events. |
-| Discovery | `DiscoveryAgent` | Deterministic repository profiling and capability manifest. |
-| Business actions | `SemanticEngine` private methods | Regex routing, risk/autonomy calculation, local writes, and reflection. |
-| Agent protocol | Express routes and `apps/mcp` | REST/OpenAPI metadata plus a real MCP stdio server. |
+| Source registry | `SourceManager` + `SourceConnectionRepository` | Create/test/sync/delete typed connections; persist resources, runs, events, and proposals. |
+| Source connectors | `FilesystemConnector`, `SqliteConnector`, `GitConnector` | Test/discover; SQLite and Git also plan/execute/read actions. |
+| Evidence materialization | `InlineTextConnector` + `LocalTextParser` | Persist full text or no-copy registration note, then parse/chunk/index. |
+| Semantic enrichment | deterministic connector facts plus optional `LocalSourceSemanticEnrichmentProvider` | Publish source facts; validate model output into proposals. |
+| Retrieval | `SemanticWindowChunker`, hash embeddings, FTS5, `HybridQueryPlanner` | Deterministic bounded lexical/vector/graph retrieval. |
+| Policy | `PolicyEngine` | Filter/mask local reads and contribute action review/deny decisions. |
+| Control-plane store | `SemanticRepository` and `SourceConnectionRepository` | One SQLite transaction domain for derived state, plans/runs, approvals, and audit. |
+| Agent protocols | Express REST and `apps/mcp` stdio | Shared strict Zod contracts over separate process/auth boundaries. |
 
-Only the parser has a small exported TypeScript interface today. The other rows are concrete APIs, not interchangeable runtime registrations.
+## Source Connector Interface
 
-## Shared Data Contracts
+The implemented conceptual interface is:
 
-`packages/shared/src/index.ts` contains the Zod contracts used by REST clients and the engine. HTTP request objects are strict, so unknown keys are rejected.
-
-Important limits include:
-
-- Ingest text: 1 to 5,000,000 characters.
-- Search query: 1 to 4,000 characters; `topK` 1 to 25.
-- Graph neighbors: depth 1 to 2.
-- Path finding: maximum depth 1 to 4.
-- Context expansion: at most 25 chunk IDs and 25 entity IDs.
-- Action intent: 1 to 4,000 characters.
-- Plan fingerprint: exactly 64 lowercase hexadecimal characters.
-- Idempotency key: 8 to 128 characters.
-
-The OpenAPI document is generated from these request schemas. The real MCP server now imports the same Zod request schemas for its tools; the REST-only MCP descriptor snapshot is still derived separately from the agent manifest. Contract changes must therefore be tested against REST, the real MCP server, and the descriptor snapshot.
-
-## Ingestion Contract
-
-`IngestRequest` contains:
-
-- Required `name` and `text`.
-- Optional `uri`.
-- `mimeType`, defaulting to `text/plain`.
-- `ingestionMode`: `full_data`, `metadata_only`, or `external_reference`.
-- Arbitrary metadata.
-
-The current connector always creates an inline source and always stores the submitted text. For non-full modes, the engine substitutes a generated registration note only for parsing and indexing. This is a behavioral mode, not a storage-enforcement adapter.
-
-A production connector contract should make payload access explicit:
-
-```text
-listSources(scope)
-describeSource(uri)
-readFullData(uri)            only in full_data mode
-readMetadata(uri)            only in metadata_only mode
-describeExternalReference(uri) without payload access
+```ts
+interface SourceConnector {
+  readonly kind: "filesystem" | "sqlite" | "git";
+  test(connection): ConnectorTestResult;
+  discover(connection): ConnectorSnapshot;
+  planAction?(connection, businessRequest, observedResources): ConnectorActionCandidate | null;
+  executeAction?(connection, exactCandidate): ConnectorWriteResult;
+  readAction?(connection, exactCandidate): ConnectorWriteResult;
+}
 ```
 
-The composition root must prevent a connector from reading a payload when the selected mode does not allow it. That protection does not exist in the current inline connector.
+`ConnectorSnapshot` contains resources, evidence documents, assets, metrics, lineage, contracts, ontology classes, structural relations, warnings, and a source checkpoint. Discovery must be bounded and must preserve stable external/resource identity.
 
-## Parser Contract
+`ConnectorActionCandidate` contains one typed source target, evidence, exact before/after state, risk/approval requirements, and connector parameters. `ConnectorWriteResult` contains the source version, expected state, authoritative readback, explicit postcondition text/result, and connector metadata.
 
-The local parser supports plain text, Markdown, HTML, and JSON. It emits source-spanned elements after whitespace normalization; simple HTML is stripped before offsets are computed. Unsupported MIME types fail ingestion.
+## Connection Configuration
 
-A production parser adapter should expose:
+All connection requests are strict discriminated unions.
 
-```text
-id
-supports(mimeType)
-parse(sourceArtifact) -> DocumentElement[]
-```
-
-It must document offset semantics, normalization, maximum input, embedded-object handling, sandboxing, and failure behavior. Docling, Apache Tika, and Unstructured are candidate adapters only; none is installed or called.
-
-## Semantic Provider Contract
-
-`ProviderConfig` is an implemented configuration schema:
+### Filesystem
 
 ```text
-id
-kind: deterministic | ollama | openai-compatible
-baseUrl?
-model
-embeddingModel?
-enabled
-runtimeUsage: semantic-runtime | configuration-only
+kind: filesystem
+rootPath
+recursive
+maxFiles
+maxFileBytes
+ingestionMode: full_data | metadata_only | external_reference
 ```
 
-This is not an inference interface. `loadProviderConfig()` reads environment variables and `GET /api/providers` returns the result. The semantic engine does not receive that configuration.
+Filesystem is read-only. The connector rejects a symlink root, skips symlink entries, and reads only supported formats inside the resolved root.
 
-Current behavior:
-
-- `deterministic` is the active semantic runtime.
-- `ollama` is configuration-only.
-- `openai-compatible` is configuration-only.
-- The local Hugging Face MLX runner is a separate PoC summarizer and is not represented by `ProviderConfig`.
-
-A real provider interface should separate capabilities rather than assume one provider implements all of them:
+### SQLite
 
 ```text
-embed(texts)
-extract(schema, chunks)
-rerank(query, candidates)
-summarize(context)
-classifyPolicyRisk(input)
+kind: sqlite
+databasePath
+includeTables[]
+sampleRows: 0..20
+writeMode: read_only | approval_required | autonomous
+writeRules[]:
+  table
+  aliases[]
+  keyColumn
+  allowedColumns[]
+  risk
 ```
 
-Each capability needs typed timeouts, retries, batch limits, model identity, provenance, deterministic-test substitutes, and data-egress policy. Adding an environment variable without injecting and calling an implementation is not a provider integration.
+The configuration is capability exposure, not a generic database credential. Ambiguous duplicate table rules disable writes for that table. Missing tables/columns fail validation. Identifiers come from validated schema/rules; values are bound parameters.
 
-## Store Contracts
-
-The current repository is one SQLite implementation and one transaction boundary. Conceptual production boundaries are:
-
-Metadata store:
+### Git
 
 ```text
-saveSource / saveElements / saveChunks
-saveEntities / saveRelations / saveClaims
-upsertCatalog
-saveDiscoveryRun / saveBusinessActionRun / saveApproval
-audit
-transaction
+kind: git
+repositoryPath
+includePaths[]
+maxFiles
+maxFileBytes
+writeMode: read_only | approval_required | autonomous
+semanticContractPaths[]
 ```
 
-Lexical store:
+Only committed supported text blobs are discovered. Only configured YAML semantic-contract paths can become writable, and the target must be clean and parseable.
+
+## Filesystem Discovery Contract
+
+Implemented format behavior:
+
+| Format | Materialized behavior |
+| --- | --- |
+| Text/Markdown/HTML | Evidence document with local parser normalization. |
+| JSON/JSONL/CSV | Evidence plus deterministic record/field profiling. |
+| YAML | Evidence plus semantic-contract parsing when required fields are declared. |
+| PDF | Bounded text extraction in a worker with timeout/output limits. |
+| OpenLineage-shaped JSON | Job/dataset resources and explicit READS/WRITES lineage. |
+
+Declared contract facts such as `DEFINES_METRIC` are authoritative. A typed resource derived from a file may also have non-authoritative representation relations such as `INDEXED_FROM`, which enter proposal lifecycle rather than source-fact authority.
+
+## SQLite Discovery And Write Contract
+
+Discovery opens the source read-only, enables foreign keys and `query_only`, performs a quick check, and inspects the real schema. It may profile bounded sample rows when configured. Table/column resources carry sensitivity, writability, schema source, row/column counts, primary keys, and foreign keys.
+
+Planning accepts only bounded update-like intent and rejects delete/drop/truncate/insert/create/alter/attach/detach/pragma patterns. It must resolve:
+
+1. exactly one valid configured write rule;
+2. exactly one source row by the configured key;
+3. one or more updates entirely inside `allowedColumns`;
+4. evidence linked to the table/key/updated columns;
+5. a canonical full-row hash as the source-version precondition.
+
+Execution repeats configuration and candidate validation, verifies the row hash in an immediate transaction, performs one parameterized update, requires one changed row, then rereads through an independent read-only connection. The postcondition is exact value equality for every changed field.
+
+## Git Discovery And Write Contract
+
+Discovery reads the committed Git tree at `HEAD`, validates blob sizes/text, and records path, commit SHA, blob SHA, and composite version. YAML documents that satisfy the semantic-contract schema publish contracts/assets/metrics with provenance.
+
+Planning understands only the implemented semantic-contract mutations, currently version/status publication and metric denominator/version changes. It resolves one configured clean path and places exact before/after YAML, expected HEAD/blob, expected parsed fields, and commit message in the target.
+
+Execution must:
+
+- confirm the path remains allowlisted and inside the repository;
+- verify expected HEAD/blob and unchanged target state;
+- verify planned YAML fields before writing;
+- stage content whose blob hash equals the planned content;
+- commit only the target path;
+- verify parent commit and changed path set;
+- reread committed content and verify exact content plus parsed fields.
+
+The connector restores the target/index when an error occurs before a commit. Once a Git commit exists, there is no distributed rollback with the control-plane database.
+
+## Evidence Ingestion Contract
+
+Direct operator ingestion and connector materialization share `IngestRequest`:
 
 ```text
-indexChunks
-searchText
-deleteBySource
+name
+text
+uri?
+mimeType
+ingestionMode
+metadata
 ```
 
-Vector store:
+`full_data` requires non-empty text and retains it. `metadata_only` and `external_reference` may carry text in the request for compatibility, but `InlineTextConnector` stores an empty payload and computes identity from the source descriptor instead. The parser indexes a generated registration note containing name, URI, and metadata.
+
+No-copy here means the submitted payload is not retained in the control-plane `sources`, elements, or chunks. It does not prove that an upstream connector never read the file in memory; the filesystem connector must read supported files to profile/identify them before deciding what to materialize.
+
+## Semantic Enrichment Contract
+
+Deterministic connector output and model candidates are separate:
+
+- connector-declared structural facts can set `authoritative: true`;
+- deterministic representation/inference relations are proposals;
+- local-HF receives at most 24 bounded resource summaries and returns strict candidate arrays;
+- every model resource ID must come from the supplied set;
+- malformed, invented, duplicate, self-referential, or over-limit candidates are discarded;
+- model candidates always use origin `local_model` and status `proposed`.
+
+The enrichment provider does not update source data, accept proposals, or alter policy.
+
+## Business Action Adapter Contract
+
+The public engine contract is:
 
 ```text
-upsertVectors
-queryVector
-deleteBySource
+planBusinessAction(request) -> BusinessActionPlan
+approveBusinessAction(exactPlanRequest, actor) -> BusinessActionApproval
+executeBusinessAction(exactPlanRequest + idempotencyKey, actor) -> BusinessActionRun
 ```
 
-Graph store:
+Connector invariants:
 
-```text
-upsertEntities / upsertRelations
-neighbors / findPaths / graphSnapshot
-openEvidence
-```
-
-Splitting these stores requires an explicit consistency model. The current engine relies on one SQLite transaction for ingestion and action execution; independent services cannot silently preserve that guarantee.
-
-PostgreSQL, OpenSearch, Qdrant, pgvector, Milvus, Weaviate, LanceDB, Neo4j, Kuzu, Memgraph, Apache AGE, DataHub, and OpenMetadata are design candidates, not implemented adapters.
+- planning has no source-write side effect;
+- target identity and all execution-relevant parameters are fingerprinted;
+- candidate resolution fails closed on zero/multiple matches;
+- execution revalidates allowlist, candidate shape, and source preconditions;
+- connector readback comes from the authoritative source, not the planned object;
+- a postcondition is typed enough to evaluate deterministically;
+- only verified results can refresh semantic evidence;
+- no connector accepts raw generated SQL, shell commands, arbitrary paths, or generic JSON patches as its business intent.
 
 ## Policy Contract
 
-The implemented local policy engine applies simple catalog rules to retrieval and direct source/evidence reads. It is not a general ABAC service and does not propagate per-user source ACLs.
-
-A replaceable policy decision point should support:
+The local policy engine is a reference implementation. A production policy decision point should provide consistent decisions over:
 
 ```text
 evaluateTool(actor, tool, args)
-evaluateAsset(actor, asset)
-filterAndMask(actor, results)
-evaluateAction(actor, plan)
+evaluateResource(actor, resource)
+evaluateEvidence(actor, chunk)
+evaluateGraph(actor, nodes, edges)
+evaluateAction(actor, exactTarget)
+filterAndMask(actor, output)
 explainDecision(decision)
 ```
 
-OPA, Apache Ranger, OpenFGA, and custom policy services are external options only. Any policy adapter must fail closed for unavailable decisions and preserve the same filtering on search, evidence, source, graph, and action paths.
+It must fail closed when unavailable and carry source-native ACL/identity context. The current static roles and sensitivity clearance do not satisfy that requirement.
 
-## Business Action Contract
+## Store And Delivery Contracts
 
-The implemented public methods are:
+The reference product relies on one SQLite control plane and synchronous in-process jobs. Splitting metadata, lexical, vector, graph, policy, jobs, and audit into services requires an explicit consistency protocol.
 
-```text
-planBusinessAction(BusinessActionRequest) -> BusinessActionPlan
-approveBusinessAction(BusinessActionApprovalRequest, actor) -> BusinessActionApproval
-executeBusinessAction(BusinessActionExecutionRequest, actor) -> BusinessActionRun
-```
-
-Required invariants are stronger than the method signatures:
-
-- Planning has no source-write side effect.
-- Approval and execution recompute and compare plan ID and fingerprint.
-- Server and caller autonomy ceilings are both enforced.
-- Destructive, privileged, unsupported, and evidence-free plans are blocked.
-- An approval is separately issued, exact-plan-bound, and single-use after execution.
-- A terminal idempotency replay cannot perform another write.
-- Writes and local effects occur in one transaction.
-- Semantic updates come only from verified source readback.
-
-The current `context` object is accepted but ignored by the router and fingerprint. A future router must define whether context is trusted, how it affects identity, and whether it is fingerprinted.
-
-## Source Writeback And Reflection
-
-The current source-system capability catalog has validated built-in defaults and can be replaced with a JSON array through `SEMANTIC_JUNKYARD_SOURCE_SYSTEMS_FILE`. Validation enforces at least one system, unique system/capability IDs, and matching capability `systemId` values. This configuration changes declared capability metadata, risk, autonomy, and availability; it does not load executable adapters or teach the router new target shapes.
-
-`executeSourceWrite` upserts versioned records into `source_system_records`. Data Catalog and OpenMetadata-shaped targets also mutate local catalog/lineage rows; dbt and ticket targets create only local records. The routing and write branches still depend on the built-in system IDs and operations.
-
-There is no connector interface or external I/O. The following production contract is proposed:
+A production write adapter needs more than `execute`:
 
 ```text
-capabilities(system) -> SourceSystemCapability[]
-dryRun(target) -> diff
-execute(target, exactPlan, approvalContext, idempotencyKey) -> SourceWrite
-readBack(write) -> SourceSystemRecord
-rollbackHint(write) -> string
+capabilities(identity) -> typed capabilities
+plan(intent, observedState) -> target + preconditions + postcondition
+reserve(idempotencyKey, fingerprint) -> durable intent
+execute(reservation) -> source operation identity
+readAuthoritative(operation) -> observed state/version
+verify(expected, observed) -> postcondition result
+reconcile(reservation) -> terminal outcome
 ```
 
-Reflection should then provide:
+The platform also needs a durable queue/outbox, retries, dead-letter handling, leases, crash recovery, and auditable reconciliation. None is implemented.
 
-```text
-reflect(write) -> ReflectionResult
-detectDrift(expected, observed)
-buildReflectionEvidence(verifiedResults)
-refreshReadModel(evidence)
-```
+## Protocol Contract
 
-Real OpenMetadata/DataHub updates, GitHub/GitLab pull requests, Jira/ServiceNow tickets, database comments, and application APIs need their own remote idempotency and permission models. A local SQLite idempotency key does not prevent a duplicate remote side effect after a crash.
+REST and MCP reuse shared Zod schemas for core inputs/outputs. The HTTP routes `/api/mcp/tools` and `/api/mcp/capabilities` are descriptors, not an MCP transport. The real MCP server is stdio and calls the engine directly.
 
-## Agent Protocol Contract
+Any future SDK, GraphQL surface, remote MCP transport, or connector plugin must preserve:
 
-Current protocol surfaces are:
+- strict unknown-field rejection;
+- evidence and authority lifecycle;
+- exact plan identity and approval binding;
+- idempotency conflict behavior;
+- connector preconditions and authoritative reread;
+- no semantic publication before postcondition verification.
 
-- REST endpoints with generated OpenAPI request schemas.
-- Agent manifest at `GET /api/agent/manifest`.
-- MCP-style descriptor snapshots at `GET /api/mcp/tools` and `/api/mcp/capabilities`.
-- A real MCP stdio server in `apps/mcp`.
+## Extension Requirements
 
-The HTTP descriptor routes are not an MCP transport. The MCP process uses direct engine calls and direct database access. It exposes no approval-creation tool.
+Before calling an adapter production-ready, add and test:
 
-Future GraphQL or SDK surfaces should reuse shared contracts and preserve strict validation, evidence, policy, exact-plan execution, and idempotency semantics rather than introduce a second business protocol.
+- explicit credentials/secrets ownership and least privilege;
+- tenant/actor identity and source ACL propagation;
+- bounded discovery with checkpoints and incremental resume;
+- stable source/object/version identity;
+- schema evolution and deletion semantics;
+- remote rate limits, timeouts, retries, and circuit breaking;
+- remote idempotency and reconciliation after ambiguous failures;
+- approval expiry/revocation/delegation;
+- structured redaction and data-egress policy;
+- contract, integration, failure-injection, and recovery tests.
 
-## Configuration-Driven Target
-
-A production composition root should load a typed configuration such as:
-
-```text
-connectors[]
-parsers[]
-embeddingProvider
-extractionProvider
-metadataStore
-lexicalStore
-vectorStore
-graphStore
-policyEngine
-businessActionRouter
-writebackGateways[]
-reflectionEngine
-```
-
-It should validate capability compatibility before startup and publish only successfully constructed modules in status and agent manifests. The current `defaultModules` list is descriptive and does not perform this composition.
+Names such as DataHub, OpenMetadata, Ossie, object stores, warehouses, GitHub/GitLab, Jira, and ServiceNow are product-direction candidates only. No such remote adapter is implemented in this repository.

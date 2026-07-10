@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import { nowIso } from "../core/hash.js";
 import { topTerms } from "../core/text.js";
 import type { SemanticRepository } from "../storage/repository.js";
+import type { SourceManager } from "../sources/sourceManager.js";
 
 export interface AgentCapability {
   name: string;
@@ -23,7 +24,10 @@ export interface AgentManifest {
 }
 
 export class DiscoveryAgent {
-  constructor(private readonly repository: SemanticRepository) {}
+  constructor(
+    private readonly repository: SemanticRepository,
+    private readonly sourceManager?: SourceManager
+  ) {}
 
   run(objective = "Discover semantic structure, governance signals, and agent-safe navigation paths."): DiscoveryRun {
     const runId = `run_${nanoid(10)}`;
@@ -31,6 +35,9 @@ export class DiscoveryAgent {
     const entities = this.repository.getEntities();
     const relations = this.repository.getRelations();
     const catalog = this.repository.catalog();
+    const connections = this.sourceManager?.listConnections() ?? [];
+    const resources = this.sourceManager?.listResources() ?? [];
+    const proposals = this.sourceManager?.listProposals() ?? [];
     const terms = topTerms(chunks.map((chunk) => chunk.text), 10);
     const events: DiscoveryEvent[] = [];
     let step = 1;
@@ -48,11 +55,41 @@ export class DiscoveryAgent {
       step += 1;
     };
 
+    const objectiveTerms = normalizedTerms(objective);
+    const relevantResources = resources.filter((resource) => [...objectiveTerms].some((term) => `${resource.qualifiedName} ${resource.description} ${JSON.stringify(resource.profile)}`.toLowerCase().includes(term)));
+    const missingOwners = catalog.assets.filter((asset) => !asset.owner || /unknown|unassigned/i.test(asset.owner));
+    const brokenLineage = catalog.lineage.filter(
+      (edge) => !catalog.assets.some((asset) => asset.id === edge.fromAssetId) || !catalog.assets.some((asset) => asset.id === edge.toAssetId)
+    );
+    const metricConflicts = conflictingMetrics(catalog.metrics);
+
+    add(
+      "source_registry.inspect",
+      "Authoritative sources inspected",
+      `${connections.length} configured source connections expose ${resources.length} observed resources. ${relevantResources.length} resources match the discovery objective.`,
+      connections.length > 0 ? "success" : "warning"
+    );
     add("catalog.profile", "Catalog scanned", `${catalog.assets.length} assets, ${catalog.metrics.length} metrics, ${catalog.policies.length} policies, ${catalog.lineage.length} lineage edges.`);
     add("corpus.profile", "Corpus profiled", `${chunks.length} chunks across ${new Set(chunks.map((chunk) => chunk.sourceId)).size} sources. Dominant terms: ${terms.map((term) => `${term.term}(${term.count})`).join(", ") || "none"}.`);
     add("entity.resolve", "Entity candidates resolved", `${entities.length} canonical entities discovered with evidence links. ${relations.length} relations connect the graph.`, entities.length > 0 ? "success" : "warning");
-    add("governance.check", "Governance signals evaluated", `${catalog.assets.filter((asset) => asset.sensitivity !== "public").length} non-public assets, ${catalog.assets.filter((asset) => asset.freshness === "stale").length} stale assets, ${catalog.assets.filter((asset) => asset.qualityScore < 0.6).length} low-quality assets.`);
-    add("agent.plan", "Agent navigation plan prepared", "Use semantic_search for recall, entity_lookup for grounding, graph_neighbors/find_paths for multi-hop context, expand_context for citation packs, and evidence endpoints before final answers.", "success");
+    add(
+      "governance.check",
+      "Governance diagnostics evaluated",
+      `${catalog.assets.filter((asset) => asset.sensitivity !== "public").length} non-public, ${catalog.assets.filter((asset) => asset.freshness === "stale").length} stale, ${catalog.assets.filter((asset) => asset.qualityScore < 0.6).length} low-quality, ${missingOwners.length} missing-owner assets, and ${brokenLineage.length} broken lineage edges.`,
+      missingOwners.length + brokenLineage.length > 0 ? "warning" : "success"
+    );
+    add(
+      "semantic_review.inspect",
+      "Semantic assertion lifecycle inspected",
+      `${proposals.filter((proposal) => proposal.status === "proposed").length} proposals await review, ${proposals.filter((proposal) => proposal.status === "accepted").length} are accepted, and ${metricConflicts.length} metric definition conflicts were detected.`,
+      proposals.some((proposal) => proposal.status === "proposed") || metricConflicts.length > 0 ? "warning" : "success"
+    );
+    if (objectiveTerms.size > 0 && resources.length > 0 && relevantResources.length === 0) {
+      add("grounding.check", "Objective could not be grounded", "No observed source resource matched the requested objective. Agents must stop instead of substituting an unrelated domain.", "warning");
+    } else {
+      add("grounding.check", "Objective grounded", `${relevantResources.length || resources.length} source resources can support the next evidence-scoped navigation step.`, "success");
+    }
+    add("agent.plan", "Evidence navigation plan prepared", "Inspect matching source resources, then use semantic_search, entity_lookup, bounded graph traversal, and exact evidence spans. Stop when source identity or evidence is insufficient.", "success");
 
     const run: DiscoveryRun = {
       id: runId,
@@ -74,6 +111,13 @@ export class DiscoveryAgent {
       autonomyBoundary:
         "Agents may autonomously read policy-filtered metadata, search indexed content, traverse bounded graph neighborhoods, assemble evidence, and plan business actions. Configured writes may execute only against the exact reviewed plan fingerprint and server-side risk ceiling, and completion requires verified source reflection. Privileged, destructive, access-policy, secret, unsupported, or evidence-free actions are blocked.",
       capabilities: [
+        {
+          name: "source_resource_search",
+          description: "Resolve observed tables, columns, files, datasets, jobs, metrics, and semantic contracts before retrieving evidence or planning actions.",
+          inputSchema: { query: "string", kinds: "string[] optional", connectionId: "string optional", topK: "number" },
+          risk: "read-only",
+          evidenceRequired: false
+        },
         {
           name: "semantic_search",
           description: "Hybrid lexical, vector, and graph-aware retrieval with source citations and policy filtering.",
@@ -117,6 +161,20 @@ export class DiscoveryAgent {
           evidenceRequired: false
         },
         {
+          name: "sync_source",
+          description: "Run deterministic or local-model-assisted discovery over an existing operator-configured source connection.",
+          inputSchema: { connectionId: "string", objective: "string", provider: "deterministic|local-huggingface" },
+          risk: "review-required",
+          evidenceRequired: false
+        },
+        {
+          name: "list_semantic_proposals",
+          description: "Inspect evidence-bound source facts and model or deterministic proposals with their review lifecycle.",
+          inputSchema: { connectionId: "string optional", status: "proposed|accepted|rejected|superseded optional" },
+          risk: "read-only",
+          evidenceRequired: true
+        },
+        {
           name: "business_action_plan",
           description: "Resolve a business intent into target source systems, diffs, evidence, autonomy, and risk before writing.",
           inputSchema: { intent: "string", mode: "autonomous|approval_required|dry_run", maxAutonomousRisk: "low|medium|high" },
@@ -145,6 +203,7 @@ export class DiscoveryAgent {
         "Never answer from a chunk, entity, relation, metric, or claim without evidence.",
         "Check policy, quality, freshness, owner, and sensitivity before recommending an action.",
         "For undefined problems, first run discovery, then select the smallest safe tool set, then assemble evidence.",
+        "Treat source facts as authoritative observations and model-generated semantics as proposals until an operator accepts them.",
         "Generated SQL, policy updates, direct connector writes, unsupported capabilities, and destructive actions are outside autonomous scope.",
         "Never claim an action is complete until source reflection verifies the updated source record and the semantic read model is refreshed."
       ],
@@ -156,4 +215,25 @@ export class DiscoveryAgent {
       ]
     };
   }
+}
+
+function normalizedTerms(value: string): Set<string> {
+  return new Set(
+    value
+      .toLowerCase()
+      .replace(/[_-]+/g, " ")
+      .split(/[^a-z0-9]+/)
+      .filter((term) => term.length > 3)
+  );
+}
+
+function conflictingMetrics(metrics: Array<{ name: string; label: string; expression: string; description: string }>): string[] {
+  const groups = new Map<string, Array<{ expression: string; description: string }>>();
+  for (const metric of metrics) {
+    const key = `${metric.name} ${metric.label}`.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    groups.set(key, [...(groups.get(key) ?? []), metric]);
+  }
+  return [...groups.entries()]
+    .filter(([, definitions]) => new Set(definitions.map((definition) => `${definition.expression}\n${definition.description}`)).size > 1)
+    .map(([key]) => key);
 }
