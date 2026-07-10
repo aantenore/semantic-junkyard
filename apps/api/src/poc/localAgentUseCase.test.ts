@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { runLocalAgentUseCase } from "./localAgentUseCase.js";
+import { runLocalAgentUseCase, validateModelFactSelection } from "./localAgentUseCase.js";
 
 describe("local autonomous agent PoC", () => {
   it("runs an evidence-backed agent loop and writes a reproducible report", async () => {
@@ -32,6 +32,7 @@ describe("local autonomous agent PoC", () => {
     expect(report.finalAnswer).toMatch(/ORD-1001/);
     expect(report.finalAnswer).toMatch(/source writeback gateway/);
     expect(report.modelReasoningSummary).toContain("Deterministic planner");
+    expect(report.modelSummaryStatus).toBe("deterministic");
     expect(report.overallStatus).toBe("completed");
     expect(report.stopConditionsChecked.length).toBeGreaterThan(0);
     expect(report.stopConditionEvaluations).toHaveLength(report.stopConditionsChecked.length);
@@ -41,4 +42,14 @@ describe("local autonomous agent PoC", () => {
     expect(saved.businessAction.status).toBe("verified");
     expect(saved.citations[0]?.chunkId).toBeTruthy();
   }, 90_000);
+
+  it("accepts only valid model selections from verified audit fact IDs", () => {
+    const facts = ["The source reflection passed.", "The plan changed one allowlisted field.", "The target was ORD-1001."];
+    expect(validateModelFactSelection('{"selectedFactIds":["FACT_1","FACT_3"]}', facts)).toBe(
+      "- The source reflection passed.\n- The target was ORD-1001."
+    );
+    expect(validateModelFactSelection('{"selectedFactIds":["FACT_1","FACT_9"]}', facts)).toBeNull();
+    expect(validateModelFactSelection('{"selectedFactIds":["FACT_1","FACT_1"]}', facts)).toBeNull();
+    expect(validateModelFactSelection("Monthly review verified the write.", facts)).toBeNull();
+  });
 });

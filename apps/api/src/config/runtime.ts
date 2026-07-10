@@ -16,7 +16,9 @@ const EnvironmentSchema = z.object({
   SEMANTIC_JUNKYARD_REQUEST_BODY_LIMIT: z.string().regex(/^\d+(?:kb|mb)$/i).default("5mb"),
   SEMANTIC_JUNKYARD_MAX_AUTONOMOUS_RISK: z.enum(["low", "medium", "high"]).default("medium"),
   SEMANTIC_JUNKYARD_ENABLE_LOCAL_POC: z.enum(["true", "false"]).default("true"),
+  SEMANTIC_JUNKYARD_BOOTSTRAP_REFERENCE_SOURCES: z.enum(["true", "false"]).default("true"),
   SEMANTIC_JUNKYARD_API_TOKEN: z.string().min(32).optional().or(z.literal("")),
+  SEMANTIC_JUNKYARD_OPERATOR_TOKEN: z.string().min(32).optional().or(z.literal("")),
   SEMANTIC_JUNKYARD_APPROVAL_TOKEN: z.string().min(32).optional().or(z.literal(""))
 });
 
@@ -29,7 +31,9 @@ export interface RuntimeConfig {
   requestBodyLimit: string;
   maxAutonomousRisk: "low" | "medium" | "high";
   enableLocalPoc: boolean;
+  bootstrapReferenceSources: boolean;
   apiToken?: string;
+  operatorToken?: string;
   approvalToken?: string;
 }
 
@@ -50,19 +54,18 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env, 
     if (origin !== "*") z.string().url().parse(origin);
   }
   const apiToken = parsed.SEMANTIC_JUNKYARD_API_TOKEN || undefined;
+  const operatorToken = parsed.SEMANTIC_JUNKYARD_OPERATOR_TOKEN || undefined;
   const approvalToken = parsed.SEMANTIC_JUNKYARD_APPROVAL_TOKEN || undefined;
   if (options.validateHttpSecurity ?? true) {
     if (!["127.0.0.1", "localhost", "::1"].includes(parsed.HOST) && !apiToken) {
       throw new Error("SEMANTIC_JUNKYARD_API_TOKEN is required when HOST is not loopback.");
     }
-    if (apiToken && !approvalToken) {
-      throw new Error("SEMANTIC_JUNKYARD_APPROVAL_TOKEN is required when SEMANTIC_JUNKYARD_API_TOKEN is configured.");
+    const configuredTokens = [apiToken, operatorToken, approvalToken].filter((token): token is string => Boolean(token));
+    if (configuredTokens.length > 0 && configuredTokens.length !== 3) {
+      throw new Error("SEMANTIC_JUNKYARD_API_TOKEN, SEMANTIC_JUNKYARD_OPERATOR_TOKEN, and SEMANTIC_JUNKYARD_APPROVAL_TOKEN are all required when bearer authentication is enabled.");
     }
-    if (approvalToken && !apiToken) {
-      throw new Error("SEMANTIC_JUNKYARD_API_TOKEN is required when SEMANTIC_JUNKYARD_APPROVAL_TOKEN is configured.");
-    }
-    if (apiToken && approvalToken && apiToken === approvalToken) {
-      throw new Error("SEMANTIC_JUNKYARD_API_TOKEN and SEMANTIC_JUNKYARD_APPROVAL_TOKEN must be different.");
+    if (new Set(configuredTokens).size !== configuredTokens.length) {
+      throw new Error("Semantic Junkyard agent, operator, and approval tokens must be different.");
     }
   }
 
@@ -75,7 +78,9 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env, 
     requestBodyLimit: parsed.SEMANTIC_JUNKYARD_REQUEST_BODY_LIMIT,
     maxAutonomousRisk: parsed.SEMANTIC_JUNKYARD_MAX_AUTONOMOUS_RISK,
     enableLocalPoc: parsed.SEMANTIC_JUNKYARD_ENABLE_LOCAL_POC === "true",
+    bootstrapReferenceSources: parsed.SEMANTIC_JUNKYARD_BOOTSTRAP_REFERENCE_SOURCES === "true",
     apiToken,
+    operatorToken,
     approvalToken
   };
 }

@@ -2,6 +2,10 @@ import { createApp } from "./app.js";
 import { openDatabase } from "./storage/database.js";
 
 const db = openDatabase();
-const { repository } = createApp(db, { seed: true });
-
-console.log(JSON.stringify(repository.status(), null, 2));
+try {
+  const { repository, ready } = createApp(db, { seed: true });
+  const bootstrap = await ready;
+  console.log(JSON.stringify({ status: repository.status(), bootstrap }, null, 2));
+} finally {
+  db.close();
+}

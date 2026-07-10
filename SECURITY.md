@@ -13,7 +13,7 @@ The API binds to `127.0.0.1:8787` by default. The default CORS allowlist contain
 Loopback does not mean authenticated:
 
 - When `SEMANTIC_JUNKYARD_API_TOKEN` is unset, every HTTP route is reachable without a bearer token. Domain policy checks can still filter, mask, review, or block individual operations.
-- Unauthenticated local requests receive the `local-approver` role, so the approval endpoint is usable in the default development profile.
+- Unauthenticated local requests receive the `local-owner` role, so operator and approval endpoints remain usable in the default development profile.
 - Requests without an `Origin` header are accepted because CORS is a browser control, not authentication.
 - The API accepts `*` only when it is explicitly present in `SEMANTIC_JUNKYARD_CORS_ORIGINS`.
 - CORS allows `GET`, `HEAD`, `POST`, `DELETE`, and `OPTIONS`; accepts `Authorization`, `Content-Type`, `X-Request-Id`, and `X-Semantic-Junkyard-Actor`; exposes `X-Request-Id`; and caches preflight results for 600 seconds.
@@ -25,16 +25,16 @@ Do not bind the default profile to a shared interface, publish it through a tunn
 Set process environment variables directly; the API does not load `.env` files itself.
 
 - `SEMANTIC_JUNKYARD_API_TOKEN` is the agent/application credential.
+- `SEMANTIC_JUNKYARD_OPERATOR_TOKEN` is the source and semantic administration credential.
 - `SEMANTIC_JUNKYARD_APPROVAL_TOKEN` is the human approver credential.
 - Each configured token must be at least 32 characters.
-- If the API token is configured, the approval token is required and must be different.
-- The approval token cannot be configured without the API token.
+- If any token is configured, all three are required and must be pairwise different.
 - A non-loopback `HOST` cannot start without the API token.
 - Token comparisons use timing-safe equality.
 
-`OPTIONS` requests and `GET /api/health` are intentionally unauthenticated. Ordinary routes accept either valid bearer token, while creating or listing approval records requires the approver role. The API token alone cannot mint or enumerate approvals.
+`OPTIONS` requests, `GET /api/health`, and `GET /api/ready` are intentionally unauthenticated. The API token can read governed agent surfaces and plan/execute within policy, the operator token can configure and synchronize sources or decide proposals, and the approval token can create/list approvals. These roles do not inherit one another.
 
-The Vite development proxies add tokens server-side. The product proxy uses the approval token only for the approval route and uses the API token elsewhere; the PoC proxy uses only the API token. Neither credential is included in a frontend bundle. A production browser deployment still needs a human-authenticated backend-for-frontend. Never expose either token through a `VITE_*` variable.
+The Vite development proxies add tokens server-side. The product proxy selects the operator token for administration routes, the approval token for approval routes, and the API token for agent routes; the PoC proxy uses only the API token. No credential is included in a frontend bundle. A production browser deployment still needs a human-authenticated backend-for-frontend. Never expose these tokens through a `VITE_*` variable.
 
 Static bearer tokens are a development control only. Production deployments need identity-aware authentication, credential rotation, authorization scopes, audit retention, and rate limiting.
 
@@ -46,11 +46,11 @@ The write path applies several local controls:
 2. Approval, when needed, is bound to the exact plan ID and SHA-256 fingerprint.
 3. Execution recomputes the plan and returns `409 PLAN_CHANGED` if either value differs.
 4. The client must provide an 8-to-128-character idempotency key.
-5. Execution obtains a control-plane SQLite immediate lock, rechecks idempotency, and conditionally consumes the exact approval while each connector uses its own source-native transaction or commit.
+5. Execution durably reserves the exact approval before entering the connector write boundary, then obtains a control-plane SQLite immediate lock and rechecks idempotency while each connector uses its own source-native transaction or commit.
 6. Reflection rereads the local source record and checks record ID, version, write ID, intent, plan, target, operation, diff, and expected hash.
 7. Only verified readback becomes reflection evidence in the semantic read model.
 
-These controls do not turn the local reference implementation into a production write gateway. The control-plane transaction and source-native write are not a distributed transaction; a crash after a source commit but before control-plane persistence requires reconciliation that is not implemented here. Approvals do not expire, and idempotency keys are global within one SQLite database. A key is bound to the exact plan/request identity and incompatible reuse returns `409 IDEMPOTENCY_CONFLICT`.
+These controls do not turn the local reference implementation into a production write gateway. The control-plane transaction and source-native write are not a distributed transaction. An in-process ambiguous source outcome is stored as `reconciliation_required`; the approval remains consumed and a retry is prohibited until an operator reconciles source state. A process crash after a source commit but before control-plane persistence can still leave no run record. Approvals do not expire, and idempotency keys are global within one SQLite database. A key is bound to the exact plan/request identity and incompatible reuse returns `409 IDEMPOTENCY_CONFLICT`.
 
 Caller-supplied approval booleans are not accepted. The MCP server can pass an existing approval ID to execution but intentionally exposes no tool that creates approvals.
 
@@ -74,6 +74,7 @@ Agent-facing source-resource and artifact responses replace local file URIs with
 
 The MCP server uses stdio and opens SQLite directly. REST bearer authentication, HTTP audit middleware, request IDs, body limits, and CORS do not protect this path. The spawning process controls the database path and inherits filesystem authority.
 
+- The MCP server registers read and planning tools by default; mutation tools require explicit `--allow-discovery`, `--allow-sync`, or `--allow-write` startup flags.
 - Run MCP only for trusted local clients.
 - Use a dedicated database copy for untrusted experiments.
 - Restrict access to the MCP command and SQLite file.

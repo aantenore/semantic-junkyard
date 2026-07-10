@@ -17,7 +17,7 @@ const MCP_CALL_TIMEOUT_MS = 15_000;
 const PermissionResultSchema = z.object({ decision: z.string() }).passthrough();
 const SearchEnvelopeSchema = z.object({ results: z.array(SearchResultSchema) }).strict();
 const EntityEnvelopeSchema = z.object({
-  entities: z.array(z.object({ id: z.string(), canonicalName: z.string(), degree: z.number() }).passthrough())
+  entities: z.array(z.object({ id: z.string(), canonicalName: z.string(), type: z.string(), degree: z.number() }).passthrough())
 }).strict();
 const ContextEnvelopeSchema = z.object({
   evidence: z.array(EvidenceSpanSchema),
@@ -131,7 +131,11 @@ export async function runMcpAgentUseCase(options: { writeReport?: boolean; outpu
       maxAutonomousRisk: actionPlan.maxAutonomousRisk,
       idempotencyKey: `${actionPlan.id}-${actionPlan.fingerprint.slice(0, 16)}-mcp-poc`
     }, BusinessActionRunSchema);
-    steps.push({ step: steps.length + 1, tool: "business_action_execute", observation: `${actionRun.writes.length} source writes executed; ${actionRun.reflections.filter((reflection) => reflection.status === "verified").length} reflected; status ${actionRun.status}.` });
+    steps.push({
+      step: steps.length + 1,
+      tool: "business_action_execute",
+      observation: `${actionRun.writes.filter((write) => write.status === "executed").length} source mutations and ${actionRun.writes.filter((write) => write.status === "skipped").length} verified no-ops; ${actionRun.reflections.filter((reflection) => reflection.status === "verified").length} reflected; status ${actionRun.status}.`
+    });
 
     const groundedChunkSet = new Set(groundedChunkIds);
     const citations = context.evidence.filter((item) => groundedChunkSet.has(item.chunkId)).slice(0, 4).map((item) => ({
@@ -142,7 +146,12 @@ export async function runMcpAgentUseCase(options: { writeReport?: boolean; outpu
 
     const writebackVerified = actionRun.status === "verified" && actionRun.writes.length > 0 && actionRun.reflections.every((reflection) => reflection.status === "verified");
     const evidenceVerified = citations.length > 0;
-    const overallStatus: McpPocReport["overallStatus"] = actionRun.status === "blocked" || actionRun.status === "approval_required" ? "blocked" : writebackVerified && evidenceVerified ? "completed" : "failed";
+    const overallStatus: McpPocReport["overallStatus"] =
+      actionRun.status === "blocked" || actionRun.status === "approval_required" || actionRun.status === "reconciliation_required"
+        ? "blocked"
+        : writebackVerified && evidenceVerified
+          ? "completed"
+          : "failed";
     const report: McpPocReport = {
       useCase: "MCP agent discovery and verified writeback over real supply-chain sources",
       transport: "mcp-stdio",
@@ -202,7 +211,7 @@ function resolveServerCommand(repoRoot: string): { command: string; args: string
   const tsxCli = path.join(repoRoot, "node_modules/tsx/dist/cli.mjs");
   return {
     command: process.execPath,
-    args: [tsxCli, path.join(repoRoot, "apps/mcp/src/server.ts"), "--db", path.join(repoRoot, "apps/api/data/semantic-junkyard.sqlite")]
+    args: [tsxCli, path.join(repoRoot, "apps/mcp/src/server.ts"), "--db", path.join(repoRoot, "apps/api/data/semantic-junkyard.sqlite"), "--allow-write"]
   };
 }
 

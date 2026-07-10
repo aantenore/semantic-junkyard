@@ -90,22 +90,27 @@ The deterministic/local-HF intent interpreter suite verifies deterministic outpu
 
 Current gaps:
 
-- proposal decision/supersession behavior is not covered by a dedicated complete lifecycle integration test;
+- proposal precision, recall, and reviewer agreement are not measured against a labeled corpus;
 - no real MLX inference runs in the default suite;
 - no labeled benchmark measures proposal precision/recall, entity resolution, retrieval relevance, or model faithfulness;
 - prompt-injection defenses are schema/rule tested but not evaluated against a maintained adversarial corpus.
+
+The manual local-HF acceptance run must use `--no-fallback` and report `modelSummaryStatus: grounded`. The model selects only verified fact IDs; the deterministic renderer rejects malformed, duplicate, unknown, or invented selections.
 
 ## Change-Control Coverage
 
 Engine/API tests verify:
 
 - exact plan ID/fingerprint recomputation and unknown-field rejection;
-- separate agent and operator/approver HTTP roles;
+- separate agent, operator, and approver HTTP roles;
 - approval-required pause, exact approval binding, single consumption, and mismatch rejection;
+- durable approval reservation and `reconciliation_required` handling for ambiguous in-process outcomes;
 - local idempotent replay and conflict detection;
-- blocking destructive, unsupported, evidence-free, and policy-denied actions;
+- blocking destructive, unsupported, evidence-free, policy-denied, and evidence-resource-mismatched actions;
 - readback drift preventing semantic publication;
-- local control-plane transaction rollback behavior;
+- atomic control-plane migrations and local transaction rollback behavior;
+- changed-evidence proposal identity, terminal decision isolation, and inactive-relation retrieval filtering;
+- read-only MCP defaults with explicit mutation-tool enablement;
 - consistent masking across search, evidence, source, and operational responses;
 - strict request validation, request IDs, body limits, CORS, security headers, and optional bearer auth.
 

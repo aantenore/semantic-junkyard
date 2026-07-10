@@ -28,7 +28,7 @@ Important process boundaries:
 
 - The product and PoC are independent React builds and independent REST clients.
 - The PoC is an external consumer of product contracts, not an embedded privileged agent.
-- The MCP server does not proxy the Express API. It constructs the runtime directly and opens the selected SQLite file.
+- The MCP server does not proxy the Express API. It constructs the runtime directly, opens the selected SQLite file, and registers mutation tools only when their startup flags are present.
 - REST authentication and CORS do not apply to MCP. The MCP process inherits operating-system access to every configured local source path.
 - The optional model process receives bounded prompts through stdin. It is not injected as the policy engine or write executor.
 
@@ -104,6 +104,7 @@ Resources become canonical entities with source connection/resource metadata. Re
 - A local-model runtime failure marks the synchronization `partial`; deterministic source facts remain available and the failure is recorded without leaking local paths.
 - Operators can accept or reject only non-authoritative proposals.
 - When a new sync no longer emits an assertion, the previous proposal is marked `superseded`; relation lifecycle metadata is updated so stale assertions leave active navigation.
+- When evidence, confidence, or explanation changes for a non-authoritative assertion, the runtime creates a new proposal identity. A prior acceptance or rejection never silently applies to changed evidence.
 
 This keeps three concepts separate: an observed source fact, a reviewable interpretation, and a graph edge available to agents.
 
@@ -142,6 +143,7 @@ sequenceDiagram
     Client->>Plane: human approval for exact ID/fingerprint
   end
   Client->>Plane: execute exact plan + idempotency key
+  Plane->>Plane: durably reserve exact approval, when required
   Plane->>Source: revalidate allowlist and preconditions
   Plane->>Source: apply source-native write
   Plane->>Source: independent authoritative reread
@@ -151,7 +153,7 @@ sequenceDiagram
     Plane->>ReadModel: publish reflection evidence and relation
     Plane-->>Client: verified
   else missing or drifted
-    Plane-->>Client: reflected/failed, no completion claim
+    Plane-->>Client: reflected or reconciliation_required, no completion claim
   end
 ```
 
@@ -190,7 +192,7 @@ The reference Git connection is approval-required.
 
 ### Idempotency And Reflection
 
-An idempotency key is unique in the control-plane SQLite database and bound to the plan ID/fingerprint, intent, mode, and autonomy ceiling. A terminal exact replay returns the stored run. A paused `approval_required` run may resume with the same key after a matching approval is created.
+An idempotency key is unique in the control-plane SQLite database and bound to the plan ID/fingerprint, intent, mode, and autonomy ceiling. A terminal exact replay returns the stored run. A paused `approval_required` run may resume with the same key after a matching approval is created. Required approval is consumed in a committed control-plane transaction before source execution; it cannot become active again after an ambiguous outcome.
 
 After connector readback, the engine also persists and rereads a versioned reflection record, checking record identity, write ID, intent, plan ID, target, operation, diff, and expected hash. Only connector and control-plane verification together produce a verified reflection and semantic update.
 
@@ -198,7 +200,7 @@ After connector readback, the engine also persists and rereads a versioned refle
 
 The control plane uses SQLite transactions for its own records. Each connector uses its source-native atomic unit: an immediate SQLite transaction or one Git commit. These are **not** one distributed transaction.
 
-The current implementation has no durable outbox or reconciliation worker. A process failure after the source commits but before the control plane records the result can leave an unrecorded source effect. Local idempotency alone cannot prove exactly-once behavior across that crash window. Production connectors need remote idempotency, durable intent/outcome records, retry state, and authoritative reconciliation.
+If an in-process exception occurs after source execution starts, the runtime stores `reconciliation_required`, consumes any approval, and refuses to replay that idempotency key as a new write. The current implementation still has no durable outbox or reconciliation worker. A process crash after the source commits but before the control plane records the result can leave an unrecorded source effect. Local idempotency alone cannot prove exactly-once behavior across that crash window. Production connectors need remote idempotency, durable intent/outcome records, retry state, and authoritative reconciliation.
 
 ## Trust Boundaries
 
@@ -207,8 +209,8 @@ The current implementation has no durable outbox or reconciliation worker. A pro
 3. **Proposal boundary.** Deterministic/model inferences remain distinguishable and reviewable.
 4. **Model boundary.** A model can return bounded intent/proposal JSON or a summary; deterministic validation and connectors decide effects.
 5. **Operator boundary.** Connection configuration, proposal decisions, and approvals are operator/human API capabilities, not general agent tools.
-6. **REST boundary.** Loopback without tokens is development-only. Non-loopback requires distinct static API and approval tokens, which are still not production IAM.
-7. **MCP boundary.** MCP bypasses REST auth because it runs locally over stdio and directly opens files. OS process identity and filesystem permissions are the actual control.
+6. **REST boundary.** Loopback without tokens is development-only. Authenticated mode requires distinct static agent, operator, and approver tokens, which are still not production IAM.
+7. **MCP boundary.** MCP bypasses REST auth because it runs locally over stdio and directly opens files. It is read-only by default, but OS process identity and filesystem permissions remain the actual control when mutation flags are enabled.
 8. **Audit boundary.** The system records observable inputs, evidence, artifacts, decisions, diffs, tool events, and readbacks. It does not request or store hidden chain-of-thought.
 
 ## Current Deployment Limits

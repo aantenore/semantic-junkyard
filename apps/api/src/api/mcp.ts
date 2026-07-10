@@ -72,9 +72,15 @@ export function mcpCapabilitySnapshot(manifest: AgentManifest) {
       name: "semantic-junkyard-mcp",
       version: "0.1.0",
       transport: "stdio",
-      command: "node apps/mcp/dist/server.js"
+      command: "node apps/mcp/dist/server.js",
+      defaultAccess: "read_only",
+      mutationFlags: {
+        discovery: "--allow-discovery",
+        sourceSync: "--allow-sync",
+        businessWriteback: "--allow-write"
+      }
     },
-    summary: `${tools.length} tools, ${resources.length} resources, ${prompts.length} prompts`,
+    summary: `Read-only by default; ${tools.length} contract descriptors, ${resources.length} resources, ${prompts.length} prompts`,
     tools,
     resources,
     prompts

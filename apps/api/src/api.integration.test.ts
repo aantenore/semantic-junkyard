@@ -11,7 +11,8 @@ const baseConfig: RuntimeConfig = {
   corsOrigins: ["http://localhost:5173", "http://localhost:5174"],
   requestBodyLimit: "5mb",
   maxAutonomousRisk: "medium",
-  enableLocalPoc: true
+  enableLocalPoc: true,
+  bootstrapReferenceSources: false
 };
 
 describe("Semantic Junkyard HTTP boundary", () => {
@@ -35,7 +36,8 @@ describe("Semantic Junkyard HTTP boundary", () => {
 
     const token = "a".repeat(32);
     const approvalToken = "b".repeat(32);
-    const authenticated = testApp({ apiToken: token, approvalToken }).app;
+    const operatorToken = "c".repeat(32);
+    const authenticated = testApp({ apiToken: token, operatorToken, approvalToken }).app;
     expect((await request(authenticated).get("/api/status")).status).toBe(401);
     expect((await request(authenticated).get("/api/status").set("Authorization", `Bearer ${token}`)).status).toBe(200);
 
@@ -72,9 +74,11 @@ describe("Semantic Junkyard HTTP boundary", () => {
   it("separates agent reads and governed actions from operator configuration mutations", async () => {
     const apiToken = "c".repeat(32);
     const operatorToken = "d".repeat(32);
-    const { app } = testApp({ apiToken, approvalToken: operatorToken });
+    const approvalToken = "e".repeat(32);
+    const { app } = testApp({ apiToken, operatorToken, approvalToken });
     const agent = (operation: Test) => operation.set("Authorization", `Bearer ${apiToken}`);
     const operator = (operation: Test) => operation.set("Authorization", `Bearer ${operatorToken}`);
+    const approver = (operation: Test) => operation.set("Authorization", `Bearer ${approvalToken}`);
 
     expect((await agent(request(app).post("/api/ingest").send({ name: "blocked.txt", text: "blocked" }))).status).toBe(403);
     expect((await agent(request(app).post("/api/catalog/import").send({}))).status).toBe(403);
@@ -89,6 +93,29 @@ describe("Semantic Junkyard HTTP boundary", () => {
     ).toBe(403);
     expect((await agent(request(app).get("/api/source-resources"))).status).toBe(200);
     expect((await operator(request(app).post("/api/ingest").send({ name: "allowed.txt", text: "Operator-owned ingestion" }))).status).toBe(201);
+    expect((await approver(request(app).post("/api/ingest").send({ name: "blocked-for-approver.txt", text: "blocked" }))).status).toBe(403);
+
+    const plan = await agent(request(app).post("/api/business/actions/plan").send({
+      intent: "Request owner review for Failed Payment Rate",
+      mode: "approval_required",
+      maxAutonomousRisk: "low"
+    }));
+    const approvalRequest = {
+      planId: plan.body.id,
+      planFingerprint: plan.body.fingerprint,
+      intent: plan.body.intent,
+      mode: plan.body.mode,
+      maxAutonomousRisk: plan.body.maxAutonomousRisk,
+      rationale: "Reviewed by the independent approver."
+    };
+    expect((await operator(request(app).post("/api/business/actions/approve").send(approvalRequest))).status).toBe(403);
+    const approval = await approver(request(app).post("/api/business/actions/approve").send(approvalRequest));
+    expect(approval.status).toBe(201);
+    const agentAudit = await agent(request(app).get("/api/audit/events"));
+    expect(JSON.stringify(agentAudit.body)).not.toContain(approval.body.id);
+    expect(JSON.stringify(agentAudit.body)).toContain("approval:[redacted]");
+    const approverAudit = await approver(request(app).get("/api/audit/events"));
+    expect(JSON.stringify(approverAudit.body)).toContain(approval.body.id);
   });
 
   it("validates tool inputs instead of coercing them into bulk disclosure", async () => {

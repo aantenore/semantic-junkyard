@@ -53,6 +53,7 @@ export type ConversationStatus =
   | "answered"
   | "plan_ready"
   | "approval_required"
+  | "reconciliation_required"
   | "blocked"
   | "insufficient_evidence"
   | "verified"
@@ -462,10 +463,18 @@ export async function runProductConversation(input: ConversationInput, emit: Con
       run.reflections.length === run.writes.length &&
       run.reflections.every((reflection) => reflection.status === "verified");
     if (!fullyVerified) {
+      const stopStatus: ConversationStatus =
+        run.status === "approval_required"
+          ? "approval_required"
+          : run.status === "reconciliation_required"
+            ? "reconciliation_required"
+            : "blocked";
       stop(
-        run.status === "approval_required" ? "approval_required" : "blocked",
+        stopStatus,
         `Stopped on ${run.status}`,
-        `The product returned ${run.status} with ${run.reflections.filter((reflection) => reflection.status === "verified").length}/${run.reflections.length} verified reflections. The client will not claim completion.`
+        run.status === "reconciliation_required"
+          ? "The authoritative source outcome is ambiguous. The client stopped and requires operator reconciliation before any retry."
+          : `The product returned ${run.status} with ${run.reflections.filter((reflection) => reflection.status === "verified").length}/${run.reflections.length} verified reflections. The client will not claim completion.`
       );
       return;
     }

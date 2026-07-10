@@ -1,10 +1,10 @@
 {
-  "useCase": "Local autonomous agent discovery over governed finance semantic context",
-  "question": "Can an autonomous AI agent answer which governed finance context should be used for failed payment analysis, and can it perform a business writeback that reflects into source systems?",
+  "useCase": "Local autonomous agent discovery and verified order writeback",
+  "question": "Which governed data and policy control order dispatch, and can the agent set order ORD-1001 to dispatched with verified source reflection?",
   "provider": "local-huggingface-mlx",
   "model": "mlx-community/Qwen3-1.7B-4bit",
   "orchestrationProvider": "deterministic-policy-harness",
-  "modelRole": "trace-summarizer",
+  "modelRole": "audit-fact-selector",
   "overallStatus": "completed",
   "autonomyDecision": "read access and business-action planning are autonomous; configured low/medium-risk source writes may execute autonomously through policy-governed writeback, while privileged or destructive actions require approval",
   "steps": [
@@ -18,37 +18,37 @@
       "step": 2,
       "tool": "semantic_search",
       "rationale": "Find candidate governed context using hybrid lexical, vector, and graph signals.",
-      "observation": "3 evidence candidates returned. Top source: billing-context.html."
+      "observation": "5 evidence candidates returned. Top source: late-dispatch-rate.yaml."
     },
     {
       "step": 3,
       "tool": "entity_lookup",
       "rationale": "Ground the search result in canonical graph entities before answering.",
-      "observation": "Resolved Billing Pipeline with degree 1."
+      "observation": "Resolved Operations Database.orders with degree 2."
     },
     {
       "step": 4,
       "tool": "graph_neighbors",
       "rationale": "Inspect bounded graph context without giving the agent free graph traversal.",
-      "observation": "2 nodes and 1 edges in the approved neighborhood."
+      "observation": "3 nodes and 2 edges in the approved neighborhood."
     },
     {
       "step": 5,
       "tool": "expand_context",
       "rationale": "Assemble an evidence pack with source spans before producing the final answer.",
-      "observation": "3 evidence spans assembled."
+      "observation": "6 evidence spans assembled."
     },
     {
       "step": 6,
       "tool": "business_action_plan",
       "rationale": "Translate a business request into target source systems, diffs, evidence, risk, and autonomy before writing.",
-      "observation": "3 write targets planned: Data Catalog, dbt Semantic Repository, Governance Ticketing."
+      "observation": "1 write targets planned: Operations Database."
     },
     {
       "step": 7,
       "tool": "business_action_execute",
       "rationale": "Execute only through the writeback gateway, reread source records, and refresh the semantic read model from reflection evidence.",
-      "observation": "3 source writes executed; 3 reflections verified; status verified."
+      "observation": "1 source mutations and 0 verified no-ops; 1 reflections verified; status verified."
     },
     {
       "step": 8,
@@ -58,29 +58,35 @@
     }
   ],
   "businessAction": {
-    "intent": "Align Failed Payment Rate definition across Finance and Billing, then reflect it in source systems.",
+    "intent": "Set order ORD-1001 status to dispatched.",
     "status": "verified",
-    "writes": 3,
-    "verifiedReflections": 3,
+    "writes": 1,
+    "verifiedReflections": 1,
     "semanticChunksRefreshed": 1
   },
-  "finalAnswer": "Yes. This run found authorized evidence and completed the configured business action with verified source reflection. For failed payment analysis, the governed finance context is the Finance Semantic Contract plus the Billing Pipeline and Revenue Mart lineage. The local catalog also defines Failed Payment Rate as a governed metric with dimensions such as payment provider, plan, and retry policy. The agent may discover and cite metadata, graph relationships, metric definitions, policies, and source spans. It may also execute configured low/medium-risk business writebacks through the source writeback gateway, but completion is only valid after source reflection verifies the changed records and the semantic read model is refreshed. It may not execute generated SQL, expose secrets, bypass masking, mutate restricted production data, or perform destructive changes without approval. Local Hugging Face model summary: - The Finance Semantic Contract governs the finance context for failed payment analysis.  \n- The agent executes a reflected business writeback by using governed metadata and semantic contracts to process failed payments.",
-  "modelReasoningSummary": "- The Finance Semantic Contract governs the finance context for failed payment analysis.  \n- The agent executes a reflected business writeback by using governed metadata and semantic contracts to process failed payments.",
+  "finalAnswer": "Yes. This run found authorized evidence and completed the configured business action with verified source reflection. The governed dispatch context combines the Operations Database orders table, dispatch policy, carrier SLA reference data, and discovered lineage. The write changed only the allowlisted status field for ORD-1001. The agent may discover and cite metadata, graph relationships, policies, and source spans. It may execute a configured low-risk record update through the source writeback gateway, but completion is valid only after an independent source reread verifies the exact value and the semantic read model is refreshed. It may not execute generated SQL, expose secrets, bypass masking, or write outside configured connector capabilities. Grounded local model summary: - The plan targeted Operations Database.orders and changed only status for ORD-1001.\n- The writeback run status was verified after 1 authoritative source reflection passed.",
+  "modelReasoningSummary": "- The plan targeted Operations Database.orders and changed only status for ORD-1001.\n- The writeback run status was verified after 1 authoritative source reflection passed.",
+  "modelSummaryStatus": "grounded",
   "citations": [
     {
-      "sourceName": "billing-context.html",
-      "chunkId": "chunk_c33290057c50c9bb",
-      "excerpt": "Billing Pipeline Context The Billing Pipeline writes to the Revenue Mart and uses Retry Policy to handle failed payments. Failed Payment Rate depends on payment attempts, failed payment attempts, payment provider, plan, and retry policy. The Finance Semantic Contract governs r..."
+      "sourceName": "late-dispatch-rate.yaml",
+      "chunkId": "chunk_1c4c2097b7fbce65",
+      "excerpt": "id: contract.late-dispatch-rate name: Late Dispatch Rate Contract version: \"1\" domain: Supply Chain status: draft assets: - id: asset.late-dispatch-daily kind: dataset name: Late Dispatch Daily domain: Supply Chain owner: Logistics Analytics description: Daily aggregate of lat..."
     },
     {
-      "sourceName": "semantic-layer-for-agents.md",
-      "chunkId": "chunk_b152f60869c09443",
-      "excerpt": "# Semantic Layer For AI Agents Semantic Junkyard connects data catalogs, metadata graphs, semantic contracts, vector search, and knowledge graphs into an agent-safe context layer. An AI agent should not query raw systems without guidance. It needs governed metadata about asset..."
+      "sourceName": "dispatch-policy.md",
+      "chunkId": "chunk_5d89a0e3125d66c4",
+      "excerpt": "# Dispatch Performance Policy Late Dispatch Rate measures orders dispatched after their promised dispatch timestamp. Only dispatch-eligible orders belong in the denominator; cancelled and fraud-held orders are excluded. The Logistics Analytics owner reviews this policy monthly..."
     },
     {
-      "sourceName": "agentic-discovery-playbook.txt",
-      "chunkId": "chunk_743cf628f9537cbe",
-      "excerpt": "Agentic discovery starts by profiling available sources, catalog assets, lineage, quality signals, and policies. When an undefined problem arrives, the agent first asks what data assets are relevant, whether the assets are authorized, whether the metric definitions are governe..."
+      "sourceName": "carrier-sla.csv",
+      "chunkId": "chunk_64948a1360958bc9",
+      "excerpt": "carrier,service_level,max_dispatch_hours Northstar Express,priority,4 Atlas Freight,standard,12"
+    },
+    {
+      "sourceName": "Operations Database.shipments SQLite schema",
+      "chunkId": "chunk_52021c5de2a5e669",
+      "excerpt": "Authoritative SQLite schema for Operations Database.shipments. Observed row count: 1. Columns: - shipment_id: TEXT (primary key position 1, nullable) - order_id: TEXT (not null) - carrier: TEXT (not null) - dispatched_at: TEXT (nullable) - status: TEXT (not null) Foreign keys:..."
     }
   ],
   "stopConditionsChecked": [
@@ -93,7 +99,7 @@
     {
       "condition": "No authorized evidence can support the answer.",
       "status": "passed",
-      "detail": "3 authorized evidence spans were available."
+      "detail": "6 authorized evidence spans were available."
     },
     {
       "condition": "Candidate assets are stale, restricted, or below quality threshold.",

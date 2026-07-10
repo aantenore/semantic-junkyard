@@ -49,6 +49,22 @@ export interface CreateAppOptions extends SemanticRuntimeOptions {
   referenceSourcesRoot?: string;
 }
 
+export interface ReferenceSourceBootstrapFailure {
+  connectionId: string | null;
+  connectionName: string;
+  code: string;
+  message: string;
+}
+
+export interface ReferenceSourceBootstrapReport {
+  enabled: boolean;
+  status: "skipped" | "completed" | "partial";
+  connectionIds: string[];
+  syncedConnectionIds: string[];
+  skippedConnectionIds: string[];
+  failures: ReferenceSourceBootstrapFailure[];
+}
+
 export function createSemanticRuntime(db: Database.Database, options: SemanticRuntimeOptions = {}): SemanticRuntime {
   const repository = new SemanticRepository(db);
   const connectionRepository = new SourceConnectionRepository(db);
@@ -80,17 +96,30 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
   const runtime = createSemanticRuntime(db, {
     seed: seedLegacyDemo,
     maxAutonomousRisk: options.maxAutonomousRisk ?? config.maxAutonomousRisk,
-    sourceSystems: options.sourceSystems ?? (config.sourceSystemsFile ? loadSourceSystems(config.sourceSystemsFile) : seedLegacyDemo ? loadSourceSystems() : [])
+    sourceSystems: options.sourceSystems ?? (config.sourceSystemsFile ? loadSourceSystems(config.sourceSystemsFile) : seedLegacyDemo ? loadSourceSystems() : []),
+    connectors: options.connectors,
+    semanticEnricher: options.semanticEnricher
   });
   const { repository, engine } = runtime;
   const bootstrapReferenceSources =
-    options.bootstrapReferenceSources ?? (options.seed !== false && db.name !== ":memory:" && config.databasePath !== ":memory:");
+    options.bootstrapReferenceSources ?? (config.bootstrapReferenceSources && options.seed !== false && db.name !== ":memory:" && config.databasePath !== ":memory:");
+  let bootstrapStatus: "initializing" | "ready" | "degraded" | "disabled" = bootstrapReferenceSources ? "initializing" : "disabled";
   const ready = bootstrapReferenceSources
     ? seedReferenceSources(
         engine,
         options.referenceSourcesRoot ?? path.resolve(path.dirname(config.databasePath), "reference-sources")
-      )
-    : Promise.resolve();
+      ).then((report) => {
+        bootstrapStatus = report.status === "partial" ? "degraded" : "ready";
+        return report;
+      })
+    : Promise.resolve<ReferenceSourceBootstrapReport>({
+        enabled: false,
+        status: "skipped",
+        connectionIds: [],
+        syncedConnectionIds: [],
+        skippedConnectionIds: [],
+        failures: []
+      });
   let localPocRun: Promise<Awaited<ReturnType<typeof runLocalAgentUseCase>>> | null = null;
   let localIntentRun: Promise<Awaited<ReturnType<typeof interpretAgentIntent>>> | null = null;
 
@@ -98,7 +127,7 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
   app.use(helmet());
   app.use(requestIdMiddleware);
   app.use(cors(createCorsOptions(config.corsOrigins)));
-  app.use(apiTokenMiddleware(config.apiToken, config.approvalToken));
+  app.use(apiTokenMiddleware(config.apiToken, config.operatorToken, config.approvalToken));
   app.use(express.json({ limit: config.requestBodyLimit }));
   app.use((request, response, next) => {
     const startedAt = performance.now();
@@ -119,6 +148,11 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
 
   app.get("/api/health", (_request, response) => {
     response.json({ ok: true });
+  });
+
+  app.get("/api/ready", (_request, response) => {
+    const readyForTraffic = bootstrapStatus === "ready" || bootstrapStatus === "disabled";
+    response.status(readyForTraffic ? 200 : 503).json({ ok: readyForTraffic, bootstrap: bootstrapStatus });
   });
 
   app.get("/api/status", (_request, response) => {
@@ -213,7 +247,7 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
         status: z.enum(["proposed", "accepted", "rejected", "superseded"]).optional()
       })
       .parse(request.query);
-    response.json(engine.redactOperationalData(engine.semanticProposals(filters)));
+    response.json(engine.redactOperationalData(engine.semanticProposalsForActor(requestActorContext(request), filters)));
   });
 
   app.post("/api/semantic/proposals/:proposalId/decision", requireOperatorRole, (request, response) => {
@@ -242,7 +276,7 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
 
   app.get("/api/audit/events", (request, response) => {
     const limit = z.coerce.number().int().positive().max(250).default(100).parse(request.query.limit);
-    response.json(engine.redactOperationalData(repository.listAuditEvents(limit)));
+    response.json(engine.auditEventsForActor(requestActorContext(request), limit));
   });
 
   app.post("/api/discovery/run", (request, response) => {
@@ -375,11 +409,22 @@ function seedIfEmpty(engine: SemanticEngine, repository: SemanticRepository): vo
   }
 }
 
-async function seedReferenceSources(engine: SemanticEngine, rootPath: string): Promise<void> {
-  if (engine.listSourceConnections().length > 0) return;
-  const demo = ensureSupplyChainDemoSources(rootPath);
-  const connections = [
-    engine.createSourceConnection({
+async function seedReferenceSources(engine: SemanticEngine, rootPath: string): Promise<ReferenceSourceBootstrapReport> {
+  let demo: ReturnType<typeof ensureSupplyChainDemoSources>;
+  try {
+    demo = ensureSupplyChainDemoSources(rootPath);
+  } catch (error) {
+    return {
+      enabled: true,
+      status: "partial",
+      connectionIds: [],
+      syncedConnectionIds: [],
+      skippedConnectionIds: [],
+      failures: [bootstrapFailure(null, "Reference source bootstrap", error)]
+    };
+  }
+  const requests = [
+    {
       name: "Supply Chain Knowledge",
       description: "Real local files containing policy, CSV reference data, and an OpenLineage event.",
       config: {
@@ -390,8 +435,8 @@ async function seedReferenceSources(engine: SemanticEngine, rootPath: string): P
         maxFileBytes: 2_000_000,
         ingestionMode: "full_data"
       }
-    }),
-    engine.createSourceConnection({
+    },
+    {
       name: "Operations Database",
       description: "Real SQLite operational source used for schema discovery and bounded record updates.",
       config: {
@@ -410,8 +455,8 @@ async function seedReferenceSources(engine: SemanticEngine, rootPath: string): P
           }
         ]
       }
-    }),
-    engine.createSourceConnection({
+    },
+    {
       name: "Semantic Contract Repository",
       description: "Real Git repository with versioned semantic contracts and commit-based readback.",
       config: {
@@ -423,14 +468,59 @@ async function seedReferenceSources(engine: SemanticEngine, rootPath: string): P
         writeMode: "approval_required",
         semanticContractPaths: [demo.semanticContractPath]
       }
-    })
+    }
   ];
-  await Promise.all(
-    connections.map((connection) =>
-      engine.syncSourceConnection(connection.id, {
+
+  const failures: ReferenceSourceBootstrapFailure[] = [];
+  const connections = requests.flatMap((request) => {
+    try {
+      return [engine.createSourceConnection(request)];
+    } catch (error) {
+      failures.push(bootstrapFailure(null, request.name, error));
+      return [];
+    }
+  });
+  const syncedConnectionIds: string[] = [];
+  const skippedConnectionIds: string[] = [];
+  await Promise.all(connections.map(async (connection) => {
+    const hasPublishedResources = engine.sourceResources(connection.id).length > 0;
+    const needsRecovery = ["configured", "syncing", "error"].includes(connection.status) || !connection.lastSyncAt || !hasPublishedResources;
+    if (!needsRecovery) {
+      skippedConnectionIds.push(connection.id);
+      return;
+    }
+    try {
+      await engine.syncSourceConnection(connection.id, {
         objective: "Discover supply-chain assets, metric definitions, lineage, governance signals, and safe source actions.",
         provider: "deterministic"
-      })
-    )
-  );
+      });
+      syncedConnectionIds.push(connection.id);
+    } catch (error) {
+      failures.push(bootstrapFailure(connection.id, connection.name, error));
+    }
+  }));
+  if (syncedConnectionIds.length > 0) {
+    try {
+      engine.runDiscovery("Inspect the synchronized reference sources, governed evidence, semantic proposals, and safe business-action capabilities.");
+    } catch (error) {
+      failures.push(bootstrapFailure(null, "Reference fabric discovery", error));
+    }
+  }
+  return {
+    enabled: true,
+    status: failures.length > 0 ? "partial" : "completed",
+    connectionIds: connections.map((connection) => connection.id),
+    syncedConnectionIds,
+    skippedConnectionIds,
+    failures
+  };
+}
+
+function bootstrapFailure(connectionId: string | null, connectionName: string, error: unknown): ReferenceSourceBootstrapFailure {
+  return {
+    connectionId,
+    connectionName,
+    code: error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "BOOTSTRAP_FAILED",
+    message: error instanceof Error ? error.message : "Reference source bootstrap failed."
+  };
 }

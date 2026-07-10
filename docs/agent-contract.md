@@ -33,13 +33,13 @@ The manifest is guidance. Strict request schemas, policy checks, connector allow
 | `find_paths` | Read | Finds a bounded path with maximum depth four. |
 | `expand_context` | Read | Builds an evidence pack from bounded query/chunk/entity inputs. |
 | `get_evidence` | Read | Opens one policy-filtered evidence chunk. |
-| `run_discovery` | Control-plane write | Persists a deterministic profile/audit run; it does not inspect a new source. |
-| `sync_source` | Control-plane write | Runs discovery for an already operator-configured connection and persists observations/proposals. |
+| `run_discovery` | Optional control-plane write | Registered by MCP only with `--allow-discovery`; persists a deterministic profile/audit run. |
+| `sync_source` | Optional control-plane write | Registered by MCP only with `--allow-sync`; synchronizes an operator-configured connection. |
 | `list_semantic_proposals` | Read | Lists proposal lifecycle records; cannot decide them. |
 | `business_action_plan` | Read | Resolves intent to exact configured source target(s), diffs, evidence, risk, and autonomy. |
-| `business_action_execute` | Source/control write | Executes one exact fingerprinted plan and returns authoritative readback/reflection state. |
+| `business_action_execute` | Optional source/control write | Registered by MCP only with `--allow-write`; executes one exact fingerprinted plan. |
 
-REST has equivalent tool endpoints plus the complete operator surface. MCP intentionally omits source connection creation/deletion, proposal decisions, and approval creation.
+REST has equivalent tool endpoints plus the complete operator surface. MCP is read-only by default and independently gates each mutation category at process startup. It intentionally omits source connection creation/deletion, proposal decisions, and approval creation.
 
 ## Required Read Procedure
 
@@ -142,7 +142,7 @@ Idempotency keys are globally unique inside the selected control-plane SQLite da
 - mode;
 - maximum autonomous risk.
 
-An exact terminal replay returns the stored run without another write, even if the source later changes. Reusing the key for a different identity returns `IDEMPOTENCY_CONFLICT`. A run paused at `approval_required` may resume under the same key once an exact active approval is supplied.
+An exact terminal replay returns the stored run without another write, even if the source later changes. Reusing the key for a different identity returns `IDEMPOTENCY_CONFLICT`. A run paused at `approval_required` may resume under the same key once an exact active approval is supplied. Before entering the source write boundary, that approval is durably consumed in its own control-plane transaction.
 
 This is local control-plane idempotency. It is not a distributed exactly-once guarantee across a crash between a source-native commit and control-plane persistence.
 
@@ -176,6 +176,7 @@ Filesystem has no action planner or executor.
 | `approval_required` | Exact target needs human approval; no write. | No. |
 | `blocked` | Unsupported, destructive, ambiguous, unauthorized, or evidence-free. | No. |
 | `failed` | Execution raised and the run was recorded as failed. | No. |
+| `reconciliation_required` | A source outcome could not be proven after execution began; any approval remains consumed. | No; reconcile the authoritative source before another attempt. |
 | `reflected` | A write path ran but not every reflection verified. | No; report drift/missing state. |
 | `verified` | Every connector postcondition and reflection check passed. | Yes, for the exact run only. |
 
@@ -190,6 +191,7 @@ Stop without writing when any of these is true:
 - a relevant proposal is rejected/superseded or an inference is being mistaken for a source fact;
 - policy denies the target or the risk exceeds the allowed autonomy ceiling;
 - approval is required but absent, consumed, or fingerprint-mismatched;
+- a prior attempt is `reconciliation_required` and authoritative source state has not been reconciled;
 - the intent asks for destructive operations, secrets, access-policy changes, generated SQL, arbitrary commands, or unsupported sources;
 - SQLite target/table/key/column is not allowlisted or no longer resolves to one row;
 - Git path is not allowlisted, dirty, or no longer matches the expected HEAD/blob;
@@ -201,14 +203,15 @@ Stop without writing when any of these is true:
 With no API token and loopback binding, requests receive a development-only local approver/operator role. When tokens are enabled:
 
 - the API token authenticates an agent/read/planning role;
-- a distinct approval token authenticates the operator/approver role;
-- source configuration, ingestion, catalog/semantic governance, approval creation, and approval listing require the operator/approver role.
+- a distinct operator token authenticates source configuration, synchronization, ingestion, and semantic governance;
+- a third approval token authenticates approval creation and approval listing;
+- agent, operator, and approver roles do not inherit one another.
 
 Static bearer tokens, header actor labels, and local policy are not production IAM or non-repudiation.
 
 ## MCP Trust Boundary
 
-The stdio server opens the control-plane SQLite file and configured source paths directly. Its real authorization boundary is the spawning process and operating-system account. It does not inherit HTTP bearer roles, CORS, or the product proxy's token separation.
+The stdio server opens the control-plane SQLite file and configured source paths directly. Its real authorization boundary is the spawning process and operating-system account. It does not inherit HTTP bearer roles, CORS, or the product proxy's token separation. Its default tool set is read-only; persisted discovery, source synchronization, and business writeback require explicit startup flags.
 
 Catalog, graph, resource, and evidence resources are bounded snapshots. Prefer specific tools for deeper navigation. Do not expose MCP to an untrusted client under an OS identity that can access sensitive local sources.
 

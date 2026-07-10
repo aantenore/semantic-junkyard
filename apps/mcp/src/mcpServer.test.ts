@@ -26,7 +26,11 @@ describe("Semantic Junkyard MCP server", () => {
       contracts: [],
       ontologyClasses: []
     });
-    const server = createSemanticJunkyardMcpServer(runtime);
+    const server = createSemanticJunkyardMcpServer(runtime, {
+      allowDiscoveryRuns: true,
+      allowSourceSync: true,
+      allowBusinessWrites: true
+    });
     const client = new Client({ name: "semantic-junkyard-mcp-test", version: "0.1.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
@@ -167,6 +171,11 @@ describe("Semantic Junkyard MCP server", () => {
       const content = plan.structuredContent as { status: string; targets: Array<{ risk: string; autonomy: string }> };
       expect(content.status).toBe("approval_required");
       expect(content.targets.some((target) => target.risk === "medium" && target.autonomy === "approval_required")).toBe(true);
+      const tools = await client.listTools();
+      expect(tools.tools.map((tool) => tool.name)).not.toEqual(
+        expect.arrayContaining(["run_discovery", "sync_source", "business_action_execute"])
+      );
+      expect(tools.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["semantic_search", "business_action_plan"]));
     } finally {
       await client.close();
       await server.close();

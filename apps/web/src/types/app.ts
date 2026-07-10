@@ -125,6 +125,8 @@ export interface McpCapabilitySnapshot {
     version: string;
     transport: string;
     command: string;
+    defaultAccess?: string;
+    mutationFlags?: Record<string, string>;
   };
   summary: string;
   tools: Array<{

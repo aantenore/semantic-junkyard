@@ -88,7 +88,7 @@ npm run build
 npm run poc:agent:mcp
 ```
 
-The MCP PoC starts a real stdio client/server pair, searches observed source resources and semantic evidence, plans a configured action, executes only when autonomous, and reports authoritative readback. MCP can list proposals and synchronize an existing connection, but it cannot create a connection, decide a proposal, or create an approval.
+The MCP PoC starts a real stdio client/server pair with only `--allow-write`, searches observed source resources and semantic evidence, plans a configured autonomous action, and reports authoritative readback. A normal MCP server is read-only unless mutation flags are supplied. `--allow-sync` can expose synchronization for an existing connection, but MCP cannot create a connection, decide a proposal, or create an approval.
 
 For an approval-required Git plan, create approval through the product/API channel and pass its exact ID to MCP execution. The OS user that spawns MCP must be treated as privileged because MCP opens the control database and configured local paths directly.
 
@@ -102,6 +102,7 @@ Verify each fail-closed path:
 - Ask for delete/drop/truncate/insert/DDL, secrets, access-policy changes, arbitrary SQL, or arbitrary file writes. The action is blocked.
 - Remove evidence from a candidate target. Planning is blocked rather than made evidence-optional.
 - Reuse an approval for another fingerprint or after consumption. Execution rejects it.
+- Inject an exception after source execution begins. The run becomes `reconciliation_required`, and the consumed approval cannot authorize a retry.
 - Force readback drift. The run is not `verified`, and no semantic update is published from that write.
 - Use `read_only` PoC mode with a mutation request. The client gathers evidence and stops before planning.
 - Use `plan_only` mode. The client stops with the exact plan and performs no write.
@@ -139,7 +140,8 @@ Verify each fail-closed path:
 ### Trust Boundaries
 
 - [ ] Retrieved content is handled as untrusted data, not instructions.
-- [ ] REST agent and operator/approver roles remain separate when tokens are enabled.
+- [ ] REST agent, operator, and approver roles remain separate when tokens are enabled.
+- [ ] MCP mutation tools are absent unless their explicit startup flags are present.
 - [ ] MCP process filesystem authority is documented and constrained operationally.
 - [ ] Audit records contain observable evidence/artifacts/decisions, not hidden chain-of-thought.
 - [ ] No UI/API/MCP path offers generic SQL, shell, arbitrary filesystem, or unknown-source writes.

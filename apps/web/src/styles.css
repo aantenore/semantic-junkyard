@@ -677,7 +677,8 @@ button {
 }
 
 .action-state.failed,
-.action-state.approval_required {
+.action-state.approval_required,
+.action-state.reconciliation_required {
   background: var(--amber-soft);
   color: var(--amber);
 }
@@ -719,7 +720,7 @@ button {
 
 .business-intent-row {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) repeat(3, auto);
+  grid-template-columns: minmax(260px, 1fr) repeat(2, auto);
   gap: 8px;
 }
 
@@ -754,6 +755,117 @@ button {
   background: #ffffff;
   color: var(--text);
   padding: 0 28px 0 9px;
+}
+
+.approval-review {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 12px;
+  border: 1px solid #e0b46b;
+  border-radius: 8px;
+  background: #fffaf0;
+  padding: 12px;
+}
+
+.approval-identity,
+.approval-preconditions,
+.approval-rationale,
+.approval-attestation {
+  grid-column: 1 / -1;
+}
+
+.approval-identity {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.9fr);
+  align-items: end;
+  gap: 10px;
+}
+
+.approval-identity div,
+.approval-rationale,
+.approval-preconditions div {
+  display: grid;
+  gap: 4px;
+}
+
+.approval-identity span,
+.approval-rationale > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.approval-identity strong {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.approval-identity code {
+  overflow: hidden;
+  border: 1px solid #ead2a7;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #684b1b;
+  font-size: 11px;
+  padding: 7px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approval-preconditions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.approval-preconditions div {
+  border-left: 3px solid #d9a64f;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 8px 9px;
+}
+
+.approval-preconditions strong,
+.approval-preconditions span,
+.approval-preconditions small {
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.approval-preconditions span,
+.approval-preconditions small {
+  color: #5f5140;
+}
+
+.approval-rationale textarea {
+  min-height: 70px;
+  resize: vertical;
+  border: 1px solid #d8bd8e;
+  border-radius: 7px;
+  background: #ffffff;
+  color: var(--text);
+  padding: 8px 10px;
+}
+
+.approval-attestation {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: #473b2c;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.approval-attestation input {
+  width: 16px;
+  height: 16px;
+  margin: 1px 0 0;
+  flex: 0 0 auto;
+}
+
+.approval-command {
+  grid-column: 2;
+  min-width: 172px;
 }
 
 button:focus-visible,
@@ -2604,6 +2716,16 @@ a:focus-visible {
   .action-policy-controls .segmented {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .approval-review,
+  .approval-identity {
+    grid-template-columns: 1fr;
+  }
+
+  .approval-command {
+    grid-column: 1;
+    width: 100%;
   }
 
   .right-rail {

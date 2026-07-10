@@ -1,4 +1,5 @@
 import type {
+  AuditEvent,
   BusinessActionApproval,
   BusinessActionApprovalRequest,
   BusinessActionExecutionRequest,
@@ -67,7 +68,8 @@ class BusinessActionExecutionFailure extends Error {
   constructor(
     readonly plan: BusinessActionPlan,
     readonly createdAt: string,
-    readonly originalError: unknown
+    readonly originalError: unknown,
+    readonly approvalConsumed: boolean
   ) {
     super("Business action execution failed after the write transaction started.");
     this.name = "BusinessActionExecutionFailure";
@@ -211,6 +213,18 @@ export class SemanticEngine {
     return this.requireSourceManager().listProposals(filters);
   }
 
+  semanticProposalsForActor(
+    actor: ActorContext,
+    filters: { connectionId?: string; status?: "proposed" | "accepted" | "rejected" | "superseded" } = {}
+  ) {
+    const proposals = this.semanticProposals(filters);
+    if (actor.roles.includes("semantic-operator")) return proposals;
+    const visibleResourceIds = new Set(this.sourceResourcesForActor(actor).map((resource) => resource.id));
+    return proposals.filter(
+      (proposal) => proposal.evidenceResourceIds.length > 0 && proposal.evidenceResourceIds.every((id) => visibleResourceIds.has(id))
+    );
+  }
+
   decideSemanticProposal(id: string, rawRequest: unknown, actor = "local-user") {
     return this.requireSourceManager().decideProposal(id, rawRequest, actor);
   }
@@ -254,6 +268,26 @@ export class SemanticEngine {
     const replay = this.repository.getBusinessActionRunByIdempotencyKey(request.idempotencyKey);
     if (replay) this.assertIdempotencyMatch(replay, request);
     if (replay && replay.status !== "approval_required") return replay;
+    const planRequest = this.planRequestFromExecution(request);
+    const preflightPlan = this.buildBusinessActionPlan(planRequest);
+    this.assertPlanIdentity(preflightPlan, request.planId, request.planFingerprint);
+    const preflightApprovalTargets = preflightPlan.targets.filter((target) => target.autonomy === "approval_required");
+    const reservedApproval =
+      preflightPlan.status !== "blocked" && request.mode !== "dry_run" && preflightApprovalTargets.length > 0 && request.approvalId
+        ? this.repository.immediateTransaction(() => {
+            const approval = this.validApproval(request.approvalId, preflightPlan);
+            const consumedAt = nowIso();
+            if (!approval || !this.repository.consumeBusinessActionApproval(approval.id, consumedAt)) {
+              throw new DomainError("INVALID_APPROVAL", "Approval was already consumed by another execution.", 403);
+            }
+            this.repository.audit(actor, "business_action.approval_reserve", approval.id, "allow", {
+              planId: preflightPlan.id,
+              planFingerprint: preflightPlan.fingerprint,
+              idempotencyKey: request.idempotencyKey
+            });
+            return approval;
+          })
+        : null;
     try {
       return this.repository.immediateTransaction(() => {
         const concurrentReplay = this.repository.getBusinessActionRunByIdempotencyKey(request.idempotencyKey);
@@ -262,7 +296,6 @@ export class SemanticEngine {
           if (concurrentReplay.status !== "approval_required") return concurrentReplay;
         }
 
-        const planRequest = this.planRequestFromExecution(request);
         const plan = this.buildBusinessActionPlan(planRequest);
         this.assertPlanIdentity(plan, request.planId, request.planFingerprint);
 
@@ -291,11 +324,7 @@ export class SemanticEngine {
           return run;
         }
 
-        const approval = approvalTargets.length > 0 ? this.validApproval(request.approvalId, plan) : null;
         const createdAt = nowIso();
-        if (approval && !this.repository.consumeBusinessActionApproval(approval.id, createdAt)) {
-          throw new DomainError("INVALID_APPROVAL", "Approval was already consumed by another execution.", 403);
-        }
         try {
           const writes = plan.targets.map((target) => this.executeSourceWrite(plan, target, planRequest, actor));
           const reflectionPackage = this.reflectSourceWrites(plan, writes, planRequest);
@@ -330,35 +359,44 @@ export class SemanticEngine {
             writes: writes.length,
             verifiedReflections: reflectionPackage.reflections.filter((reflection) => reflection.status === "verified").length,
             semanticUpdates: reflectionPackage.semanticUpdates.length,
-            approvalId: approval?.id ?? null
+            approvalId: reservedApproval?.id ?? null
           });
           return run;
         } catch (error) {
-          if (error instanceof DomainError) throw error;
-          throw new BusinessActionExecutionFailure(plan, createdAt, error);
+          throw new BusinessActionExecutionFailure(plan, createdAt, error, Boolean(reservedApproval));
         }
       });
     } catch (error) {
-      if (!(error instanceof BusinessActionExecutionFailure)) throw error;
-      const plan = error.plan;
+      const executionFailure =
+        error instanceof BusinessActionExecutionFailure
+          ? error
+          : reservedApproval
+            ? new BusinessActionExecutionFailure(preflightPlan, nowIso(), error, true)
+            : null;
+      if (!executionFailure) throw error;
+      const plan = executionFailure.plan;
       const failedRun: BusinessActionRun = {
         id: stableId("action_run", request.idempotencyKey),
         idempotencyKey: request.idempotencyKey,
         intent: request.intent,
         actionType: plan.actionType,
-        status: "failed",
+        status: "reconciliation_required",
         mode: request.mode,
         risk: plan.risk,
         plan: {
           ...plan,
-          status: "failed",
-          warnings: [...plan.warnings, "Execution rolled back before completion."],
-          targets: plan.targets.map((target) => ({ ...target, status: "failed" }))
+          status: "reconciliation_required",
+          warnings: [
+            ...plan.warnings,
+            "The source outcome could not be proven. Reconcile authoritative sources before retrying.",
+            ...(executionFailure.approvalConsumed ? ["The approval was consumed and cannot authorize another attempt."] : [])
+          ],
+          targets: plan.targets.map((target) => ({ ...target, status: "reconciliation_required" }))
         },
         writes: [],
         reflections: [],
         semanticUpdates: [],
-        createdAt: error.createdAt,
+        createdAt: executionFailure.createdAt,
         completedAt: nowIso()
       };
       return this.repository.immediateTransaction(() => {
@@ -368,9 +406,11 @@ export class SemanticEngine {
           if (concurrentReplay.status !== "approval_required") return concurrentReplay;
         }
         this.repository.saveBusinessActionRun(failedRun);
-        this.repository.audit(actor, "business_action.execute", failedRun.id, "deny", {
+        this.repository.audit(actor, "business_action.execute", failedRun.id, "review", {
           intent: request.intent,
-          errorType: error.originalError instanceof Error ? error.originalError.name : "unknown"
+          errorType: executionFailure.originalError instanceof Error ? executionFailure.originalError.name : "unknown",
+          reconciliationRequired: true,
+          approvalConsumed: executionFailure.approvalConsumed
         });
         return failedRun;
       });
@@ -532,10 +572,15 @@ export class SemanticEngine {
           ? entity.id === request.entityId
           : Boolean(normalized) && (entity.canonicalName.toLowerCase().includes(normalized!) || entity.aliases.some((alias) => alias.toLowerCase().includes(normalized!))))
       )
-      .slice(0, request.topK)
       .map((entity) => ({
         ...entity,
         degree: graph.edges.filter((edge) => edge.source === entity.id || edge.target === entity.id).length,
+        matchScore: request.entityId ? 1 : entityLookupMatchScore(entity.canonicalName, entity.aliases, normalized!),
+      }))
+      .sort((left, right) => right.matchScore - left.matchScore || right.degree - left.degree || left.canonicalName.localeCompare(right.canonicalName))
+      .slice(0, request.topK)
+      .map(({ matchScore: _matchScore, ...entity }) => ({
+        ...entity,
         evidence: entity.evidenceChunkIds.map((chunkId) => this.getEvidence(chunkId, actor)).filter((item) => item !== null)
       }));
     this.repository.audit(actor.actor, "entity_lookup", request.entityId ?? request.name ?? "unknown", "allow", { returned: entities.length });
@@ -682,6 +727,19 @@ export class SemanticEngine {
     return stripOperationalData(this.policy.applyDataPolicies(value, this.repository.catalog().policies)) as T;
   }
 
+  auditEventsForActor(actor: ActorContext, limit: number): AuditEvent[] {
+    const events = this.repository.listAuditEvents(limit);
+    const mayInspectApprovals = actor.roles.includes("approver") || actor.roles.includes("semantic-operator");
+    const visibleEvents = mayInspectApprovals
+      ? events
+      : events.map((event) => ({
+          ...event,
+          target: event.action.includes("approv") || event.target.startsWith("approval_") ? "approval:[redacted]" : event.target,
+          metadata: stripApprovalIdentifiers(event.metadata) as Record<string, unknown>
+        }));
+    return this.redactOperationalData(visibleEvents);
+  }
+
   explainPermissions(intent: string) {
     return {
       intent,
@@ -781,22 +839,39 @@ export class SemanticEngine {
     connectorWarnings: string[]
   ): BusinessActionPlan {
     const sourceSystem = this.sourceManager?.sourceSystems().find((system) => system.id === candidate.connectionId);
+    const connectionResources = this.sourceManager?.listResources(candidate.connectionId) ?? [];
+    const resourceById = new Map(connectionResources.map((resource) => [resource.id, resource]));
+    const declaredEvidenceResources = candidate.evidenceResourceIds.flatMap((id) => {
+      const resource = resourceById.get(id);
+      return resource ? [resource] : [];
+    });
+    const missingEvidenceResourceIds = candidate.evidenceResourceIds.filter((id) => !resourceById.has(id));
+    const declaredEvidenceChunkIds = new Set(declaredEvidenceResources.flatMap((resource) => resource.evidenceChunkIds));
+    const unboundEvidenceChunkIds = candidate.evidenceChunkIds.filter((chunkId) => !declaredEvidenceChunkIds.has(chunkId));
     const authorizedEvidenceChunkIds = candidate.evidenceChunkIds.filter(
-      (chunkId) => this.getEvidence(chunkId, automationActor) !== null
+      (chunkId) => declaredEvidenceChunkIds.has(chunkId) && this.getEvidence(chunkId, automationActor) !== null
     );
-    const evidenceMissing = authorizedEvidenceChunkIds.length === 0;
     const configuredPolicyResourceIds = Array.isArray(candidate.parameters.policyResourceIds)
       ? candidate.parameters.policyResourceIds.filter((id): id is string => typeof id === "string")
       : [];
     const policyResourceIds = configuredPolicyResourceIds.length > 0
       ? configuredPolicyResourceIds
       : candidate.evidenceResourceIds;
-    const evidenceResources = (this.sourceManager?.listResources(candidate.connectionId) ?? [])
-      .filter((resource) => policyResourceIds.includes(resource.id));
+    const missingPolicyResourceIds = policyResourceIds.filter((id) => !resourceById.has(id));
+    const evidenceResources = policyResourceIds.flatMap((id) => {
+      const resource = resourceById.get(id);
+      return resource ? [resource] : [];
+    });
     const deniedResources = evidenceResources.filter(
       (resource) => this.policy.evaluateSensitivity(resource.sensitivity, automationActor).decision === "deny"
     );
-    const policyBlocked = deniedResources.length > 0;
+    const evidenceBindingInvalid =
+      candidate.evidenceResourceIds.length === 0 ||
+      missingEvidenceResourceIds.length > 0 ||
+      missingPolicyResourceIds.length > 0 ||
+      unboundEvidenceChunkIds.length > 0;
+    const evidenceMissing = authorizedEvidenceChunkIds.length === 0 || evidenceBindingInvalid;
+    const policyBlocked = deniedResources.length > 0 || missingPolicyResourceIds.length > 0;
     const risk: RiskLevel = evidenceMissing || policyBlocked ? "blocked" : candidate.risk;
     const autonomy = risk === "blocked"
       ? "blocked"
@@ -832,6 +907,15 @@ export class SemanticEngine {
     const warnings = [
       ...connectorWarnings,
       evidenceMissing ? "The connector resolved an action but provided no source evidence; execution is blocked." : null,
+      missingEvidenceResourceIds.length > 0
+        ? `The connector referenced unknown evidence resources: ${missingEvidenceResourceIds.join(", ")}.`
+        : null,
+      missingPolicyResourceIds.length > 0
+        ? `The connector referenced unknown policy resources: ${missingPolicyResourceIds.join(", ")}.`
+        : null,
+      unboundEvidenceChunkIds.length > 0
+        ? `The connector supplied evidence chunks that are not owned by its declared resources: ${unboundEvidenceChunkIds.join(", ")}.`
+        : null,
       ...deniedResources.map(
         (resource) => `Source resource ${resource.qualifiedName} is ${resource.sensitivity} and is not authorized for the agent write boundary.`
       ),
@@ -1032,7 +1116,12 @@ export class SemanticEngine {
       objectType: target.objectType,
       objectKey: target.objectKey,
       operation: target.technicalOperation,
-      status: connectorResult && !connectorResult.postconditionPassed ? "failed" : "executed",
+      status:
+        connectorResult && !connectorResult.postconditionPassed
+          ? "failed"
+          : connectorResult && (connectorResult.metadata.noOp === true || connectorResult.metadata.sourceMutation === false)
+            ? "skipped"
+            : "executed",
       dryRun: false,
       payload: {
         ...payload,
@@ -1521,4 +1610,25 @@ function stripOperationalData(value: unknown): unknown {
       .filter(([key]) => !OPERATIONAL_PATH_KEYS.has(key))
       .map(([key, item]) => [key, stripOperationalData(item)])
   );
+}
+
+function stripApprovalIdentifiers(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripApprovalIdentifiers);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => key.toLowerCase() !== "approvalid")
+      .map(([key, item]) => [key, stripApprovalIdentifiers(item)])
+  );
+}
+
+function entityLookupMatchScore(canonicalName: string, aliases: string[], normalizedQuery: string): number {
+  const canonical = canonicalName.toLowerCase();
+  const normalizedAliases = aliases.map((alias) => alias.toLowerCase());
+  if (canonical === normalizedQuery) return 5;
+  if (normalizedAliases.includes(normalizedQuery)) return 4;
+  if (normalizedAliases.some((alias) => alias.startsWith(normalizedQuery))) return 3;
+  if (canonical.split(/[^a-z0-9_]+/).includes(normalizedQuery)) return 2;
+  if (normalizedAliases.some((alias) => alias.includes(normalizedQuery))) return 1.5;
+  return canonical.includes(normalizedQuery) ? 1 : 0;
 }

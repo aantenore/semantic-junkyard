@@ -65,6 +65,7 @@ describe("real source workflow", () => {
     expect(JSON.stringify(agentResources)).not.toContain(sourcePath);
     expect(agentResources.every((resource) => resource.uri.startsWith("semantic-junkyard://resource/"))).toBe(true);
     expect(JSON.stringify(operatorResources)).toContain(sourcePath);
+    expect(runtime.engine.entityLookup({ name: "orders", topK: 3 })[0]).toMatchObject({ type: "Dataset", aliases: ["orders"] });
 
     const plan = runtime.engine.planBusinessAction({
       intent: "Set order ORD-1 status to dispatched",
@@ -88,6 +89,25 @@ describe("real source workflow", () => {
     expect(run.status).toBe("verified");
     expect(run.reflections).toHaveLength(1);
     expect(run.reflections[0]?.status).toBe("verified");
+
+    const noOpPlan = runtime.engine.planBusinessAction({
+      intent: "Set order ORD-1 status to dispatched",
+      mode: "autonomous",
+      maxAutonomousRisk: "medium",
+      context: {}
+    });
+    const noOpRun = runtime.engine.executeBusinessAction({
+      planId: noOpPlan.id,
+      planFingerprint: noOpPlan.fingerprint,
+      intent: noOpPlan.intent,
+      mode: noOpPlan.mode,
+      maxAutonomousRisk: noOpPlan.maxAutonomousRisk,
+      idempotencyKey: `sqlite-noop-${noOpPlan.fingerprint}`,
+      context: {}
+    });
+    expect(noOpRun.status).toBe("verified");
+    expect(noOpRun.writes[0]?.status).toBe("skipped");
+    expect(noOpRun.reflections[0]?.status).toBe("verified");
 
     const readback = new Database(sourcePath, { readonly: true });
     expect(readback.prepare("SELECT status FROM orders WHERE order_id = ?").pluck().get("ORD-1")).toBe("dispatched");
@@ -210,6 +230,100 @@ describe("real source workflow", () => {
     expect(plan.status).toBe("blocked");
     expect(plan.targets).toEqual([]);
     expect(plan.warnings.join(" ")).toContain("No fallback object was selected");
+  });
+
+  it("blocks connector actions whose evidence chunks are not owned by the declared resources", async () => {
+    const root = temporaryDirectory();
+    const connector: SourceConnector = {
+      kind: "filesystem",
+      test: () => ({ ok: true, message: "fixture available", details: {} }),
+      discover(connection) {
+        const observedAt = "2026-07-10T00:00:00.000Z";
+        const resources = ["declared", "unrelated"].map((name) => ({
+          id: `resource.${name}`,
+          connectionId: connection.id,
+          externalId: name,
+          parentId: null,
+          kind: "file" as const,
+          name,
+          qualifiedName: `${connection.name}.${name}`,
+          dataType: "text/plain",
+          description: `${name} fixture`,
+          uri: `fixture://${name}`,
+          sensitivity: "internal" as const,
+          writable: true,
+          profile: {},
+          evidenceChunkIds: [],
+          metadata: {},
+          observedAt
+        }));
+        return {
+          resources,
+          documents: resources.map((resource) => ({
+            resourceExternalId: resource.externalId,
+            request: {
+              name: `${resource.name}.txt`,
+              text: `${resource.name} evidence for dispatch status.`,
+              mimeType: "text/plain",
+              ingestionMode: "full_data" as const,
+              metadata: {}
+            }
+          })),
+          assets: [],
+          metrics: [],
+          lineage: [],
+          contracts: [],
+          ontologyClasses: [],
+          relations: [],
+          warnings: [],
+          checkpoint: {}
+        };
+      },
+      planAction(connection, _request, resources) {
+        const declared = resources.find((resource) => resource.externalId === "declared")!;
+        const unrelated = resources.find((resource) => resource.externalId === "unrelated")!;
+        return {
+          connectionId: connection.id,
+          capability: "record.update",
+          technicalOperation: "fixture.update",
+          objectType: "record",
+          objectKey: "ORD-BOUNDARY",
+          title: "Update fixture record",
+          rationale: "Maliciously mismatched evidence fixture.",
+          risk: "low",
+          requiresApproval: false,
+          evidenceResourceIds: [declared.id],
+          evidenceChunkIds: unrelated.evidenceChunkIds,
+          before: { status: "ready" },
+          after: { status: "dispatched" },
+          parameters: { policyResourceIds: [declared.id] }
+        };
+      }
+    };
+    const runtime = createSemanticRuntime(openMemoryDatabase(), { seed: false, connectors: [connector], semanticEnricher: null });
+    const connection = runtime.engine.createSourceConnection({
+      name: "Evidence binding fixture",
+      description: "Connector evidence ownership boundary",
+      config: {
+        kind: "filesystem",
+        rootPath: root,
+        recursive: true,
+        maxFiles: 20,
+        maxFileBytes: 200_000,
+        ingestionMode: "full_data"
+      }
+    });
+    await runtime.engine.syncSourceConnection(connection.id, { objective: "Observe connector evidence.", provider: "deterministic" });
+
+    const plan = runtime.engine.planBusinessAction({
+      intent: "Set order ORD-BOUNDARY status to dispatched",
+      mode: "autonomous",
+      maxAutonomousRisk: "medium"
+    });
+
+    expect(plan.status).toBe("blocked");
+    expect(plan.targets[0]?.evidenceChunkIds).toEqual([]);
+    expect(plan.warnings.join(" ")).toContain("not owned by its declared resources");
   });
 
   it("does not retain submitted content for no-copy ingestion modes", () => {
@@ -465,7 +579,11 @@ describe("real source workflow", () => {
     expect(synchronizedEvidence).not.toContain(obsolete);
     expect(runtime.repository.getSources().filter((source) => source.metadata.connectionId === connection.id)).toHaveLength(1);
     expect(runtime.engine.semanticProposals({ connectionId: connection.id }).find((proposal) => proposal.id === inferred!.id)?.status).toBe("rejected");
-    expect(runtime.repository.getRelations().find((relation) => relation.id === inferred!.value.relationId)?.metadata.lifecycle).toBe("rejected");
+    const refreshedInference = runtime.engine.semanticProposals({ connectionId: connection.id, status: "proposed" })
+      .find((proposal) => proposal.kind === "relation" && proposal.id !== inferred!.id);
+    expect(refreshedInference).toBeDefined();
+    expect(runtime.repository.getRelations().find((relation) => relation.id === inferred!.value.relationId)).toBeUndefined();
+    expect(runtime.repository.getRelations().find((relation) => relation.id === refreshedInference!.value.relationId)?.metadata.lifecycle).toBe("proposed");
     expect(runtime.engine.semanticProposals({ connectionId: connection.id }).find((proposal) => proposal.id === annotationProposal.id)?.status).toBe("superseded");
     expect(runtime.repository.getEntities().find((entity) => entity.metadata.resourceId === annotatedResource.id)?.metadata.semanticAnnotations).toEqual([]);
     expect(runtime.repository.graphSnapshot().nodes.find((node) => node.id === runtime.repository.getEntities().find((entity) => entity.metadata.resourceId === annotatedResource.id)?.id)?.annotations).toEqual([]);
