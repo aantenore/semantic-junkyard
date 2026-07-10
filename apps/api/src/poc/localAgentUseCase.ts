@@ -19,7 +19,7 @@ export interface PocAgentReport {
   provider: string;
   model: string;
   orchestrationProvider: "deterministic-policy-harness";
-  modelRole: "trace-summarizer" | "deterministic-summary";
+  modelRole: "audit-fact-selector" | "deterministic-summary";
   overallStatus: "completed" | "degraded" | "blocked" | "failed";
   autonomyDecision: string;
   steps: PocAgentStep[];
@@ -32,6 +32,7 @@ export interface PocAgentReport {
   };
   finalAnswer: string;
   modelReasoningSummary: string;
+  modelSummaryStatus: "deterministic" | "grounded" | "rejected" | "fallback";
   citations: Array<{
     sourceName: string;
     chunkId: string;
@@ -156,7 +157,7 @@ async function executeLocalAgentUseCase(
     step: 7,
     tool: "business_action_execute",
     rationale: "Execute only through the writeback gateway, reread source records, and refresh the semantic read model from reflection evidence.",
-    observation: `${actionRun.writes.length} source writes executed; ${actionRun.reflections.filter((reflection) => reflection.status === "verified").length} reflections verified; status ${actionRun.status}.`
+    observation: `${actionRun.writes.filter((write) => write.status === "executed").length} source mutations and ${actionRun.writes.filter((write) => write.status === "skipped").length} verified no-ops; ${actionRun.reflections.filter((reflection) => reflection.status === "verified").length} reflections verified; status ${actionRun.status}.`
   });
 
   const reflectedSearch = engine.search({
@@ -187,17 +188,22 @@ async function executeLocalAgentUseCase(
     "The agent may discover and cite metadata, graph relationships, policies, and source spans. It may execute a configured low-risk record update through the source writeback gateway, but completion is valid only after an independent source reread verifies the exact value and the semantic read model is refreshed. It may not execute generated SQL, expose secrets, bypass masking, or write outside configured connector capabilities."
   ].join(" ");
 
-  const modelResult = await maybeGenerateWithLocalModel(options.provider, options.allowModelFallback ?? true, citations);
+  const verifiedAuditFacts = [
+    "The plan targeted Operations Database.orders and changed only status for ORD-1001.",
+    `The writeback run status was ${actionRun.status} after ${verifiedReflections} authoritative source reflection passed.`,
+    "Dispatch eligibility evidence came from dispatch-policy.md and Operations Database.orders."
+  ];
+  const modelResult = await maybeGenerateWithLocalModel(options.provider, options.allowModelFallback ?? true, citations, verifiedAuditFacts);
   const baseStatus: PocAgentReport["overallStatus"] =
-    actionPlan.status === "blocked" || actionRun.status === "blocked" || actionRun.status === "approval_required"
+    actionPlan.status === "blocked" || actionRun.status === "blocked" || actionRun.status === "approval_required" || actionRun.status === "reconciliation_required"
       ? "blocked"
       : writebackVerified
         ? "completed"
         : "failed";
   const overallStatus = baseStatus === "completed" && modelResult.degraded ? "degraded" : baseStatus;
   const finalAnswer =
-    modelResult.provider === "local-huggingface-mlx" && modelResult.text
-      ? `${deterministicAnswer} Local Hugging Face model summary: ${modelResult.text}`
+    modelResult.summaryStatus === "grounded" && modelResult.text
+      ? `${deterministicAnswer} Grounded local model summary: ${modelResult.text}`
       : deterministicAnswer;
 
   const report: PocAgentReport = {
@@ -206,7 +212,7 @@ async function executeLocalAgentUseCase(
     provider: modelResult.provider,
     model: modelResult.model,
     orchestrationProvider: "deterministic-policy-harness",
-    modelRole: modelResult.provider === "local-huggingface-mlx" ? "trace-summarizer" : "deterministic-summary",
+    modelRole: modelResult.provider === "local-huggingface-mlx" ? "audit-fact-selector" : "deterministic-summary",
     overallStatus,
     autonomyDecision: permissionCheck.decision,
     steps,
@@ -219,6 +225,7 @@ async function executeLocalAgentUseCase(
     },
     finalAnswer,
     modelReasoningSummary: modelResult.text,
+    modelSummaryStatus: modelResult.summaryStatus,
     citations,
     stopConditionsChecked: permissionCheck.manifest.stopConditions,
     stopConditionEvaluations: evaluateStopConditions(permissionCheck.manifest.stopConditions, {
@@ -241,14 +248,22 @@ async function executeLocalAgentUseCase(
 async function maybeGenerateWithLocalModel(
   provider: RunPocOptions["provider"],
   allowFallback: boolean,
-  citations: PocAgentReport["citations"]
-): Promise<{ provider: string; model: string; text: string; degraded: boolean }> {
+  citations: PocAgentReport["citations"],
+  verifiedAuditFacts: string[]
+): Promise<{
+  provider: string;
+  model: string;
+  text: string;
+  degraded: boolean;
+  summaryStatus: PocAgentReport["modelSummaryStatus"];
+}> {
   if (provider !== "local-huggingface") {
     return {
       provider: "deterministic-local-agent-loop",
       model: "deterministic-rules",
       text: "Deterministic planner selected evidence-backed discovery tools, policy-governed writeback, and source reflection.",
-      degraded: false
+      degraded: false,
+      summaryStatus: "deterministic"
     };
   }
 
@@ -257,21 +272,23 @@ async function maybeGenerateWithLocalModel(
     const evidence = citations.map((citation) => `- ${citation.sourceName}: ${citation.excerpt}`).join("\n");
     const generated = await generateWithLocalHuggingFace(
       [
-        "You are an agent audit summarizer. Do not reveal chain-of-thought.",
-        "Return a concise operational reasoning summary in two bullet points.",
-        "Use only the provided evidence. Do not introduce source names, facts, actions, or systems that are absent from the evidence.",
-        "Do not repeat sentences.",
-        "Question: Which governed sources control order dispatch, and how did the agent verify the ORD-1001 writeback?",
-        "Evidence:",
+        "You select evidence-backed audit facts. Do not reveal chain-of-thought.",
+        'Return exactly one JSON object: {"selectedFactIds":["FACT_1","FACT_2"]}.',
+        "Select exactly two different IDs. Do not add markdown, explanation, or any other key.",
+        "VERIFIED FACTS:",
+        ...verifiedAuditFacts.map((fact, index) => `FACT_${index + 1}: ${fact}`),
+        "SUPPORTING EVIDENCE:",
         evidence
       ].join("\n"),
       model
     );
+    const groundedSummary = validateModelFactSelection(generated.text, verifiedAuditFacts);
     return {
       provider: generated.provider,
       model: generated.model.id,
-      text: generated.text,
-      degraded: false
+      text: groundedSummary ?? "Local model narration was rejected because it did not exactly match verified audit facts.",
+      degraded: groundedSummary === null,
+      summaryStatus: groundedSummary === null ? "rejected" : "grounded"
     };
   } catch (error) {
     if (!allowFallback) throw error;
@@ -279,8 +296,30 @@ async function maybeGenerateWithLocalModel(
       provider: "local-huggingface-mlx-unavailable-fallback",
       model: model?.id ?? "none",
       text: `Local Hugging Face generation was unavailable, so the deterministic summary was used. Error code: ${localModelErrorCode(error)}.`,
-      degraded: true
+      degraded: true,
+      summaryStatus: "fallback"
     };
+  }
+}
+
+export function validateModelFactSelection(text: string, verifiedFacts: string[]): string | null {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(text.slice(start, end + 1)) as { selectedFactIds?: unknown };
+    if (!Array.isArray(parsed.selectedFactIds) || parsed.selectedFactIds.length !== 2) return null;
+    const ids = parsed.selectedFactIds.filter((id): id is string => typeof id === "string");
+    if (ids.length !== 2 || new Set(ids).size !== 2) return null;
+    const selected = ids.map((id) => {
+      const match = /^FACT_([1-9]\d*)$/.exec(id);
+      return match ? verifiedFacts[Number(match[1]) - 1] : undefined;
+    });
+    return selected.every((fact): fact is string => typeof fact === "string")
+      ? selected.map((fact) => `- ${fact}`).join("\n")
+      : null;
+  } catch {
+    return null;
   }
 }
 

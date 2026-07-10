@@ -12,7 +12,9 @@ export class HybridQueryPlanner {
     const queryVector = embedText(request.query);
     const lexical = new Map(this.repository.lexicalSearch(request.query, request.topK * 3).map((result) => [result.chunkId, result]));
     const queryTerms = new Set(tokenize(request.query));
-    const relations = this.repository.getRelations();
+    const relations = this.repository
+      .getRelations()
+      .filter((relation) => relation.metadata.lifecycle !== "rejected" && relation.metadata.lifecycle !== "superseded");
     const entities = this.repository.getEntities();
     const entityIdsByChunk = this.repository.getEntityIdsByChunk();
     const entityById = new Map(entities.map((entity) => [entity.id, entity]));

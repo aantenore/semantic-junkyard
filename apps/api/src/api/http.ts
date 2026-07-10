@@ -33,21 +33,23 @@ export function requestActor(request: express.Request): string {
 
 export function requestActorContext(request: express.Request): ActorContext {
   const role = request.res?.locals.authRole;
-  if (role === "approver" || role === "local-approver") {
+  if (role === "local-owner") {
     return { actor: requestActor(request), roles: ["semantic-reader", "semantic-operator", "approver"], clearance: "confidential" };
   }
+  if (role === "operator") return { actor: requestActor(request), roles: ["semantic-reader", "semantic-operator"], clearance: "confidential" };
+  if (role === "approver") return { actor: requestActor(request), roles: ["semantic-reader", "approver"], clearance: "confidential" };
   return { actor: requestActor(request), roles: ["semantic-reader", "business-action-planner"], clearance: "internal" };
 }
 
-export function apiTokenMiddleware(apiToken?: string, approvalToken?: string) {
+export function apiTokenMiddleware(apiToken?: string, operatorToken?: string, approvalToken?: string) {
   return (request: express.Request, response: express.Response, next: express.NextFunction): void => {
     if (!apiToken) {
-      response.locals.authRole = "local-approver";
+      response.locals.authRole = "local-owner";
       response.locals.authenticatedActor = "local-user";
       next();
       return;
     }
-    if (request.method === "OPTIONS" || request.path === "/api/health") {
+    if (request.method === "OPTIONS" || request.path === "/api/health" || request.path === "/api/ready") {
       next();
       return;
     }
@@ -56,6 +58,12 @@ export function apiTokenMiddleware(apiToken?: string, approvalToken?: string) {
     if (secureTokenEquals(supplied, approvalToken)) {
       response.locals.authRole = "approver";
       response.locals.authenticatedActor = "authenticated-approver";
+      next();
+      return;
+    }
+    if (secureTokenEquals(supplied, operatorToken)) {
+      response.locals.authRole = "operator";
+      response.locals.authenticatedActor = "authenticated-operator";
       next();
       return;
     }
@@ -70,7 +78,7 @@ export function apiTokenMiddleware(apiToken?: string, approvalToken?: string) {
 }
 
 export function requireApprovalRole(_request: express.Request, response: express.Response, next: express.NextFunction): void {
-  if (response.locals.authRole === "approver" || response.locals.authRole === "local-approver") {
+  if (response.locals.authRole === "approver" || response.locals.authRole === "local-owner") {
     next();
     return;
   }
@@ -78,7 +86,7 @@ export function requireApprovalRole(_request: express.Request, response: express
 }
 
 export function requireOperatorRole(_request: express.Request, response: express.Response, next: express.NextFunction): void {
-  if (response.locals.authRole === "approver" || response.locals.authRole === "local-approver") {
+  if (response.locals.authRole === "operator" || response.locals.authRole === "local-owner") {
     next();
     return;
   }

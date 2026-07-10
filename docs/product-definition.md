@@ -76,7 +76,7 @@ The product workbench is the operator control plane. It manages source connectio
 
 The conversational PoC is a separate external REST application. It demonstrates how an agent client interprets a request, searches observed resources, retrieves governed evidence, stops at explicit boundaries, plans an exact action, and executes only autonomous targets. It cannot approve its own request.
 
-The MCP stdio server is a second external-agent surface. It exposes the same evidence and action contracts but opens the selected SQLite control plane in its own process. It can synchronize an existing connection and list proposals, but it cannot configure connections, decide proposals, or create approvals.
+The MCP stdio server is a second external-agent surface. It opens the selected SQLite control plane in its own process and is read-only by default. Persisted discovery, source synchronization, and business execution require independent startup flags. It cannot configure connections, decide proposals, or create approvals.
 
 ## Design Principles
 

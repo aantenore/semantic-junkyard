@@ -54,8 +54,11 @@ function App() {
   const [actionApproval, setActionApproval] = useState<BusinessActionApproval | null>(null);
   const [actionMode, setActionMode] = useState<"autonomous" | "approval_required" | "dry_run">("autonomous");
   const [actionRisk, setActionRisk] = useState<"low" | "medium" | "high">("medium");
-  const [actionPhase, setActionPhase] = useState<"idle" | "planning" | "planned" | "executing" | "reflected" | "verified" | "approval_required" | "blocked" | "failed">("idle");
+  const [actionPhase, setActionPhase] = useState<"idle" | "planning" | "planned" | "executing" | "reflected" | "verified" | "approval_required" | "reconciliation_required" | "blocked" | "failed">("idle");
   const [actionNotice, setActionNotice] = useState("Write a business request, then plan it before execution.");
+  const [approvalRationale, setApprovalRationale] = useState("");
+  const [approvalAttested, setApprovalAttested] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
   const [lastActionAt, setLastActionAt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +66,7 @@ function App() {
   const [activeSection, setActiveSection] = useState("dashboard");
   const initializedRef = useRef(false);
   const searchRequestRef = useRef(0);
+  const actionPlanRequestRef = useRef(0);
 
   async function refresh(): Promise<boolean> {
     setSnapshotState("loading");
@@ -172,17 +176,19 @@ function App() {
   }
 
   function invalidateActionPlan() {
+    actionPlanRequestRef.current += 1;
+    setActionBusy(false);
     setActionPlan(null);
     setActionRun(null);
     setActionApproval(null);
+    setApprovalRationale("");
+    setApprovalAttested(false);
     setActionPhase("idle");
     setActionNotice("Request or policy changed. Create a new plan before execution.");
   }
 
   function applyBusinessPreset(intent: string) {
     setBusinessIntent(intent);
-    setActionMode("autonomous");
-    setActionRisk("medium");
     invalidateActionPlan();
   }
 
@@ -240,14 +246,20 @@ function App() {
   }
 
   async function onPlanBusinessAction() {
-    setBusy(true);
+    const requestId = actionPlanRequestRef.current + 1;
+    actionPlanRequestRef.current = requestId;
+    const request = { intent: businessIntent.trim(), mode: actionMode, maxAutonomousRisk: actionRisk };
+    setActionBusy(true);
     setError(null);
     setActionRun(null);
     setActionApproval(null);
+    setApprovalRationale("");
+    setApprovalAttested(false);
     setActionPhase("planning");
     setActionNotice("Planning source writes from the business intent...");
     try {
-      const plan = await planBusinessAction({ intent: businessIntent, mode: actionMode, maxAutonomousRisk: actionRisk });
+      const plan = await planBusinessAction(request);
+      if (actionPlanRequestRef.current !== requestId) return;
       setActionPlan(plan);
       setActionPhase(plan.status === "blocked" ? "blocked" : plan.status === "approval_required" ? "approval_required" : "planned");
       setActionNotice(
@@ -257,36 +269,44 @@ function App() {
       );
       setLastActionAt(new Date().toLocaleTimeString());
     } catch (err) {
+      if (actionPlanRequestRef.current !== requestId) return;
       setActionPhase("failed");
       setActionNotice("Planning failed. Check the error banner.");
       setError(err instanceof Error ? err.message : "Business action planning failed");
     } finally {
-      setBusy(false);
+      if (actionPlanRequestRef.current === requestId) setActionBusy(false);
     }
   }
 
   async function onApproveBusinessAction() {
-    if (!actionPlan || actionPlan.status !== "approval_required") return;
-    setBusy(true);
+    if (!actionPlan || actionPlan.status !== "approval_required" || !approvalAttested || !approvalRationale.trim()) return;
+    setActionBusy(true);
     setError(null);
     try {
-      const approval = await approveBusinessAction(actionPlan, "Reviewed target systems, diffs, evidence, and autonomy in the product workbench.");
+      const approval = await approveBusinessAction(actionPlan, approvalRationale.trim());
       setActionApproval(approval);
       setActionNotice(`Plan approved by ${approval.approvedBy}. Approval ${approval.id} is valid for this fingerprint once.`);
       setLastActionAt(new Date().toLocaleTimeString());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Business action approval failed");
     } finally {
-      setBusy(false);
+      setActionBusy(false);
     }
   }
 
   async function onExecuteBusinessAction() {
-    if (!actionPlan || actionPlan.intent !== businessIntent) {
+    const executableStatus = actionPlan?.status === "planned" || actionPlan?.status === "approval_required";
+    if (
+      !actionPlan ||
+      !executableStatus ||
+      actionPlan.intent !== businessIntent.trim() ||
+      actionPlan.mode !== actionMode ||
+      actionPlan.maxAutonomousRisk !== actionRisk
+    ) {
       setError("Create and review a current plan before execution.");
       return;
     }
-    setBusy(true);
+    setActionBusy(true);
     setError(null);
     setActionPhase("executing");
     setActionNotice("Executing through writeback gateway, then rereading source systems...");
@@ -305,6 +325,8 @@ function App() {
             ? "reflected"
             : run.status === "approval_required"
               ? "approval_required"
+              : run.status === "reconciliation_required"
+                ? "reconciliation_required"
               : run.status === "blocked"
                 ? "blocked"
                 : run.status === "planned"
@@ -313,9 +335,11 @@ function App() {
       );
       setActionNotice(
         run.status === "verified"
-          ? `${run.writes.length} source writes executed and ${run.reflections.filter((item) => item.status === "verified").length}/${run.reflections.length} reflections verified. Search results were refreshed from source evidence.`
+          ? `${run.writes.filter((item) => item.status === "executed").length} source mutations and ${run.writes.filter((item) => item.status === "skipped").length} verified no-ops; ${run.reflections.filter((item) => item.status === "verified").length}/${run.reflections.length} reflections verified. Search results were refreshed from source evidence.`
           : run.status === "reflected"
             ? "Source readback reported drift or missing state. Only verified writes were added to the semantic read model."
+            : run.status === "reconciliation_required"
+              ? "The source outcome is ambiguous. Reconcile the authoritative source before creating another execution."
             : `No source completion was claimed. Action status: ${run.status}.`
       );
       setLastActionAt(new Date().toLocaleTimeString());
@@ -331,7 +355,7 @@ function App() {
       setActionNotice("Execution failed. Check the error banner.");
       setError(err instanceof Error ? err.message : "Business action execution failed");
     } finally {
-      setBusy(false);
+      setActionBusy(false);
     }
   }
 
@@ -539,17 +563,21 @@ function App() {
 
             {error ? <div className="error-banner" role="alert">{error}</div> : null}
 
-            <div className={`business-action-panel action-${actionPhase}`} aria-busy={actionPhase === "planning" || actionPhase === "executing"}>
+            <div className={`business-action-panel action-${actionPhase}`} aria-busy={actionBusy}>
               <div className="panel-subhead">
                 <h3>Business action router</h3>
                 <span className={`action-state ${actionPhase}`}>
                   {(actionPhase === "planning" || actionPhase === "executing") ? <Loader2 className="spin-icon" size={13} /> : null}
-                  {actionRun?.status ?? actionPlan?.status ?? (snapshotState === "loading" ? "Loading sources" : `${snapshot?.sourceSystems.length ?? 0} source systems`)}
+                  {actionRun?.status || actionPlan?.status
+                    ? (actionRun?.status ?? actionPlan!.status).replaceAll("_", " ")
+                    : snapshotState === "loading"
+                      ? "Loading sources"
+                      : `${snapshot?.sourceSystems.length ?? 0} source systems`}
                 </span>
               </div>
-              <div className="action-feedback">
+              <div className="action-feedback" aria-live="polite">
                 <div>
-                  <strong>{actionPhase === "idle" ? "Ready" : actionPhase === "planned" ? "Plan ready" : actionPhase === "verified" ? "Completed" : actionPhase.replace("_", " ")}</strong>
+                  <strong>{actionPhase === "idle" ? "Ready" : actionPhase === "planned" ? "Plan ready" : actionPhase === "verified" ? "Completed" : actionPhase.replaceAll("_", " ")}</strong>
                   <span>{actionNotice}</span>
                 </div>
                 {lastActionAt ? <small>{lastActionAt}</small> : null}
@@ -562,6 +590,7 @@ function App() {
                       key={item}
                       className={actionMode === item ? "selected" : ""}
                       aria-pressed={actionMode === item}
+                      disabled={actionBusy}
                       onClick={() => {
                         setActionMode(item);
                         invalidateActionPlan();
@@ -575,6 +604,7 @@ function App() {
                   <span>Autonomy ceiling</span>
                   <select
                     value={actionRisk}
+                    disabled={actionBusy}
                     onChange={(event) => {
                       setActionRisk(event.target.value as typeof actionRisk);
                       invalidateActionPlan();
@@ -588,12 +618,13 @@ function App() {
               </div>
               <div className="action-presets" aria-label="Business action presets">
                 <span>Presets</span>
-                <button type="button" className={businessIntent === "Set order ORD-1001 status to dispatched" ? "selected" : ""} onClick={() => applyBusinessPreset("Set order ORD-1001 status to dispatched")}>
+                <button type="button" disabled={actionBusy} className={businessIntent === "Set order ORD-1001 status to dispatched" ? "selected" : ""} onClick={() => applyBusinessPreset("Set order ORD-1001 status to dispatched")}>
                   <Database size={14} />
                   Dispatch order
                 </button>
                 <button
                   type="button"
+                  disabled={actionBusy}
                   className={businessIntent === "Use dispatch eligible orders as the denominator for Late Dispatch Rate and publish version 2" ? "selected" : ""}
                   onClick={() => applyBusinessPreset("Use dispatch eligible orders as the denominator for Late Dispatch Rate and publish version 2")}
                 >
@@ -605,29 +636,27 @@ function App() {
                 <input
                   aria-label="Business action request"
                   value={businessIntent}
+                  disabled={actionBusy}
                   onChange={(event) => {
                     setBusinessIntent(event.target.value);
                     invalidateActionPlan();
                   }}
                 />
-                <button className="secondary-action" onClick={onPlanBusinessAction} disabled={busy || !businessIntent.trim()}>
+                <button className="secondary-action" onClick={onPlanBusinessAction} disabled={busy || actionBusy || !businessIntent.trim()}>
                   {actionPhase === "planning" ? <Loader2 className="spin-icon" size={15} /> : <Route size={15} />}
                   {actionPhase === "planning" ? "Planning" : actionPlan ? "Replan" : "Plan"}
                 </button>
-                {actionPlan?.status === "approval_required" ? (
-                  <button className="secondary-action" onClick={onApproveBusinessAction} disabled={busy || Boolean(actionApproval)}>
-                    <ShieldCheck size={15} />
-                    {actionApproval ? "Approved" : "Approve plan"}
-                  </button>
-                ) : null}
                 <button
                   className="primary-action compact-action"
                   onClick={onExecuteBusinessAction}
                   disabled={
                     busy ||
+                    actionBusy ||
                     !actionPlan ||
-                    actionPlan.intent !== businessIntent ||
-                    actionPlan.status === "blocked" ||
+                    actionPlan.intent !== businessIntent.trim() ||
+                    actionPlan.mode !== actionMode ||
+                    actionPlan.maxAutonomousRisk !== actionRisk ||
+                    (actionPlan.status !== "planned" && actionPlan.status !== "approval_required") ||
                     (actionPlan.status === "approval_required" && !actionApproval)
                   }
                 >
@@ -635,6 +664,54 @@ function App() {
                   {actionPhase === "executing" ? "Executing" : actionMode === "dry_run" ? "Record dry run" : "Execute plan"}
                 </button>
               </div>
+              {actionPlan?.status === "approval_required" ? (
+                <section className="approval-review" aria-label="Plan approval review">
+                  <div className="approval-identity">
+                    <div>
+                      <span>Plan identity</span>
+                      <strong>{actionPlan.id}</strong>
+                    </div>
+                    <code title={actionPlan.fingerprint}>{actionPlan.fingerprint}</code>
+                  </div>
+                  <div className="approval-preconditions">
+                    {actionPlan.targets
+                      .filter((target) => target.autonomy === "approval_required")
+                      .map((target) => (
+                        <div key={target.stepId}>
+                          <strong>{target.systemName}</strong>
+                          <span>{target.diff.summary}</span>
+                          <small>{target.evidenceChunkIds.length} evidence chunks / {target.risk} risk</small>
+                        </div>
+                      ))}
+                  </div>
+                  <label className="approval-rationale">
+                    <span>Approval rationale</span>
+                    <textarea
+                      value={approvalRationale}
+                      disabled={actionBusy || Boolean(actionApproval)}
+                      onChange={(event) => setApprovalRationale(event.target.value)}
+                      placeholder="Record why this exact source diff is approved"
+                    />
+                  </label>
+                  <label className="approval-attestation">
+                    <input
+                      type="checkbox"
+                      checked={approvalAttested}
+                      disabled={actionBusy || Boolean(actionApproval)}
+                      onChange={(event) => setApprovalAttested(event.target.checked)}
+                    />
+                    <span>I reviewed the target systems, diffs, evidence, risk, and plan fingerprint.</span>
+                  </label>
+                  <button
+                    className="secondary-action approval-command"
+                    onClick={onApproveBusinessAction}
+                    disabled={busy || actionBusy || Boolean(actionApproval) || !approvalAttested || !approvalRationale.trim()}
+                  >
+                    <ShieldCheck size={15} />
+                    {actionApproval ? "Approved" : actionBusy ? "Approving" : "Approve exact plan"}
+                  </button>
+                </section>
+              ) : null}
               <div className="action-stepper">
                 {actionSteps.map((step, index) => (
                   <div className={`action-step ${step.done ? "done" : ""} ${step.active ? "active" : ""}`} key={step.label}>

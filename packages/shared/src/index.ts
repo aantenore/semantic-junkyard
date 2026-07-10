@@ -407,7 +407,16 @@ export type BusinessActionRisk = z.infer<typeof BusinessActionRiskSchema>;
 export const BusinessActionModeSchema = z.enum(["autonomous", "approval_required", "dry_run"]).default("autonomous");
 export type BusinessActionMode = z.infer<typeof BusinessActionModeSchema>;
 
-export const BusinessActionStatusSchema = z.enum(["planned", "approval_required", "executed", "reflected", "verified", "failed", "blocked"]);
+export const BusinessActionStatusSchema = z.enum([
+  "planned",
+  "approval_required",
+  "executed",
+  "reflected",
+  "verified",
+  "reconciliation_required",
+  "failed",
+  "blocked"
+]);
 export type BusinessActionStatus = z.infer<typeof BusinessActionStatusSchema>;
 
 export const SourceSystemCapabilitySchema = z.object({

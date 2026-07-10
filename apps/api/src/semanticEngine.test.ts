@@ -124,6 +124,51 @@ describe("Semantic Junkyard engine", () => {
     expect(neighborhood.nodes.some((node) => node.id === center.id)).toBe(true);
   });
 
+  it("excludes rejected and superseded relations from graph-aware retrieval boosts", () => {
+    const { engine, repository } = createApp(openMemoryDatabase(), { seed: false });
+    const ingested = engine.ingest({
+      name: "graph-lifecycle.txt",
+      mimeType: "text/plain",
+      ingestionMode: "full_data",
+      text: "ZephyrBoundary"
+    });
+    const chunkId = ingested.chunks[0]!.id;
+    const entityId = repository.getEntityIdsByChunk().get(chunkId)?.[0];
+    expect(entityId).toBeDefined();
+    repository.saveEntities([{
+      id: "ent_graph_lifecycle_leaf",
+      canonicalName: "Lifecycle Leaf",
+      type: "Concept",
+      aliases: [],
+      confidence: 1,
+      evidenceChunkIds: [chunkId],
+      metadata: {}
+    }]);
+    const graphBoost = () => engine.search({ query: "ZephyrBoundary", topK: 5, mode: "graph" })
+      .find((result) => result.chunkId === chunkId)!.graphBoost;
+    const baseline = graphBoost();
+    repository.saveRelations([{
+      id: "rel_graph_rejected",
+      sourceEntityId: entityId!,
+      targetEntityId: "ent_graph_lifecycle_leaf",
+      type: "RELATED_TO",
+      confidence: 1,
+      evidenceChunkId: chunkId,
+      metadata: { lifecycle: "rejected" }
+    }]);
+    expect(graphBoost()).toBe(baseline);
+    repository.saveRelations([{
+      id: "rel_graph_active",
+      sourceEntityId: entityId!,
+      targetEntityId: "ent_graph_lifecycle_leaf",
+      type: "RELATED_TO",
+      confidence: 1,
+      evidenceChunkId: chunkId,
+      metadata: { lifecycle: "accepted" }
+    }]);
+    expect(graphBoost()).toBeGreaterThan(baseline);
+  });
+
   it("routes business actions to source writeback and reflects them into the semantic read model", () => {
     const db = openMemoryDatabase();
     const { engine, repository } = createApp(db, { seed: true });
@@ -260,7 +305,7 @@ describe("Semantic Junkyard engine", () => {
     vi.restoreAllMocks();
   });
 
-  it("rolls back partial source writes and preserves an active approval on execution failure", () => {
+  it("requires reconciliation and consumes approval when a source outcome is ambiguous", () => {
     const { engine, repository } = createApp(openMemoryDatabase(), { seed: true });
     const request = {
       intent: "Align Failed Payment Rate definition across Finance and Billing",
@@ -286,10 +331,14 @@ describe("Semantic Junkyard engine", () => {
     });
 
     const run = engine.executeBusinessAction({ ...executionFor(plan, "rollback"), approvalId: approval.id });
-    expect(run.status).toBe("failed");
+    expect(run.status).toBe("reconciliation_required");
     expect(run.writes).toHaveLength(0);
     expect(repository.listSourceSystemRecords()).toHaveLength(0);
-    expect(repository.getBusinessActionApproval(approval.id)?.status).toBe("active");
+    expect(repository.getBusinessActionApproval(approval.id)?.status).toBe("consumed");
+    expect(run.plan.warnings.join(" ")).toContain("Reconcile authoritative sources before retrying");
+    expect(() => engine.executeBusinessAction({ ...executionFor(plan, "second-after-ambiguous"), approvalId: approval.id })).toThrow(
+      /Approval is missing, consumed, or does not match/
+    );
     vi.restoreAllMocks();
   });
 

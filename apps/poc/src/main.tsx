@@ -647,7 +647,7 @@ function App() {
 }
 
 function StatusBadge({ status }: { status: ConversationStatus }) {
-  const failed = ["failed", "blocked", "insufficient_evidence"].includes(status);
+  const failed = ["failed", "blocked", "insufficient_evidence", "reconciliation_required"].includes(status);
   const pending = status === "running" || status === "approval_required" || status === "plan_ready";
   return (
     <span className={`run-state ${failed ? "failed" : pending ? "pending" : "ready"}`}>
@@ -674,6 +674,7 @@ function statusLabel(status: ConversationStatus): string {
     answered: "answered",
     plan_ready: "plan ready",
     approval_required: "approval required",
+    reconciliation_required: "reconciliation required",
     blocked: "blocked",
     insufficient_evidence: "insufficient evidence",
     verified: "verified",

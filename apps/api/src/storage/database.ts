@@ -6,23 +6,34 @@ export function openDatabase(filePath = process.env.SEMANTIC_JUNKYARD_DB ?? "dat
   const resolved = path.resolve(filePath);
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
   const db = new Database(resolved);
-  db.pragma("journal_mode = WAL");
-  db.pragma("busy_timeout = 5000");
-  db.pragma("foreign_keys = ON");
-  migrate(db);
-  return db;
+  try {
+    db.pragma("journal_mode = WAL");
+    db.pragma("busy_timeout = 5000");
+    db.pragma("foreign_keys = ON");
+    migrate(db);
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 }
 
 export function openMemoryDatabase(): Database.Database {
   const db = new Database(":memory:");
-  db.pragma("busy_timeout = 5000");
-  db.pragma("foreign_keys = ON");
-  migrate(db);
-  return db;
+  try {
+    db.pragma("busy_timeout = 5000");
+    db.pragma("foreign_keys = ON");
+    migrate(db);
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 }
 
 function migrate(db: Database.Database): void {
-  db.exec(`
+  db.transaction(() => {
+    db.exec(`
     CREATE TABLE IF NOT EXISTS sources (
       id TEXT PRIMARY KEY,
       uri TEXT NOT NULL,
@@ -333,20 +344,21 @@ function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at);
   `);
 
-  const columns = db.prepare("PRAGMA table_info(sources)").all() as Array<{ name: string }>;
-  if (!columns.some((column) => column.name === "ingestion_mode")) {
-    db.exec("ALTER TABLE sources ADD COLUMN ingestion_mode TEXT NOT NULL DEFAULT 'full_data'");
-  }
+    const columns = db.prepare("PRAGMA table_info(sources)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "ingestion_mode")) {
+      db.exec("ALTER TABLE sources ADD COLUMN ingestion_mode TEXT NOT NULL DEFAULT 'full_data'");
+    }
 
-  const actionColumns = db.prepare("PRAGMA table_info(business_action_runs)").all() as Array<{ name: string }>;
-  if (!actionColumns.some((column) => column.name === "idempotency_key")) {
-    db.exec("ALTER TABLE business_action_runs ADD COLUMN idempotency_key TEXT");
-    db.exec("UPDATE business_action_runs SET idempotency_key = id WHERE idempotency_key IS NULL");
-  }
-  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_business_action_runs_idempotency ON business_action_runs(idempotency_key)");
+    const actionColumns = db.prepare("PRAGMA table_info(business_action_runs)").all() as Array<{ name: string }>;
+    if (!actionColumns.some((column) => column.name === "idempotency_key")) {
+      db.exec("ALTER TABLE business_action_runs ADD COLUMN idempotency_key TEXT");
+      db.exec("UPDATE business_action_runs SET idempotency_key = id WHERE idempotency_key IS NULL");
+    }
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_business_action_runs_idempotency ON business_action_runs(idempotency_key)");
 
-  const ontologyColumns = db.prepare("PRAGMA table_info(ontology_classes)").all() as Array<{ name: string }>;
-  if (!ontologyColumns.some((column) => column.name === "metadata")) {
-    db.exec("ALTER TABLE ontology_classes ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'");
-  }
+    const ontologyColumns = db.prepare("PRAGMA table_info(ontology_classes)").all() as Array<{ name: string }>;
+    if (!ontologyColumns.some((column) => column.name === "metadata")) {
+      db.exec("ALTER TABLE ontology_classes ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'");
+    }
+  })();
 }

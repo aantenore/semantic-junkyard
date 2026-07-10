@@ -480,7 +480,14 @@ export class SourceManager {
       if (!source || !target || !sourceEntityId || !targetEntityId) continue;
       const evidenceChunkId = source.evidenceChunkIds[0] ?? target.evidenceChunkIds[0];
       if (!evidenceChunkId) continue;
-      const relationId = stableId("rel", `${connection.id}:${relation.subjectExternalId}:${relation.predicate}:${relation.objectExternalId}`);
+      const assertionIdentity = [
+        connection.id,
+        relation.subjectExternalId,
+        relation.predicate,
+        relation.objectExternalId,
+        ...(relation.authoritative ? [] : [evidenceChunkId, relation.confidence, relation.explanation])
+      ].join(":");
+      const relationId = stableId("rel", assertionIdentity);
       graphRelations.push({
         id: relationId,
         sourceEntityId,
@@ -495,7 +502,7 @@ export class SourceManager {
           explanation: relation.explanation
         }
       });
-      const proposalId = stableId("proposal", `${connection.id}:${relation.subjectExternalId}:${relation.predicate}:${relation.objectExternalId}`);
+      const proposalId = stableId("proposal", assertionIdentity);
       const savedProposal = this.connections.saveProposal({
         id: proposalId,
         connectionId: connection.id,
@@ -531,8 +538,12 @@ export class SourceManager {
   }
 
   private proposalFromEnrichment(connectionId: string, runId: string, candidate: SemanticEnrichmentCandidate): SemanticProposal {
+    const evidenceChunkIds = candidate.evidenceResourceIds.flatMap((id) => this.connections.getResource(id)?.evidenceChunkIds ?? []);
     return {
-      id: stableId("proposal", `${connectionId}:${candidate.kind}:${candidate.subjectId}:${candidate.predicate}:${candidate.objectId ?? ""}:${JSON.stringify(candidate.value)}`),
+      id: stableId(
+        "proposal",
+        `${connectionId}:${candidate.kind}:${candidate.subjectId}:${candidate.predicate}:${candidate.objectId ?? ""}:${JSON.stringify(candidate.value)}:${candidate.confidence}:${candidate.explanation}:${candidate.evidenceResourceIds.join("|")}:${evidenceChunkIds.join("|")}`
+      ),
       connectionId,
       runId,
       kind: candidate.kind,
@@ -546,7 +557,7 @@ export class SourceManager {
       authoritative: false,
       status: "proposed",
       evidenceResourceIds: candidate.evidenceResourceIds,
-      evidenceChunkIds: candidate.evidenceResourceIds.flatMap((id) => this.connections.getResource(id)?.evidenceChunkIds ?? []),
+      evidenceChunkIds,
       createdAt: nowIso(),
       decidedAt: null,
       decidedBy: null,

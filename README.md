@@ -89,7 +89,7 @@ npm ci
 npm run dev
 ```
 
-`npm run dev` builds the shared contracts and starts the API, product workbench, and conversational PoC. The persistent API start creates and synchronizes the local reference sources only when the source registry is empty.
+`npm run dev` builds the shared contracts and starts the API, product workbench, and conversational PoC. The persistent API start reconciles the three deterministic reference connections and retries only sources that are missing, incomplete, syncing, or degraded. Set `SEMANTIC_JUNKYARD_BOOTSTRAP_REFERENCE_SOURCES=false` to disable that bootstrap.
 
 Focused commands:
 
@@ -123,7 +123,7 @@ If the SQLite row already has the requested allowlisted value, the plan is marke
 
 ## Principal HTTP Contracts
 
-The generated OpenAPI document is at `GET /api/openapi.json`. Principal route groups are:
+The generated OpenAPI document is at `GET /api/openapi.json`. Liveness is exposed at `GET /api/health`; `GET /api/ready` returns `503` while reference bootstrap is initializing or degraded. Principal route groups are:
 
 - Source federation: `GET/POST /api/source-connections`, connection `test` and `sync`, `GET /api/source-resources`, and `GET /api/source-sync-runs`.
 - Proposal governance: `GET /api/semantic/proposals` and `POST /api/semantic/proposals/:proposalId/decision`.
@@ -155,9 +155,9 @@ Example client configuration:
 }
 ```
 
-The MCP server exposes bounded tools for permission explanation, resource/semantic search, entity and graph navigation, context/evidence retrieval, discovery, configured-source synchronization, proposal listing, action planning, and action execution. It exposes no tool for connection creation, proposal decisions, or approval creation. An `approvalId` may be consumed only if a human-facing API channel created it for the exact plan.
+The MCP server is read-only by default. It exposes bounded tools for permission explanation, resource/semantic search, entity and graph navigation, context/evidence retrieval, proposal listing, and action planning. Persisted discovery, configured-source synchronization, and business execution are registered only with `--allow-discovery`, `--allow-sync`, and `--allow-write` respectively. It exposes no tool for connection creation, proposal decisions, or approval creation. An `approvalId` may be consumed only if a human-facing API channel created it for the exact plan.
 
-Use `--db <path>` or `SEMANTIC_JUNKYARD_DB=<path>` to select the control-plane database, `--memory` for an in-memory seeded runtime, and `--no-seed` to disable that memory seed. MCP does not inherit REST authentication or CORS. The spawned process has its operating-system filesystem authority, including access to local source paths stored in the selected database.
+Use `--db <path>` or `SEMANTIC_JUNKYARD_DB=<path>` to select the control-plane database, `--memory` for an in-memory seeded runtime, and `--no-seed` to disable that memory seed. Grant mutation flags independently and only to a trusted client. The bundled MCP PoC explicitly starts its private server with `--allow-write`. MCP does not inherit REST authentication or CORS. The spawned process has its operating-system filesystem authority, including access to local source paths stored in the selected database.
 
 See [Agent contract](docs/agent-contract.md).
 
@@ -167,7 +167,7 @@ See [Agent contract](docs/agent-contract.md).
 - The local source is authoritative for source facts and postconditions; the control-plane read model is derived.
 - Non-authoritative semantic assertions require review and remain distinguishable by lifecycle and origin.
 - The browser API boundary and the MCP process boundary are different. REST tokens do not constrain a local MCP process.
-- The default tokenless loopback profile grants a development-only local approver role. A non-loopback API requires distinct API and approval bearer tokens, but these static tokens are not production IAM.
+- The default tokenless loopback profile grants a development-only local owner role. Authenticated mode requires distinct agent, operator, and approver bearer tokens, but these static tokens are not production IAM.
 - Local idempotency is enforced in the control-plane SQLite database. It is not a distributed transaction or durable exactly-once guarantee across crashes.
 
 ## Current Limitations
@@ -176,7 +176,7 @@ See [Agent contract](docs/agent-contract.md).
 - Only local filesystem, SQLite, and Git connectors are implemented. There are no production DataHub, OpenMetadata, cloud object-store, warehouse, ticketing, or remote Git-provider connectors.
 - There is no production IAM, tenant isolation, source-ACL propagation, approval delegation/expiry/revocation workflow, or secrets manager.
 - Synchronization and actions run in process. There is no durable job queue, scheduler, retry service, outbox, or crash-recovery reconciler.
-- Control-plane transactions and source-native writes are not one distributed transaction. A process failure after a source commit but before control-plane persistence requires reconciliation that is not yet implemented.
+- Control-plane transactions and source-native writes are not one distributed transaction. In-process ambiguous outcomes are persisted as `reconciliation_required` and cannot reuse a consumed approval. A process crash after a source commit but before control-plane persistence can still leave no run record; there is no reconciliation worker.
 - Arbitrary unknown-source writes are intentionally unsupported. SQLite updates require an allowlisted table, key, and columns; Git writes require an allowlisted semantic-contract path; filesystem is read-only.
 - Deterministic extraction, entity resolution, intent parsing, and hash embeddings are reference-quality implementations, not production semantic quality.
 - Local-HF execution is Apple Silicon/MLX-oriented, depends on a pre-cached compatible model and runtime packages, and has no model-faithfulness release gate.

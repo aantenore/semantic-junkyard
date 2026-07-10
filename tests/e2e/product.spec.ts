@@ -32,7 +32,13 @@ test.describe("product app", () => {
       const url = new URL(response.url());
       return url.pathname === "/api/business/actions/plan" && response.request().method() === "POST";
     });
+    await page.route("**/api/business/actions/plan", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await route.continue();
+    }, { times: 1 });
     await router.getByRole("button", { name: "Plan", exact: true }).click();
+    await expect(router.getByRole("button", { name: "dry run", exact: true })).toBeDisabled();
+    await expect(router.getByRole("textbox", { name: "Business action request" })).toBeDisabled();
     const planResponse = await planResponsePromise;
     const plan = (await planResponse.json()) as { status: string; targets: unknown[] };
 
@@ -58,5 +64,37 @@ test.describe("product app", () => {
     expect(run.reflections.every((reflection) => reflection.status === "verified")).toBe(true);
     await expect(router.locator(".action-feedback strong")).toHaveText("Completed");
     await expect(router.locator(".action-target")).toContainText("External postcondition passed");
+  });
+
+  test("requires an explicit rationale and attestation for an approval-bound plan", async ({ page }) => {
+    await expectRenderedApp(page, "Semantic Junkyard", page.locator(".sidebar .brand"));
+    const router = page.locator(".business-action-panel");
+    await router.getByRole("button", { name: "Publish Git contract", exact: true }).click();
+
+    const planResponsePromise = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/business/actions/plan" && response.request().method() === "POST"
+    );
+    await router.getByRole("button", { name: "Plan", exact: true }).click();
+    const planResponse = await planResponsePromise;
+    const plan = (await planResponse.json()) as { id: string; fingerprint: string; status: string };
+    expect(plan.status).toBe("approval_required");
+
+    const approvalReview = router.getByRole("region", { name: "Plan approval review" });
+    await expect(approvalReview).toContainText(plan.id);
+    await expect(approvalReview.locator("code")).toHaveAttribute("title", plan.fingerprint);
+    const approve = approvalReview.getByRole("button", { name: "Approve exact plan", exact: true });
+    await expect(approve).toBeDisabled();
+    await approvalReview.getByRole("textbox", { name: "Approval rationale" }).fill("Reviewed the exact contract diff, source identity, and fingerprint.");
+    await approvalReview.getByRole("checkbox").check();
+    await expect(approve).toBeEnabled();
+
+    const approvalResponsePromise = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/business/actions/approve" && response.request().method() === "POST"
+    );
+    await approve.click();
+    const approvalResponse = await approvalResponsePromise;
+    expect(approvalResponse.status()).toBe(201);
+    await expect(approvalReview.getByRole("button", { name: "Approved", exact: true })).toBeDisabled();
+    await expect(router.getByRole("button", { name: "Execute plan", exact: true })).toBeEnabled();
   });
 });
