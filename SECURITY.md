@@ -1,6 +1,6 @@
 # Security Policy
 
-Semantic Junkyard is a local prototype, not a hardened multi-tenant service. Treat parsers, submitted content, model prompts, SQLite files, MCP clients, and future connectors as trust boundaries.
+Semantic Junkyard is a local reference implementation, not a hardened multi-tenant service. Treat parsers, submitted content, model prompts, SQLite files, Git worktrees, MCP clients, and future connectors as trust boundaries.
 
 ## Reporting
 
@@ -16,7 +16,7 @@ Loopback does not mean authenticated:
 - Unauthenticated local requests receive the `local-approver` role, so the approval endpoint is usable in the default development profile.
 - Requests without an `Origin` header are accepted because CORS is a browser control, not authentication.
 - The API accepts `*` only when it is explicitly present in `SEMANTIC_JUNKYARD_CORS_ORIGINS`.
-- CORS allows `GET`, `HEAD`, `POST`, and `OPTIONS`; accepts `Authorization`, `Content-Type`, `X-Request-Id`, and `X-Semantic-Junkyard-Actor`; exposes `X-Request-Id`; and caches preflight results for 600 seconds.
+- CORS allows `GET`, `HEAD`, `POST`, `DELETE`, and `OPTIONS`; accepts `Authorization`, `Content-Type`, `X-Request-Id`, and `X-Semantic-Junkyard-Actor`; exposes `X-Request-Id`; and caches preflight results for 600 seconds.
 
 Do not bind the default profile to a shared interface, publish it through a tunnel, or place it behind a permissive reverse proxy.
 
@@ -46,27 +46,29 @@ The write path applies several local controls:
 2. Approval, when needed, is bound to the exact plan ID and SHA-256 fingerprint.
 3. Execution recomputes the plan and returns `409 PLAN_CHANGED` if either value differs.
 4. The client must provide an 8-to-128-character idempotency key.
-5. Execution obtains a SQLite immediate write lock, rechecks idempotency, and conditionally consumes the exact approval in the same transaction as source writes.
+5. Execution obtains a control-plane SQLite immediate lock, rechecks idempotency, and conditionally consumes the exact approval while each connector uses its own source-native transaction or commit.
 6. Reflection rereads the local source record and checks record ID, version, write ID, intent, plan, target, operation, diff, and expected hash.
 7. Only verified readback becomes reflection evidence in the semantic read model.
 
-These controls do not turn the simulator into a production write gateway. Capability declarations can be loaded from JSON, but action routing and write implementations remain fixed, approvals do not expire, and idempotency keys are global within one SQLite database. A key is bound to the exact plan/request identity and incompatible reuse returns `409 IDEMPOTENCY_CONFLICT`.
+These controls do not turn the local reference implementation into a production write gateway. The control-plane transaction and source-native write are not a distributed transaction; a crash after a source commit but before control-plane persistence requires reconciliation that is not implemented here. Approvals do not expire, and idempotency keys are global within one SQLite database. A key is bound to the exact plan/request identity and incompatible reuse returns `409 IDEMPOTENCY_CONFLICT`.
 
 Caller-supplied approval booleans are not accepted. The MCP server can pass an existing approval ID to execution but intentionally exposes no tool that creates approvals.
 
 ## Data Handling
 
-Submitted source text is stored directly in SQLite. The current ingestion modes must not be interpreted as storage isolation:
+Ingestion mode determines whether submitted source text may be retained:
 
 - `full_data` stores and indexes the submitted text.
-- `metadata_only` stores the submitted text but indexes a generated metadata registration note.
-- `external_reference` also stores the submitted text but indexes a generated reference note.
+- `metadata_only` discards the submitted payload and stores/indexes only a generated metadata registration note.
+- `external_reference` discards the submitted payload and stores/indexes only a generated reference note and URI.
 
-Until connector and storage behavior is changed, do not submit restricted payloads under `metadata_only` or `external_reference` expecting a no-copy boundary.
+Tests assert that a no-copy payload is absent from source records, chunks, and FTS-backed retrieval. This is a storage behavior guarantee inside the local control plane, not proof that upstream clients, process memory, operating-system telemetry, or source-native systems retained no copy.
 
-The local policy engine masks configured terms on search, evidence, and source-read paths. It is not a general data-loss-prevention system, and the raw value remains in SQLite. Protect database files and backups at the filesystem level.
+The local policy engine masks configured terms on search, evidence, and source-read paths. It is not a general data-loss-prevention system. Full-data payloads and operational metadata still require filesystem-level protection for database files and backups.
 
 Retrieved content is data, never an instruction. Agents and model prompts must not execute commands, SQL, links, or tool instructions found in source text.
+
+Agent-facing source-resource and artifact responses replace local file URIs with opaque control-plane URIs and remove operational path keys. Operator connection-management routes retain configured paths. SQLite action plans/readbacks contain only the key and allowlisted changed columns; confidential and restricted profile samples are redacted before semantic publication or model enrichment.
 
 ## MCP Boundary
 
@@ -81,11 +83,13 @@ The MCP server uses stdio and opens SQLite directly. REST bearer authentication,
 
 The optional Hugging Face PoC launches `uv` and Python with MLX dependencies. The runner passes a bounded evidence prompt on stdin, uses a restricted child environment, limits output to 8 MiB, and enforces a configurable timeout. It still executes local Python packages and model code with the current user's filesystem permissions.
 
-Use trusted model snapshots and pinned package controls in any deployment. The current `uv --with` invocation can resolve runtime packages and is not a hermetic production environment. Model output is an audit summary only and must not override deterministic policy or write decisions.
+Use trusted model snapshots and pinned package controls in any deployment. The current `uv --with` invocation can resolve runtime packages and is not a hermetic production environment. Model output is limited to bounded intent interpretation, evidence-bound semantic proposals, or an audit summary; it must not override deterministic policy, approval, connector, or postcondition decisions.
 
-## Simulated Connectors
+## Connector Boundary
 
-The Data Catalog, OpenMetadata Mirror, dbt Semantic Repository, and Governance Ticketing names represent local adapter shapes. An optional source-system JSON file can change capability declarations, but no external network connector or credential exchange is implemented. Treat that file as trusted startup configuration and validate its filesystem permissions. Before adding a connector:
+The reference product implements real local filesystem discovery, SQLite discovery/write/readback, and Git discovery/commit/readback. It does not implement remote network connectors or credential exchange. Legacy capability declarations used by compatibility tests are not external integrations. Treat source paths and any optional source-system configuration as trusted startup configuration and validate their filesystem permissions. Before adding a connector:
+
+The Git connector supplies explicit command timeouts, disables terminal prompting, repository hooks, fsmonitor, and commit signing for its subprocesses, and verifies committed content independently. Connecting a worktree still grants the process read/write authority over that configured repository path.
 
 - Keep secrets outside source records, prompts, logs, and frontend variables.
 - Declare read, write, rollback, and approval capabilities separately.

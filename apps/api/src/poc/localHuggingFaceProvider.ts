@@ -9,9 +9,16 @@ const MAX_PROCESS_OUTPUT_BYTES = 8 * 1024 * 1024;
 const LocalModelEnvironmentSchema = z.object({
   SEMANTIC_JUNKYARD_HF_CACHE_ROOT: z.string().min(1).optional().or(z.literal("")),
   SEMANTIC_JUNKYARD_HF_MODEL: z.string().min(1).optional().or(z.literal("")),
+  SEMANTIC_JUNKYARD_HF_ENRICHMENT_MODEL: z.string().min(1).optional().or(z.literal("")),
   SEMANTIC_JUNKYARD_HF_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(120_000),
   SEMANTIC_JUNKYARD_HF_MAX_TOKENS: z.coerce.number().int().min(16).max(1_024).default(72)
 });
+const LocalModelGenerationOptionsSchema = z
+  .object({
+    runtimeCommand: z.string().trim().min(1).optional(),
+    maxTokens: z.number().int().min(16).max(1_024).optional()
+  })
+  .strict();
 
 export interface LocalHuggingFaceModel {
   id: string;
@@ -29,6 +36,7 @@ export interface LocalModelGeneration {
 
 export interface LocalModelGenerationOptions {
   runtimeCommand?: string;
+  maxTokens?: number;
 }
 
 export class LocalModelExecutionError extends Error {
@@ -45,7 +53,7 @@ export function discoverLocalHuggingFaceModels(cacheRoot = localModelConfig().ca
     .filter((entry) => entry.isDirectory() && entry.name.startsWith("models--"))
     .map((entry) => path.join(cacheRoot, entry.name));
 
-  const models: LocalHuggingFaceModel[] = [];
+  const modelsById = new Map<string, LocalHuggingFaceModel>();
   for (const repoDir of repoDirs) {
     const snapshotsDir = path.join(repoDir, "snapshots");
     if (!fs.existsSync(snapshotsDir)) continue;
@@ -61,8 +69,10 @@ export function discoverLocalHuggingFaceModels(cacheRoot = localModelConfig().ca
       } catch {
         continue;
       }
-      models.push({
-        id: repoIdFromCachePath(repoDir),
+      const id = repoIdFromCachePath(repoDir);
+      if (modelsById.has(id)) continue;
+      modelsById.set(id, {
+        id,
         snapshotPath,
         modelType: config.model_type ?? "unknown",
         architecture: config.architectures?.[0] ?? "unknown",
@@ -73,12 +83,17 @@ export function discoverLocalHuggingFaceModels(cacheRoot = localModelConfig().ca
     }
   }
 
-  return models.sort((left, right) => scoreModel(right) - scoreModel(left));
+  return [...modelsById.values()].sort((left, right) => scoreModel(right) - scoreModel(left));
 }
 
 export function pickDefaultLocalModel(models = discoverLocalHuggingFaceModels()): LocalHuggingFaceModel | null {
   const configuredModel = localModelConfig().modelId;
   return models.find((model) => model.id === configuredModel) ?? models.find((model) => model.id === "mlx-community/Qwen3-1.7B-4bit") ?? models.find((model) => model.modelType === "qwen3") ?? models[0] ?? null;
+}
+
+export function pickSemanticEnrichmentModel(models = discoverLocalHuggingFaceModels()): LocalHuggingFaceModel | null {
+  const configuredModel = localModelConfig().enrichmentModelId;
+  return models.find((model) => model.id === configuredModel) ?? models.find((model) => model.id === "mlx-community/Qwen3-4B-4bit") ?? pickDefaultLocalModel(models);
 }
 
 export async function generateWithLocalHuggingFace(
@@ -91,7 +106,15 @@ export async function generateWithLocalHuggingFace(
   }
   const scriptPath = resolveMlxScriptPath();
   const config = localModelConfig();
-  const stdout = await runMlxProcess(options.runtimeCommand ?? "uv", scriptPath, model.snapshotPath, prompt, config.maxTokens, config.timeoutMs);
+  const generationOptions = LocalModelGenerationOptionsSchema.parse(options);
+  const stdout = await runMlxProcess(
+    generationOptions.runtimeCommand ?? "uv",
+    scriptPath,
+    model.snapshotPath,
+    prompt,
+    generationOptions.maxTokens ?? config.maxTokens,
+    config.timeoutMs
+  );
   return {
     provider: "local-huggingface-mlx",
     model,
@@ -104,6 +127,7 @@ function localModelConfig() {
   return {
     cacheRoot: parsed.SEMANTIC_JUNKYARD_HF_CACHE_ROOT || path.join(os.homedir(), ".cache/huggingface/hub"),
     modelId: parsed.SEMANTIC_JUNKYARD_HF_MODEL || "mlx-community/Qwen3-1.7B-4bit",
+    enrichmentModelId: parsed.SEMANTIC_JUNKYARD_HF_ENRICHMENT_MODEL || "mlx-community/Qwen3-4B-4bit",
     timeoutMs: parsed.SEMANTIC_JUNKYARD_HF_TIMEOUT_MS,
     maxTokens: parsed.SEMANTIC_JUNKYARD_HF_MAX_TOKENS
   };

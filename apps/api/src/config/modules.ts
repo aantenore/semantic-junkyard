@@ -31,11 +31,41 @@ export const defaultModules: FabricModule[] = [
     risk: "medium"
   }),
   defineModule({
+    id: "connector.filesystem",
+    kind: "connector",
+    label: "Filesystem Discovery Connector",
+    status: "active",
+    description: "Discovers bounded local files, profiles structured formats, extracts PDF text, and enforces configured no-copy ingestion modes.",
+    interchangeableWith: ["S3", "MinIO", "Azure Blob", "GCS"],
+    externalizable: true,
+    risk: "medium"
+  }),
+  defineModule({
+    id: "connector.sqlite-source",
+    kind: "connector",
+    label: "SQLite Source Connector",
+    status: "active",
+    description: "Profiles real SQLite schemas and foreign keys and exposes only configured parameterized record-update capabilities.",
+    interchangeableWith: ["PostgreSQL", "MySQL", "DuckDB", "warehouse metadata APIs"],
+    externalizable: true,
+    risk: "high"
+  }),
+  defineModule({
+    id: "connector.git-contracts",
+    kind: "connector",
+    label: "Git Semantic Contract Connector",
+    status: "active",
+    description: "Discovers tracked semantic contracts and applies exact version-guarded changes with commit and git-show readback.",
+    interchangeableWith: ["GitHub", "GitLab", "Bitbucket", "dbt Cloud"],
+    externalizable: true,
+    risk: "high"
+  }),
+  defineModule({
     id: "parser.local-text-markdown-html",
     kind: "parser",
     label: "Local Parser",
     status: "active",
-    description: "Parses plain text, Markdown, and simple HTML into source-spanned elements.",
+    description: "Parses supported text, structured-text, extracted PDF, and simple HTML content with an explicit transformed-text offset basis.",
     interchangeableWith: ["Docling", "Apache Tika", "Unstructured"],
     externalizable: true,
     risk: "medium"
@@ -45,7 +75,7 @@ export const defaultModules: FabricModule[] = [
     kind: "chunker",
     label: "Semantic Window Chunker",
     status: "active",
-    description: "Builds stable chunks with source offsets, token counts, and summaries.",
+    description: "Builds stable chunks with transformed-text offsets, token counts, and extractive summaries.",
     interchangeableWith: ["recursive", "heading-aware", "table-aware", "code-aware"],
     externalizable: true,
     risk: "low"
@@ -125,7 +155,7 @@ export const defaultModules: FabricModule[] = [
     kind: "lineage-collector",
     label: "Local Lineage Store",
     status: "active",
-    description: "Stores lineage edges using an OpenLineage-compatible conceptual model.",
+    description: "Imports the job, run, input, and output identity subset from real OpenLineage event JSON and stores observed lineage edges.",
     interchangeableWith: ["OpenLineage", "Marquez", "DataHub lineage", "OpenMetadata lineage"],
     externalizable: true,
     risk: "high"
@@ -134,18 +164,18 @@ export const defaultModules: FabricModule[] = [
     id: "ontology.local-json-constraints",
     kind: "ontology-validator",
     label: "Local Ontology Constraints",
-    status: "active",
-    description: "Validates semantic objects with pragmatic JSON constraints and ontology class rules.",
+    status: "available",
+    description: "Stores ontology classes and constraints. Runtime SHACL, OWL, or rule validation is not yet constructed.",
     interchangeableWith: ["SHACL", "OWL", "RDFS", "Apache Jena", "GraphDB"],
     externalizable: true,
     risk: "high"
   }),
   defineModule({
-    id: "policy.local-abac",
+    id: "policy.local-sensitivity",
     kind: "policy-engine",
-    label: "Local ABAC Policy Engine",
+    label: "Local Sensitivity Policy Filter",
     status: "active",
-    description: "Applies read-time deny, mask, and review rules to retrieved context.",
+    description: "Enforces actor-clearance filtering for governed assets, resources, graph nodes, evidence, and search, plus configured term masking.",
     interchangeableWith: ["OPA", "Apache Ranger", "Permit.io", "OpenFGA", "custom PDP"],
     externalizable: true,
     risk: "high"
@@ -155,7 +185,7 @@ export const defaultModules: FabricModule[] = [
     kind: "reranker",
     label: "Score Fusion Reranker",
     status: "active",
-    description: "Combines lexical, vector, graph, quality, and policy signals without external calls.",
+    description: "Combines lexical, local hash-vector, and graph-degree signals without external calls; governance is applied after candidate retrieval.",
     interchangeableWith: ["Cohere Rerank", "Jina Reranker", "cross-encoder", "LLM judge"],
     externalizable: true,
     risk: "medium"
@@ -201,11 +231,11 @@ export const defaultModules: FabricModule[] = [
     risk: "medium"
   }),
   defineModule({
-    id: "writeback.local-source-gateway",
+    id: "writeback.connector-gateway",
     kind: "writeback-gateway",
-    label: "Local Source Writeback Gateway",
+    label: "Connector Writeback Gateway",
     status: "active",
-    description: "Writes governed business actions into source-system records through capability-specific adapters and autonomy policy.",
+    description: "Executes fingerprinted writes through real SQLite and Git adapters or explicitly configured additional capabilities.",
     interchangeableWith: ["OpenMetadata API", "DataHub API", "GitHub PRs", "Jira", "PostgreSQL comments", "ServiceNow"],
     externalizable: true,
     risk: "high"
@@ -215,7 +245,7 @@ export const defaultModules: FabricModule[] = [
     kind: "reflection-engine",
     label: "Source Reflection Engine",
     status: "active",
-    description: "Rereads source-system records after writeback and refreshes the semantic read model only when reflection verifies the write.",
+    description: "Requires connector-level authoritative readback and deterministic postconditions before refreshing the semantic read model.",
     interchangeableWith: ["CDC", "webhooks", "catalog harvesters", "OpenLineage events", "Temporal activities"],
     externalizable: true,
     risk: "high"

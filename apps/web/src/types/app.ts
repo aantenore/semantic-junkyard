@@ -7,10 +7,26 @@ import type {
   GraphSnapshot,
   ProviderConfig,
   SearchResult,
+  SemanticProposal,
+  SourceConnection,
+  SourceResource,
+  SourceSyncRun,
   SourceSystem,
   SourceSystemRecord,
   SystemStatus
 } from "@semantic-junkyard/shared";
+
+export type SnapshotSurface =
+  | "discoveryRuns"
+  | "manifest"
+  | "provider"
+  | "mcp"
+  | "actionRuns"
+  | "sourceSystems"
+  | "sourceConnections"
+  | "sourceResources"
+  | "sourceSyncRuns"
+  | "semanticProposals";
 
 export interface AgentManifest {
   name: string;
@@ -39,11 +55,20 @@ export interface AppSnapshot {
   actionRuns: BusinessActionRun[];
   sourceSystems: SourceSystem[];
   sourceRecords: SourceSystemRecord[];
+  sourceConnections: SourceConnection[];
+  sourceResources: SourceResource[];
+  sourceSyncRuns: SourceSyncRun[];
+  semanticProposals: SemanticProposal[];
   degraded: string[];
+  surfaceErrors: Partial<Record<SnapshotSurface, string>>;
 }
 
 export interface SearchEnvelope {
   results: SearchResult[];
+}
+
+export interface SourceResourceSearchEnvelope {
+  resources: SourceResource[];
 }
 
 export interface IngestPreviewReport {

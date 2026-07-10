@@ -19,7 +19,7 @@ export function toMcpToolDescriptors(manifest: AgentManifest) {
     ...manifest.capabilities.map(manifestCapabilityToDescriptor),
     {
       name: "get_evidence",
-      description: "Open a single evidence chunk by ID and return source-spanned text for citation.",
+      description: "Open a single evidence chunk by ID and return policy-filtered transformed-text evidence for citation.",
       inputSchema: {
         type: "object" as const,
         additionalProperties: false,
@@ -49,6 +49,7 @@ export function mcpResourceDescriptors(): McpDescriptor[] {
     { name: "manifest", description: "Agent capability manifest, operating rules, and stop conditions." },
     { name: "catalog", description: "Governed assets, metrics, policies, lineage, contracts, and ontology classes." },
     { name: "graph", description: "Current entity and relation graph snapshot." },
+    { name: "source-resources", description: "Observed tables, columns, files, datasets, jobs, metrics, and semantic contracts." },
     { name: "source-systems", description: "Configured writeback source systems and reflected source records." },
     { name: "evidence", description: "Evidence chunk resource template: semantic-junkyard://evidence/{chunkId}." }
   ];

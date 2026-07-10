@@ -1,5 +1,5 @@
-export const starterText = `Semantic Junkyard should discover unknown data by profiling sources, extracting entities and relations, checking policies, and publishing agent-readable capabilities.
+export const starterText = `The Supply Chain Semantic Contract defines Late Dispatch Rate as late dispatched orders divided by dispatch eligible orders for the reporting period.
 
-The Finance Semantic Contract governs Net Revenue and Failed Payment Rate. The Billing Pipeline writes to Revenue Mart and uses Retry Policy to handle failed payments.
+The Operations Database owns order status. Order ORD-1001 is dispatch eligible and may transition from ready to dispatched through the bounded status write rule.
 
-Agents can search, inspect graph neighbors, expand context, and open evidence. They cannot mutate source systems, execute generated SQL, expose secrets, or bypass policy checks without approval.`;
+The semantic contract repository is version controlled. Contract changes require approval, an exact commit diff, and committed-content readback before they are reflected into the semantic layer.`;

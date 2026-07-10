@@ -1,3 +1,5 @@
+# Optional adapter-development dependencies. The local reference runtime does not
+# connect to these services unless a corresponding adapter is implemented and configured.
 services:
   qdrant:
     image: qdrant/qdrant:v1.15.5

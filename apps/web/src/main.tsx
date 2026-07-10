@@ -1,5 +1,5 @@
 import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import {
   Activity,
   Braces,
@@ -8,7 +8,6 @@ import {
   Database,
   FileSearch,
   GitBranch,
-  GitPullRequest,
   LineChart,
   Loader2,
   LockKeyhole,
@@ -24,8 +23,10 @@ import {
   Zap
 } from "lucide-react";
 import type { BusinessActionApproval, BusinessActionPlan, BusinessActionRun, SearchResult } from "@semantic-junkyard/shared";
+import { ActionTargetSurface } from "./components/ActionTargetSurface";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { IconButton } from "./components/IconButton";
+import { SourceWorkbench } from "./components/SourceWorkbench";
 import { apiHref, approveBusinessAction, curateRelation, executeBusinessAction, ingestText, loadSnapshot, planBusinessAction, previewIngest, runDiscovery, semanticSearch } from "./api/client";
 import type { AppSnapshot, CuratedRelationReport, IngestPreviewReport } from "./types/app";
 import { starterText } from "./data/sample";
@@ -36,18 +37,18 @@ const POC_APP_URL = import.meta.env.VITE_POC_URL || (import.meta.env.DEV ? "http
 function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [query, setQuery] = useState("Which semantic contract governs failed payment rate?");
+  const [query, setQuery] = useState("Late Dispatch Rate");
   const [mode, setMode] = useState<"hybrid" | "lexical" | "vector" | "graph">("hybrid");
   const [text, setText] = useState(starterText);
   const [name, setName] = useState("agent-discovery-note.md");
   const [ingestionMode, setIngestionMode] = useState<"full_data" | "metadata_only" | "external_reference">("full_data");
   const [ingestPreview, setIngestPreview] = useState<IngestPreviewReport | null>(null);
-  const [curationSource, setCurationSource] = useState("Billing Pipeline");
-  const [curationRelation, setCurationRelation] = useState("DEPENDS_ON");
-  const [curationTarget, setCurationTarget] = useState("Revenue Mart");
-  const [curationRationale, setCurationRationale] = useState("Owner-confirmed semantic dependency.");
+  const [curationSource, setCurationSource] = useState("Late Dispatch Rate");
+  const [curationRelation, setCurationRelation] = useState("USES_DENOMINATOR");
+  const [curationTarget, setCurationTarget] = useState("Dispatch Eligible Orders");
+  const [curationRationale, setCurationRationale] = useState("Supply-chain owner confirmed the governed denominator.");
   const [curatedRelation, setCuratedRelation] = useState<CuratedRelationReport | null>(null);
-  const [businessIntent, setBusinessIntent] = useState("Align Failed Payment Rate definition across Finance and Billing, then make it reflected in source systems.");
+  const [businessIntent, setBusinessIntent] = useState("Set order ORD-1001 status to dispatched");
   const [actionPlan, setActionPlan] = useState<BusinessActionPlan | null>(null);
   const [actionRun, setActionRun] = useState<BusinessActionRun | null>(null);
   const [actionApproval, setActionApproval] = useState<BusinessActionApproval | null>(null);
@@ -157,6 +158,7 @@ function App() {
   };
   const navigationItems = [
     { id: "dashboard", label: "Dashboard", icon: <Activity size={17} /> },
+    { id: "sources", label: "Sources", icon: <Database size={17} /> },
     { id: "ingest", label: "Ingest", icon: <Upload size={17} /> },
     { id: "actions", label: "Actions", icon: <Route size={17} /> },
     { id: "graph", label: "Graph", icon: <Network size={17} /> },
@@ -175,6 +177,13 @@ function App() {
     setActionApproval(null);
     setActionPhase("idle");
     setActionNotice("Request or policy changed. Create a new plan before execution.");
+  }
+
+  function applyBusinessPreset(intent: string) {
+    setBusinessIntent(intent);
+    setActionMode("autonomous");
+    setActionRisk("medium");
+    invalidateActionPlan();
   }
 
   async function onIngest() {
@@ -364,9 +373,15 @@ function App() {
           <Database size={24} />
           <span>Semantic Junkyard</span>
         </div>
-        <nav className="nav-list">
+        <nav className="nav-list" aria-label="Product sections">
           {navigationItems.map((item) => (
-            <button className={`nav-item ${activeSection === item.id ? "active" : ""}`} key={item.id} onClick={() => navigateTo(item.id)}>
+            <button
+              className={`nav-item ${activeSection === item.id ? "active" : ""}`}
+              key={item.id}
+              onClick={() => navigateTo(item.id)}
+              aria-label={item.label}
+              title={item.label}
+            >
               {item.icon}
               <span>{item.label}</span>
             </button>
@@ -382,9 +397,9 @@ function App() {
       <main className="workspace">
         <header className="topbar">
           <div className="topbar-section">
-            <span className="meta-label">Workspace</span>
+            <span className="meta-label">Semantic control plane</span>
             <strong className="mobile-product-name">Semantic Junkyard</strong>
-            <strong>Agentic Semantic Layer</strong>
+            <strong>Semantic Junkyard</strong>
             <span className={`status-pill status-${snapshotState}`}>{snapshotState === "ready" ? "Active" : snapshotState === "loading" ? "Loading" : snapshotState === "degraded" ? "Degraded" : "Unavailable"}</span>
           </div>
           <div className="topbar-section wide">
@@ -412,6 +427,8 @@ function App() {
         </nav>
 
         <section className="content-grid" id="dashboard">
+          <SourceWorkbench snapshot={snapshot} snapshotState={snapshotState} onRefresh={refresh} />
+
           <section className="ingest-panel panel" id="ingest">
             <div className="panel-header">
               <div>
@@ -442,7 +459,7 @@ function App() {
             <div className="runtime-badges" aria-label="Active ingestion runtime">
               <span>Parser: local</span>
               <span>MCP/API-ready</span>
-              <span>Policy: ABAC</span>
+              <span>Policy: sensitivity + rules</span>
             </div>
             <div className="ingest-actions">
               <button className="secondary-action" onClick={onPreviewIngest} disabled={busy || text.trim().length === 0}>
@@ -569,6 +586,21 @@ function App() {
                   </select>
                 </label>
               </div>
+              <div className="action-presets" aria-label="Business action presets">
+                <span>Presets</span>
+                <button type="button" className={businessIntent === "Set order ORD-1001 status to dispatched" ? "selected" : ""} onClick={() => applyBusinessPreset("Set order ORD-1001 status to dispatched")}>
+                  <Database size={14} />
+                  Dispatch order
+                </button>
+                <button
+                  type="button"
+                  className={businessIntent === "Use dispatch eligible orders as the denominator for Late Dispatch Rate and publish version 2" ? "selected" : ""}
+                  onClick={() => applyBusinessPreset("Use dispatch eligible orders as the denominator for Late Dispatch Rate and publish version 2")}
+                >
+                  <GitBranch size={14} />
+                  Publish Git contract
+                </button>
+              </div>
               <div className="business-intent-row">
                 <input
                   aria-label="Business action request"
@@ -628,29 +660,19 @@ function App() {
               </div>
               {actionPlan ? (
                 <div className="action-target-list">
-                  {actionPlan.targets.map((target) => (
-                    <div className="action-target" key={target.stepId}>
-                      <div>
-                        <strong>{target.systemName}</strong>
-                        <small>{target.capability} · {target.risk} · {target.autonomy}</small>
-                      </div>
-                      <p>{target.diff.summary}</p>
-                      <span className={`target-status ${reflectionForStep(target.stepId)?.status ?? writeForStep(target.stepId)?.status ?? target.status}`}>
-                        {reflectionForStep(target.stepId)?.status ?? writeForStep(target.stepId)?.status ?? target.status}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-              {actionRun ? (
-                <div className="reflection-list">
-                  {actionRun.writes.slice(0, 4).map((write) => (
-                    <div className="reflection-row" key={write.id}>
-                      <GitPullRequest size={15} />
-                      <span>{write.systemName}</span>
-                      <small>{actionRun.reflections.find((reflection) => reflection.writeId === write.id)?.status ?? write.status} · {write.objectType}</small>
-                    </div>
-                  ))}
+                  {actionPlan.targets.map((target) => {
+                    const connection = snapshot?.sourceConnections.find((candidate) => candidate.id === target.systemId);
+                    return (
+                      <ActionTargetSurface
+                        key={target.stepId}
+                        target={target}
+                        connection={connection}
+                        connectorIdentityUnavailable={Boolean(snapshot?.surfaceErrors.sourceConnections)}
+                        write={writeForStep(target.stepId)}
+                        reflection={reflectionForStep(target.stepId)}
+                      />
+                    );
+                  })}
                 </div>
               ) : null}
             </div>
@@ -807,7 +829,16 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(
+declare global {
+  interface Window {
+    __semanticJunkyardRoot?: Root;
+  }
+}
+
+const rootElement = document.getElementById("root")!;
+const root = window.__semanticJunkyardRoot ?? createRoot(rootElement);
+window.__semanticJunkyardRoot = root;
+root.render(
   <StrictMode>
     <App />
   </StrictMode>

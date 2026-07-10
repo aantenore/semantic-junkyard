@@ -19,13 +19,19 @@ const sensitivityRank = {
 };
 
 export class PolicyEngine {
-  evaluateAsset(asset: SemanticAsset, actor: ActorContext): PolicyDecision {
-    if (sensitivityRank[asset.sensitivity] > sensitivityRank[actor.clearance]) {
+  evaluateSensitivity(sensitivity: SemanticAsset["sensitivity"], actor: ActorContext): PolicyDecision {
+    if (sensitivityRank[sensitivity] > sensitivityRank[actor.clearance]) {
       return {
         decision: "deny",
-        reason: `Actor clearance ${actor.clearance} is lower than asset sensitivity ${asset.sensitivity}.`
+        reason: `Actor clearance ${actor.clearance} is lower than sensitivity ${sensitivity}.`
       };
     }
+    return { decision: "allow", reason: "Sensitivity clearance check passed." };
+  }
+
+  evaluateAsset(asset: SemanticAsset, actor: ActorContext): PolicyDecision {
+    const sensitivity = this.evaluateSensitivity(asset.sensitivity, actor);
+    if (sensitivity.decision === "deny") return sensitivity;
     if (asset.freshness === "stale") {
       return {
         decision: "review",

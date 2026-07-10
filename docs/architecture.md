@@ -1,187 +1,226 @@
 # Architecture
 
-Semantic Junkyard currently implements one local semantic runtime with two HTTP frontends and one MCP stdio entrypoint. The code is organized by capability, but most capabilities are concrete classes created directly by `SemanticEngine`; replaceable production adapters remain a design goal rather than a runtime feature.
+## System Shape
 
-## Process Topology
-
-```mermaid
-flowchart LR
-  WEB["Product workbench\napps/web :5173"] -->|REST through /api proxy| API["Express API\napps/api 127.0.0.1:8787"]
-  POC["PoC cockpit\napps/poc :5174"] -->|REST through /api proxy| API
-  API --> ENGINE["Deterministic SemanticEngine"]
-  API --> HF["Optional MLX PoC summarizer"]
-  ENGINE --> DB["SQLite + FTS5"]
-
-  CLIENT["External MCP client"] -->|stdio| MCP["apps/mcp"]
-  MCP --> ENGINE2["SemanticEngine in MCP process"]
-  ENGINE2 --> DB2["Selected SQLite file or memory DB"]
-```
-
-Important boundaries:
-
-- The product and PoC are separate React builds and separate REST clients.
-- The PoC cockpit is not an MCP client.
-- The MCP server does not call the Express API. It constructs the same engine/repository types in its own process and opens SQLite directly.
-- The optional MLX model is reached only by the bundled PoC runner. It is not injected into `SemanticEngine`.
-
-## Product And PoC
-
-The product workbench is the operator surface. It supports ingestion preview and persistence, manual semantic curation, discovery, search, graph inspection, action planning, local approval, execution, and reflected readback.
-
-The PoC cockpit demonstrates how an outside application can consume the REST API. Its conversational flow is still deterministic code: permission check, discovery, search, optional entity and graph grounding, context expansion, planning, execution when autonomous, snapshot refresh, and reflected search. In read-only and plan-only modes it stops earlier. It also stops when a plan is blocked or requires approval because the PoC client has no approval operation.
-
-The PoC's separate audit-run control calls `POST /api/poc/local-agent`. That server-side use case always runs a fixed deterministic tool sequence. Selecting `local-huggingface` adds real MLX generation for the final trace summary only.
-
-## Semantic Pipeline
+Semantic Junkyard is one local control plane with two browser clients and one MCP process. The product federates source observations into a derived semantic read model; it does not move source authority into that model.
 
 ```mermaid
 flowchart LR
-  A["Strict IngestRequest"] --> B["InlineTextConnector"]
-  B --> C["LocalTextParser"]
-  C --> D["SemanticWindowChunker"]
-  D --> E["DeterministicSemanticExtractor"]
-  D --> F["Hash embeddings"]
-  D --> G["SQLite FTS5"]
-  E --> H["Entities, relations, claims"]
-  F --> I["HybridQueryPlanner"]
-  G --> I
-  H --> I
-  I --> J["PolicyEngine"]
-  J --> K["REST and MCP tool results"]
+  WEB["Operator product UI\napps/web :5173"] -->|REST| API["Express control plane\napps/api 127.0.0.1:8787"]
+  POC["External conversational PoC\napps/poc :5174"] -->|REST client| API
+
+  API --> ENGINE["SemanticEngine + SourceManager"]
+  ENGINE --> CONTROL["Single-node SQLite control plane\nWAL + FTS5"]
+  ENGINE --> FS["Local filesystem\nread-only discovery"]
+  ENGINE --> SOURCE_DB["Authoritative SQLite source\nallowlisted row update"]
+  ENGINE --> GIT["Authoritative Git worktree\nallowlisted contract commit"]
+  ENGINE -. optional bounded generation .-> HF["Local Hugging Face / MLX"]
+
+  MCP_CLIENT["External MCP client"] -->|stdio| MCP["apps/mcp process"]
+  MCP --> ENGINE2["Independent runtime instance"]
+  ENGINE2 --> CONTROL
+  ENGINE2 --> FS
+  ENGINE2 --> SOURCE_DB
+  ENGINE2 --> GIT
 ```
 
-The implementation is deterministic:
+Important process boundaries:
 
-- Source, element, chunk, entity, relation, claim, plan, write, and run IDs use SHA-256-derived stable IDs where the workflow requires stability.
-- Chunk summaries are extractive text truncations, not model summaries.
-- Entities and relations come from configured local patterns and proper-noun heuristics.
-- Embeddings are 128-dimensional signed token hashes.
-- Hybrid retrieval combines lexical, vector, graph, quality, freshness, and policy signals without an external reranker.
-- Discovery profiles repository counts, terms, entities, relations, and governance signals; it is not an LLM agent loop.
+- The product and PoC are independent React builds and independent REST clients.
+- The PoC is an external consumer of product contracts, not an embedded privileged agent.
+- The MCP server does not proxy the Express API. It constructs the runtime directly and opens the selected SQLite file.
+- REST authentication and CORS do not apply to MCP. The MCP process inherits operating-system access to every configured local source path.
+- The optional model process receives bounded prompts through stdin. It is not injected as the policy engine or write executor.
 
-`GET /api/providers` reports whether the selected provider is part of the semantic runtime. Only `deterministic` currently returns `runtimeUsage: "semantic-runtime"`. Ollama and OpenAI-compatible selections return `configuration-only` and are not called.
+## Control Plane Versus Sources
 
-## Ingestion Modes
+The control-plane SQLite database stores:
 
-All ingestion currently enters through one strict inline request and supports only `text/plain`, `text/markdown`, `text/html`, and `application/json`.
+- source connection configuration, observed resources, sync runs, and events;
+- source artifacts, parsed elements, chunks, FTS rows, hash vectors, entities, relations, and claims;
+- semantic assets, metrics, lineage, contracts, policies, and ontology classes;
+- semantic proposals and decisions;
+- action plans embedded in runs, approvals, write observations, reflection results, and semantic updates;
+- audit events.
 
-| Mode | Indexed content | Stored `SourceArtifact.text` | Current meaning |
-| --- | --- | --- | --- |
-| `full_data` | Submitted text | Submitted text | Normal local ingestion. |
-| `metadata_only` | Generated note containing name, URI, and metadata | Submitted text | Retrieval behaves as metadata-only, but storage does not. |
-| `external_reference` | Generated note containing name, URI, and metadata | Submitted text | Registers a reference for retrieval, but storage does not remain external. |
+Connected sources retain their own authority:
 
-Preview runs the connector, parser, chunker, and extractor without persistence. Ingest repeats that plan, computes vectors, and stores all stages in one SQLite transaction.
+- Filesystem content is reread from the configured root during sync.
+- SQLite schema and rows are read from a separate database file.
+- Git discovery reads committed blobs at `HEAD`; Git postconditions read committed content.
 
-The two non-full modes are not a no-copy or data-residency control. A production connector contract must avoid reading or persisting payloads when the selected mode forbids it.
+The control plane records a connector readback and a versioned reflection record, but that record is not a substitute for the source-native reread.
 
-## SQLite Read Model
+## Discovery Pipeline
 
-SQLite stores:
+```mermaid
+flowchart LR
+  C["Typed source connection"] --> T["Connector test"]
+  T --> D["Bounded discovery"]
+  D --> R["Observed resources + checkpoint"]
+  D --> E["Evidence documents"]
+  D --> F["Declared assets, contracts, lineage, structural facts"]
+  E --> I["Parse, chunk, index, extract"]
+  I --> L["Resource-linked evidence chunks"]
+  F --> A["Authoritative facts or deterministic proposals"]
+  L --> A
+  L -. optional bounded summaries .-> M["Local-HF candidates"]
+  M --> P["Evidence-bound proposals"]
+  A --> P
+  P --> V["Accept / reject / supersede lifecycle"]
+```
 
-- Sources, parsed elements, chunks, FTS rows, and vectors.
-- Entities, entity/evidence links, relations, and claims.
-- Catalog assets, metrics, policies, lineage, ontology classes, and semantic contract headers.
-- Discovery runs and events.
-- Simulated source-system records with monotonically increasing versions.
-- Business action runs, approvals, and audit events.
+Every sync persists an event sequence covering connection, inspection, profiling warnings, evidence materialization, extraction/proposal work, supersession, and completion. Sync is in-process; there is no durable worker or resume token.
 
-The graph is represented by relational tables and assembled as snapshots. Vectors are JSON arrays and are scored in process. There is no separate graph, vector, object, queue, or policy service.
+### Filesystem
 
-The default API database path is `data/semantic-junkyard.sqlite`, resolved from the API process working directory. Root npm workspace scripts run the API in `apps/api`, producing `apps/api/data/semantic-junkyard.sqlite`. MCP independently resolves that product database relative to its installed module location, not the spawning client's working directory, unless `--db`, `--memory`, or `SEMANTIC_JUNKYARD_DB` overrides it.
+- Requires a real directory and rejects a symlink root.
+- Skips symlink entries and enforces `maxFiles` and `maxFileBytes`.
+- Extracts supported text and PDF content; profiles JSON/JSONL/CSV; parses declared YAML semantic contracts; recognizes OpenLineage event shapes.
+- Supports `full_data`, `metadata_only`, and `external_reference` ingestion. The latter two retain no submitted payload text in `sources`.
+- Has no write capability.
 
-## Action Planning
+### SQLite
 
-The business-action router is deterministic and currently demo-specific:
+- Requires a real filesystem database path; memory and URI sources are rejected.
+- Test and discovery open the source read-only with `query_only` and inspect `sqlite_master`, `PRAGMA table_info`, and `PRAGMA foreign_key_list`.
+- Publishes table/column resources, primary and foreign-key facts, lineage, row counts, optional bounded samples, and inferred sensitivity.
+- Exposes writes only when `writeMode` permits them and exactly one valid rule names the table, key column, and allowed columns.
 
-1. Run a policy-filtered hybrid search for up to four evidence results.
-2. Classify the intent with regular expressions as metric alignment, traceability publication, owner review, operational semantic update, unsupported, or blocked.
-3. Resolve a metric and asset pair from the local catalog.
-4. Evaluate the resolved assets with the fixed confidential-clearance automation actor; deny blocks the plan, while stale or low-quality review decisions gate every target for approval.
-5. Construct local targets for configured source-system capabilities.
-6. Combine target risk with the request's autonomy ceiling and the server ceiling.
-7. Block destructive/privileged patterns, unsupported intents, denied assets, and evidence-free plans.
+### Git
 
-Source-system capability declarations come from validated built-in defaults or the optional JSON path in `SEMANTIC_JUNKYARD_SOURCE_SYSTEMS_FILE`. The router still emits fixed target IDs and operations, so arbitrary systems in that file do not create new routes or connector implementations. The recognized targets are local simulations:
+- Requires a non-bare local worktree with a valid `HEAD`.
+- Discovers supported tracked text blobs from the committed tree, not arbitrary untracked content.
+- Carries commit SHA, blob SHA, path, and version provenance.
+- Parses declared YAML semantic contracts and exposes writes only for configured `semanticContractPaths`.
 
-- Data Catalog updates local metric or asset rows and a source record.
-- OpenMetadata Mirror updates local lineage and a source record.
-- dbt Semantic Repository writes only a pull-request-shaped source record.
-- Governance Ticketing writes only an owner-review-shaped source record.
+## Semantic Authority And Proposals
 
-No external catalog, metadata API, Git provider, or ticketing API is called.
+Resources become canonical entities with source connection/resource metadata. Relations have both graph metadata and a proposal record.
 
-## Plan Identity And Fingerprint
+- A connector-declared authoritative relation is created as accepted with origin `source_fact`, evidence IDs, and `decidedBy: source`.
+- A non-authoritative deterministic relation is created as `proposed`.
+- Local-HF output is validated against the exact bounded resource ID set and saved as `proposed` with origin `local_model`.
+- A local-model runtime failure marks the synchronization `partial`; deterministic source facts remain available and the failure is recorded without leaking local paths.
+- Operators can accept or reject only non-authoritative proposals.
+- When a new sync no longer emits an assertion, the previous proposal is marked `superseded`; relation lifecycle metadata is updated so stale assertions leave active navigation.
 
-Planning returns two identifiers:
+This keeps three concepts separate: an observed source fact, a reviewable interpretation, and a graph edge available to agents.
 
-- `id`: `action_plan_` plus the first 16 hex characters of SHA-256 over the intent, resolved action type, and target object keys.
-- `fingerprint`: the full lowercase SHA-256 of JSON containing `id`, `intent`, `actionType`, `mode`, `maxAutonomousRisk`, resolved `risk`, complete `targets`, and `warnings`.
+Catalog IDs declared by a source are source-local. Before publication, assets, metrics, policies, lineage, contracts, and ontology classes receive connection-scoped stable IDs while retaining their declared ID as provenance. Contract membership is explicit, and resync/delete removes observations by connection ownership rather than by a globally assumed source ID.
 
-The timestamp is deliberately outside the fingerprint, so an unchanged deterministic plan can be approved and executed even though each recomputation has a new `createdAt`.
+## Retrieval Pipeline
 
-Approval and execution rebuild the plan from the submitted intent, mode, maximum risk, and context, then compare both values. A mismatch returns `PLAN_CHANGED`. The accepted `context` object is currently ignored by routing and therefore does not affect either identifier.
+The reference semantic runtime is deterministic:
 
-Plans are not stored in a plan table. The reviewed response must be retained by the client until approval or execution.
+- stable SHA-256-derived identifiers where repeatability is required;
+- local parsing and semantic-window chunking;
+- extractive summaries and pattern/proper-noun extraction;
+- 128-dimensional signed token-hash embeddings;
+- SQLite FTS5 lexical retrieval;
+- deterministic fusion of lexical, vector, graph, quality, freshness, and policy signals;
+- bounded graph neighborhoods and path finding.
 
-## Approval And Idempotency
+Policy is applied to catalog, source, search, evidence, graph, and operational responses. It is a local reference policy, not federated source authorization.
 
-An approval can be created only when the recomputed plan status is `approval_required`. The approval record contains the exact plan ID and fingerprint, approver identity, rationale, state, and timestamps. It begins `active`, is accepted only for that exact plan, and becomes `consumed` after an executing transaction. There is no expiration or revocation API.
-
-In authenticated HTTP mode, only the distinct approval bearer token has the approver role. With no API token configured, local HTTP requests receive the development-only local approver role. MCP has no approval tool; an approval must be created through the HTTP product channel and passed to MCP execution if both processes share the same database.
-
-Execution requires a globally unique idempotency key:
-
-- The run ID is stable from that key.
-- A saved terminal run is returned without a second write only when plan ID, fingerprint, intent, mode, and autonomy ceiling match the original request.
-- A saved `approval_required` run may be replaced using the same key after approval.
-- Reusing a key for an incompatible request returns `IDEMPOTENCY_CONFLICT`.
-
-Execution enters a SQLite `BEGIN IMMEDIATE` transaction, rechecks idempotency after obtaining the write lock, and conditionally consumes an exact active approval before applying source effects. Approval consumption and writes commit together; rollback leaves the approval active. File-backed databases use a five-second busy timeout so concurrent processes wait briefly instead of racing the approval check.
-
-## Execution And Reflection
+## Verified Change Pipeline
 
 ```mermaid
 sequenceDiagram
-  participant C as Client
-  participant E as SemanticEngine
-  participant R as SQLite Repository
-  C->>E: plan(intent, mode, ceiling)
-  E-->>C: id + fingerprint + targets
+  participant Client
+  participant Plane as Control plane
+  participant Policy
+  participant Source as Configured source
+  participant ReadModel as Semantic read model
+
+  Client->>Plane: business intent + mode + autonomy ceiling
+  Plane->>Source: resolve one typed target and current version
+  Source-->>Plane: exact before/after + evidence + preconditions
+  Plane->>Policy: risk and autonomy decision
+  Plane-->>Client: plan ID + fingerprint + target + diff
   opt approval required
-    C->>E: approve(exact plan, rationale)
-    E->>R: save active approval
-    E-->>C: approvalId
+    Client->>Plane: human approval for exact ID/fingerprint
   end
-  C->>E: execute(exact plan, approvalId?, idempotencyKey)
-  E->>E: recompute and compare plan
-  E->>R: BEGIN IMMEDIATE: recheck key, consume approval, apply local effects
-  E->>R: reread records and verify identity/version/hash
-  E->>R: ingest evidence only for verified readback
-  E->>R: save run and consume approval
-  E-->>C: verified, reflected, planned, blocked, approval_required, or failed run
+  Client->>Plane: execute exact plan + idempotency key
+  Plane->>Source: revalidate allowlist and preconditions
+  Plane->>Source: apply source-native write
+  Plane->>Source: independent authoritative reread
+  Source-->>Plane: source version + readback + postcondition result
+  Plane->>Plane: persist run and reflection observation
+  alt postcondition verified
+    Plane->>ReadModel: publish reflection evidence and relation
+    Plane-->>Client: verified
+  else missing or drifted
+    Plane-->>Client: reflected/failed, no completion claim
+  end
 ```
 
-Reflection reconstructs an expected record from plan fingerprint, step, system, object, operation, and diff. It verifies that hash plus source-record ID, version, write ID, intent, and plan ID. Verified writes are rendered into a reflection document, ingested as new evidence, and linked to source-system entities with `REFLECTED_IN` relations.
+### Plan Identity
 
-Every write target must verify for the run to be `verified`. If the transaction succeeds but readback is missing or drifted, the run is `reflected`; only individually verified writes can contribute semantic evidence. If execution throws, the write transaction rolls back and a separate `failed` run is saved without writes or semantic updates.
+The plan fingerprint covers the stable plan ID, intent, action type, mode, requested autonomy ceiling, resolved risk, complete target including connector parameters/preconditions, and warnings. `createdAt` is excluded. Approval and execution rebuild the plan from current source state and reject a different ID or fingerprint with `PLAN_CHANGED`.
 
-## HTTP Boundary
+The request `context` is not independently trusted or fingerprinted as an opaque object. Connectors may use typed values from it to disambiguate a target; any effect on execution must appear in the resolved target and therefore in the fingerprint.
 
-Express applies request IDs, Helmet, a CORS allowlist, optional bearer authentication, JSON body limits, strict schema validation, structured errors, and request audit events. The default host is loopback. Non-loopback startup requires an API token, and configuring that token also requires a different approval token.
+### SQLite Write
 
-The browser applications normally use same-origin `/api` calls through Vite proxies. `VITE_API_URL` can bypass the proxy, but the browser clients do not add bearer credentials themselves. A secured deployment therefore needs a reverse proxy or backend-for-frontend that supplies credentials without exposing them to browser code.
+The SQLite connector accepts only update-like intents, rejects destructive/DDL verbs, resolves one row, excludes the key column from updates, and validates every field against the configured rule again at execution. It then:
 
-## MCP Boundary
+1. opens a writable source connection;
+2. starts an immediate source transaction;
+3. rereads exactly one row and compares its canonical row hash with the plan;
+4. executes one parameterized `UPDATE` over allowlisted identifiers and values;
+5. requires exactly one changed row, or zero only for a fingerprinted already-satisfied no-op;
+6. closes the write connection;
+7. opens an independent read-only connection and requires exact equality for every changed field.
 
-The MCP server exposes ten tools, six resource descriptors (including the evidence template), and three prompts over stdio. Pure read tools are annotated read-only and idempotent. `run_discovery` is non-destructive but non-idempotent because it persists a fresh run and events. Catalog and graph resources are capped snapshots with total counts and truncation metadata; bounded traversal tools are the navigation path. `business_action_execute` is annotated mutating, non-destructive, and idempotent.
+Plans and readbacks expose only the key and allowlisted changed columns; the full row is used only inside the connector to compute the optimistic hash. Confidential/restricted profile samples are redacted before publication. When the requested value is already present, execution verifies the unchanged row with zero rows mutated instead of issuing an `UPDATE`.
 
-The REST routes `/api/mcp/tools` and `/api/mcp/capabilities` are metadata snapshots only. They are not an MCP transport endpoint.
+### Git Write
 
-Because MCP opens the database directly, HTTP CORS, bearer roles, body limits, and request middleware do not apply. Process and filesystem isolation are required for production use.
+The Git connector resolves one configured clean YAML contract path and computes exact before/after content. Execution:
 
-## Extension Boundary
+1. verifies repository root, configured path, current `HEAD`, target blob, clean target, and parsed expected fields;
+2. writes and stages only the target path;
+3. verifies the staged blob equals the planned content hash;
+4. creates a commit with `--only` for that path;
+5. verifies the commit parent is the expected `HEAD` and exactly one path changed;
+6. reads `commit:path` with `git show` and requires exact content plus expected contract/metric fields.
 
-The module catalog returned by status describes intended interchangeable capabilities, but it is descriptive configuration. The source-system capability catalog is separately configurable through validated JSON. `SemanticEngine` still instantiates the inline connector, local parser, chunker, deterministic extractor, hash embeddings, query planner, policy engine, discovery agent, and local write/reflection logic directly.
+The reference Git connection is approval-required.
 
-The next architectural step for a real provider or connector is to introduce typed interfaces and a configuration-driven composition root, then inject implementations into the engine. Environment-variable branches that only change labels do not satisfy that boundary. See [Adapter contracts](adapter-contracts.md).
+### Idempotency And Reflection
+
+An idempotency key is unique in the control-plane SQLite database and bound to the plan ID/fingerprint, intent, mode, and autonomy ceiling. A terminal exact replay returns the stored run. A paused `approval_required` run may resume with the same key after a matching approval is created.
+
+After connector readback, the engine also persists and rereads a versioned reflection record, checking record identity, write ID, intent, plan ID, target, operation, diff, and expected hash. Only connector and control-plane verification together produce a verified reflection and semantic update.
+
+## Transaction And Failure Boundaries
+
+The control plane uses SQLite transactions for its own records. Each connector uses its source-native atomic unit: an immediate SQLite transaction or one Git commit. These are **not** one distributed transaction.
+
+The current implementation has no durable outbox or reconciliation worker. A process failure after the source commits but before the control plane records the result can leave an unrecorded source effect. Local idempotency alone cannot prove exactly-once behavior across that crash window. Production connectors need remote idempotency, durable intent/outcome records, retry state, and authoritative reconciliation.
+
+## Trust Boundaries
+
+1. **Source content boundary.** Retrieved text and metadata are untrusted data and cannot modify tool instructions or connector rules.
+2. **Authority boundary.** Source facts and source-native rereads outrank derived semantic assertions.
+3. **Proposal boundary.** Deterministic/model inferences remain distinguishable and reviewable.
+4. **Model boundary.** A model can return bounded intent/proposal JSON or a summary; deterministic validation and connectors decide effects.
+5. **Operator boundary.** Connection configuration, proposal decisions, and approvals are operator/human API capabilities, not general agent tools.
+6. **REST boundary.** Loopback without tokens is development-only. Non-loopback requires distinct static API and approval tokens, which are still not production IAM.
+7. **MCP boundary.** MCP bypasses REST auth because it runs locally over stdio and directly opens files. OS process identity and filesystem permissions are the actual control.
+8. **Audit boundary.** The system records observable inputs, evidence, artifacts, decisions, diffs, tool events, and readbacks. It does not request or store hidden chain-of-thought.
+
+## Current Deployment Limits
+
+- One Node.js process per API or MCP runtime and one single-node SQLite control plane.
+- Local connectors only; no remote production connector credentials or network isolation.
+- No tenancy, production IAM, delegated policy decision point, source ACL synchronization, or row-level authorization.
+- No durable job queue, scheduler, outbox, dead-letter handling, or crash reconciliation.
+- No distributed transaction across source and control plane.
+- No arbitrary unknown-source writes by design.
+- No hidden chain-of-thought capture by design.
+- No production provider abstraction for deterministic/HF/Ollama/OpenAI-compatible interchange.
+- No production scale, HA, backup/restore, or migration guarantees.
+
+These constraints define a reference implementation, not production readiness.

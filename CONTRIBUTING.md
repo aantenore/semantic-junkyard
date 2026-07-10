@@ -99,9 +99,9 @@ Do not let an adapter bypass the capability manifest, policy checks, exact-plan 
 Documentation must describe the working tree, not the intended roadmap. In particular:
 
 - Call Ollama and OpenAI-compatible providers `configuration-only` until runtime calls exist.
-- Call the MLX path a PoC trace summarizer, not the orchestrator.
-- Call local source-system writes SQLite simulations until real connectors exist.
-- State that metadata-only and external-reference requests still store submitted text.
+- Describe the three bounded MLX roles accurately: intent interpretation, source-semantic proposals, and trace summary; none is the policy or write orchestrator.
+- Call filesystem, SQLite, and Git local connectors real local integrations, while keeping remote/enterprise connector claims out of scope.
+- State that metadata-only and external-reference requests discard submitted payload text in the control-plane store.
 - Keep loopback, CORS, token, approval, and MCP filesystem boundaries explicit.
 
 Do not edit or remove historical incident reports to rewrite history. Add a new dated incident or follow-up when the facts change.

@@ -1,18 +1,23 @@
 import type {
+  AgentIntentPlan,
   BusinessActionPlan,
   BusinessActionRun,
   ContextEnvelope,
   EntityLookupEnvelope,
+  EvidenceSpan,
   GraphSnapshot,
+  IntentInterpreterProvider,
   PermissionEnvelope,
-  PocAgentReport,
   PocSnapshot,
   SearchEnvelope,
-  ToolProvider
+  SourceResource,
+  SourceResourceSearchEnvelope,
+  SourceSyncRun,
+  SourceSystemsEnvelope
 } from "../types/app";
 
-import type { AuditEvent, DiscoveryRun, ProviderConfig, SourceSystem, SourceSystemRecord, SystemStatus } from "@semantic-junkyard/shared";
-import { createJsonRequester, resolveApiUrl } from "@semantic-junkyard/shared";
+import type { AuditEvent, DiscoveryRun, ProviderConfig, SystemStatus } from "@semantic-junkyard/shared";
+import { createJsonRequester, resolveApiUrl, retryApiStartup } from "@semantic-junkyard/shared";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
 const request = createJsonRequester(API_BASE);
@@ -23,11 +28,17 @@ export function apiHref(path: string): string {
 }
 
 export async function loadPocSnapshot(): Promise<PocSnapshot> {
-  const [status, provider, actionRuns, sourceSystemsEnvelope, auditEvents] = await Promise.all([
+  return retryApiStartup(loadPocSnapshotOnce);
+}
+
+async function loadPocSnapshotOnce(): Promise<PocSnapshot> {
+  const [status, provider, actionRuns, sourceSystemsEnvelope, sourceResources, sourceSyncRuns, auditEvents] = await Promise.all([
     request<SystemStatus>("/api/status"),
     request<ProviderConfig>("/api/providers"),
     request<BusinessActionRun[]>("/api/business/actions/runs"),
-    request<{ systems: SourceSystem[]; records: SourceSystemRecord[] }>("/api/source-systems"),
+    getSourceSystems(),
+    request<SourceResource[]>("/api/source-resources"),
+    request<SourceSyncRun[]>("/api/source-sync-runs"),
     request<AuditEvent[]>("/api/audit/events?limit=40")
   ]);
 
@@ -37,8 +48,28 @@ export async function loadPocSnapshot(): Promise<PocSnapshot> {
     actionRuns,
     sourceSystems: sourceSystemsEnvelope.systems,
     sourceRecords: sourceSystemsEnvelope.records,
+    sourceResources,
+    sourceSyncRuns,
     auditEvents
   };
+}
+
+export async function interpretAgentIntent(message: string, provider: IntentInterpreterProvider) {
+  return longRequest<AgentIntentPlan>("/api/agent/interpret", {
+    method: "POST",
+    body: JSON.stringify({ message, provider })
+  });
+}
+
+export async function searchSourceResources(input: { query: string; connectionId?: string; topK?: number }) {
+  return request<SourceResourceSearchEnvelope>("/api/tools/source_resource_search", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function getSourceSystems() {
+  return request<SourceSystemsEnvelope>("/api/source-systems");
 }
 
 export async function explainPermissions(intent: string) {
@@ -76,15 +107,28 @@ export async function expandContext(input: { query?: string; chunkIds?: string[]
   });
 }
 
-export async function planBusinessAction(input: { intent: string; mode?: "autonomous" | "approval_required" | "dry_run"; maxAutonomousRisk?: "low" | "medium" | "high" }) {
+export async function getEvidence(chunkId: string) {
+  return request<EvidenceSpan>(`/api/evidence/${encodeURIComponent(chunkId)}`);
+}
+
+export async function planBusinessAction(input: {
+  intent: string;
+  mode: "autonomous" | "approval_required" | "dry_run";
+  maxAutonomousRisk?: "low" | "medium" | "high";
+  context?: Record<string, unknown>;
+}) {
   return request<BusinessActionPlan>("/api/business/actions/plan", {
     method: "POST",
     body: JSON.stringify(input)
   });
 }
 
-export async function executeBusinessAction(input: { plan: BusinessActionPlan; idempotencyKey: string }) {
-  const { plan, idempotencyKey } = input;
+export async function executeBusinessAction(input: {
+  plan: BusinessActionPlan;
+  idempotencyKey: string;
+  context?: Record<string, unknown>;
+}) {
+  const { plan, idempotencyKey, context = {} } = input;
   return request<BusinessActionRun>("/api/business/actions/execute", {
     method: "POST",
     body: JSON.stringify({
@@ -93,7 +137,8 @@ export async function executeBusinessAction(input: { plan: BusinessActionPlan; i
       intent: plan.intent,
       mode: plan.mode,
       maxAutonomousRisk: plan.maxAutonomousRisk,
-      idempotencyKey
+      idempotencyKey,
+      context
     })
   });
 }
@@ -102,12 +147,5 @@ export async function runDiscovery(objective: string) {
   return request<DiscoveryRun>("/api/discovery/run", {
     method: "POST",
     body: JSON.stringify({ objective })
-  });
-}
-
-export async function runLocalAgentPoc(provider: ToolProvider = "deterministic") {
-  return longRequest<PocAgentReport>("/api/poc/local-agent", {
-    method: "POST",
-    body: JSON.stringify({ provider })
   });
 }

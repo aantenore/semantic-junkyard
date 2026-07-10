@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { GraphAnnotationSchema } from "@semantic-junkyard/shared";
 import type {
   AuditEvent,
   BusinessActionApproval,
@@ -12,6 +13,7 @@ import type {
   Entity,
   EvidenceSpan,
   GraphEdge,
+  GraphAnnotation,
   GraphNode,
   GraphSnapshot,
   LineageEdge,
@@ -41,6 +43,15 @@ interface ChunkRow {
   summary: string;
   metadata: string;
   source_name?: string;
+}
+
+function graphAnnotations(value: unknown): GraphAnnotation[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .slice(0, 50)
+    .map((annotation) => GraphAnnotationSchema.safeParse(annotation))
+    .filter((result) => result.success)
+    .map((result) => result.data);
 }
 
 interface SourceRow {
@@ -158,6 +169,26 @@ export class SemanticRepository {
     }));
   }
 
+  pruneConnectionEvidence(connectionId: string, retainedSourceIds: string[]): void {
+    const retained = new Set(retainedSourceIds);
+    this.db.transaction(() => {
+      const sourceIds = (
+        this.db.prepare("SELECT id FROM sources WHERE json_extract(metadata, '$.connectionId') = ?").all(connectionId) as Array<{ id: string }>
+      )
+        .map((row) => row.id)
+        .filter((id) => !retained.has(id));
+      if (sourceIds.length === 0) return;
+      const placeholders = sourceIds.map(() => "?").join(",");
+      this.db.prepare(`DELETE FROM chunk_fts WHERE chunk_id IN (SELECT id FROM chunks WHERE source_id IN (${placeholders}))`).run(...sourceIds);
+      this.db.prepare(`DELETE FROM sources WHERE id IN (${placeholders})`).run(...sourceIds);
+      this.db.prepare(
+        `DELETE FROM entities
+         WHERE NOT EXISTS (SELECT 1 FROM entity_chunks WHERE entity_chunks.entity_id = entities.id)
+           AND NOT EXISTS (SELECT 1 FROM relations WHERE relations.source_entity_id = entities.id OR relations.target_entity_id = entities.id)`
+      ).run();
+    })();
+  }
+
   saveElements(elements: DocumentElement[]): void {
     const stmt = this.db.prepare(
       `INSERT OR REPLACE INTO elements (id, source_id, kind, text, start_offset, end_offset, metadata)
@@ -244,6 +275,29 @@ export class SemanticRepository {
       }
     });
     tx(relations);
+  }
+
+  pruneConnectionGraph(connectionId: string, retainedEntityIds: string[], retainedRelationIds: string[]): void {
+    const retainedEntities = new Set(retainedEntityIds);
+    const retainedRelations = new Set(retainedRelationIds);
+    this.db.transaction(() => {
+      const relationIds = (
+        this.db.prepare("SELECT id FROM relations WHERE json_extract(metadata, '$.connectionId') = ?").all(connectionId) as Array<{ id: string }>
+      ).map((row) => row.id);
+      for (const id of relationIds) {
+        if (!retainedRelations.has(id)) this.db.prepare("DELETE FROM relations WHERE id = ?").run(id);
+      }
+      const entityIds = (
+        this.db.prepare("SELECT id FROM entities WHERE json_extract(metadata, '$.connectionId') = ?").all(connectionId) as Array<{ id: string }>
+      ).map((row) => row.id);
+      for (const id of entityIds) {
+        if (retainedEntities.has(id)) continue;
+        const referenced = this.db
+          .prepare("SELECT 1 FROM relations WHERE source_entity_id = ? OR target_entity_id = ? LIMIT 1")
+          .get(id, id);
+        if (!referenced) this.db.prepare("DELETE FROM entities WHERE id = ?").run(id);
+      }
+    })();
   }
 
   saveClaims(claims: Claim[]): void {
@@ -412,27 +466,65 @@ export class SemanticRepository {
 
   graphSnapshot(): GraphSnapshot {
     const entities = this.getEntities();
-    const relations = this.getRelations();
+    const relations = this.getRelations().filter((relation) => relation.metadata.lifecycle !== "rejected" && relation.metadata.lifecycle !== "superseded");
+    const catalog = this.catalog();
     const degree = new Map<string, number>();
     for (const relation of relations) {
       degree.set(relation.sourceEntityId, (degree.get(relation.sourceEntityId) ?? 0) + 1);
       degree.set(relation.targetEntityId, (degree.get(relation.targetEntityId) ?? 0) + 1);
     }
-    const nodes: GraphNode[] = entities.map((entity) => ({
-      id: entity.id,
-      label: entity.canonicalName,
-      type: entity.type,
-      confidence: entity.confidence,
-      degree: degree.get(entity.id) ?? 0
-    }));
-    const edges: GraphEdge[] = relations.map((relation) => ({
-      id: relation.id,
-      source: relation.sourceEntityId,
-      target: relation.targetEntityId,
-      label: relation.type,
-      confidence: relation.confidence,
-      evidenceChunkId: relation.evidenceChunkId
-    }));
+    for (const edge of catalog.lineage) {
+      degree.set(edge.fromAssetId, (degree.get(edge.fromAssetId) ?? 0) + 1);
+      degree.set(edge.toAssetId, (degree.get(edge.toAssetId) ?? 0) + 1);
+    }
+    const nodes: GraphNode[] = [
+      ...entities.map((entity) => ({
+        id: entity.id,
+        label: entity.canonicalName,
+        type: entity.type,
+        confidence: entity.confidence,
+        degree: degree.get(entity.id) ?? 0,
+        annotations: graphAnnotations(entity.metadata.semanticAnnotations)
+      })),
+      ...catalog.assets.map((asset) => ({
+        id: asset.id,
+        label: asset.name,
+        type: `Asset:${asset.kind}`,
+        confidence: asset.qualityScore,
+        degree: degree.get(asset.id) ?? 0,
+        annotations: []
+      }))
+    ];
+    const edges: GraphEdge[] = [
+      ...relations.map((relation) => ({
+        id: relation.id,
+        source: relation.sourceEntityId,
+        target: relation.targetEntityId,
+        label: relation.type,
+        confidence: relation.confidence,
+        evidenceChunkId: relation.evidenceChunkId,
+        lifecycle:
+          typeof relation.metadata.lifecycle === "string" && ["proposed", "accepted", "rejected", "superseded"].includes(relation.metadata.lifecycle)
+            ? (relation.metadata.lifecycle as "proposed" | "accepted" | "rejected" | "superseded")
+            : "accepted",
+        authoritative: relation.metadata.authoritative === true
+      })),
+      ...catalog.lineage.map((edge) => ({
+        id: edge.id,
+        source: edge.fromAssetId,
+        target: edge.toAssetId,
+        label: edge.type,
+        confidence: edge.confidence,
+        lifecycle: "accepted" as const,
+        authoritative: edge.metadata.authoritative !== false,
+        evidenceChunkId:
+          typeof edge.metadata.evidenceChunkId === "string"
+            ? edge.metadata.evidenceChunkId
+            : Array.isArray(edge.metadata.evidenceChunkIds) && typeof edge.metadata.evidenceChunkIds[0] === "string"
+              ? edge.metadata.evidenceChunkIds[0]
+              : null
+      }))
+    ];
     return { nodes, edges };
   }
 
@@ -537,8 +629,8 @@ export class SemanticRepository {
     );
     const ontologyStmt = this.db.prepare(
       `INSERT OR REPLACE INTO ontology_classes
-       (id, label, description, parent_id, constraints)
-       VALUES (@id, @label, @description, @parentId, @constraints)`
+       (id, label, description, parent_id, constraints, metadata)
+       VALUES (@id, @label, @description, @parentId, @constraints, @metadata)`
     );
     const contractStmt = this.db.prepare(
       `INSERT OR REPLACE INTO semantic_contracts
@@ -550,10 +642,38 @@ export class SemanticRepository {
       for (const item of snapshot.metrics) metricStmt.run({ ...item, dimensions: encodeJson(item.dimensions), metadata: encodeJson(item.metadata) });
       for (const item of snapshot.policies) policyStmt.run({ ...item, appliesTo: encodeJson(item.appliesTo), metadata: encodeJson(item.metadata) });
       for (const item of snapshot.lineage) lineageStmt.run({ ...item, metadata: encodeJson(item.metadata) });
-      for (const item of snapshot.ontologyClasses) ontologyStmt.run({ ...item, constraints: encodeJson(item.constraints) });
+      for (const item of snapshot.ontologyClasses) ontologyStmt.run({ ...item, constraints: encodeJson(item.constraints), metadata: encodeJson(item.metadata ?? {}) });
       for (const item of snapshot.contracts) contractStmt.run({ ...item, metadata: encodeJson(item.metadata) });
     });
     tx();
+  }
+
+  replaceCatalogObservations(connectionId: string, snapshot: CatalogSnapshot): void {
+    this.db.transaction(() => {
+      const metadataTables = ["lineage_edges", "metrics", "policies", "ontology_classes", "semantic_contracts", "semantic_assets"];
+      for (const table of metadataTables) {
+        this.db.prepare(`DELETE FROM ${table} WHERE json_extract(metadata, '$.connectionId') = ?`).run(connectionId);
+      }
+      this.upsertCatalog(snapshot);
+    })();
+  }
+
+  removeConnectionObservations(connectionId: string): void {
+    this.db.transaction(() => {
+      this.pruneConnectionEvidence(connectionId, []);
+      for (const table of ["lineage_edges", "metrics", "policies", "ontology_classes", "semantic_contracts", "semantic_assets", "relations"]) {
+        this.db.prepare(`DELETE FROM ${table} WHERE json_extract(metadata, '$.connectionId') = ?`).run(connectionId);
+      }
+      const entityIds = (
+        this.db.prepare("SELECT id FROM entities WHERE json_extract(metadata, '$.connectionId') = ?").all(connectionId) as Array<{ id: string }>
+      ).map((row) => row.id);
+      for (const id of entityIds) {
+        const referenced = this.db
+          .prepare("SELECT 1 FROM relations WHERE source_entity_id = ? OR target_entity_id = ? LIMIT 1")
+          .get(id, id);
+        if (!referenced) this.db.prepare("DELETE FROM entities WHERE id = ?").run(id);
+      }
+    })();
   }
 
   catalog(): CatalogSnapshot {
@@ -604,20 +724,25 @@ export class SemanticRepository {
       label: row.label,
       description: row.description,
       parentId: row.parent_id,
-      constraints: decodeJson<string[]>(row.constraints, [])
-    }));
-    const contracts = (this.db.prepare("SELECT * FROM semantic_contracts ORDER BY domain, name").all() as any[]).map<SemanticContract>((row) => ({
-      id: row.id,
-      name: row.name,
-      version: row.version,
-      domain: row.domain,
-      status: row.status,
-      assets: assets.filter((asset) => asset.domain === row.domain),
-      metrics: metrics.filter((metric) => metric.domain === row.domain),
-      policies,
-      ontologyClasses,
+      constraints: decodeJson<string[]>(row.constraints, []),
       metadata: decodeJson(row.metadata, {})
     }));
+    const contracts = (this.db.prepare("SELECT * FROM semantic_contracts ORDER BY domain, name").all() as any[]).map<SemanticContract>((row) => {
+      const metadata = decodeJson<Record<string, unknown>>(row.metadata, {});
+      const legacyDomain = typeof metadata.connectionId === "string" ? undefined : row.domain;
+      return {
+        id: row.id,
+        name: row.name,
+        version: row.version,
+        domain: row.domain,
+        status: row.status,
+        assets: contractMembers(assets, row.id, legacyDomain),
+        metrics: contractMembers(metrics, row.id, legacyDomain),
+        policies: contractMembers(policies, row.id),
+        ontologyClasses: contractMembers(ontologyClasses, row.id),
+        metadata
+      };
+    });
     return { assets, metrics, policies, lineage, contracts, ontologyClasses };
   }
 
@@ -761,6 +886,9 @@ export class SemanticRepository {
       metrics: count("metrics"),
       policies: count("policies"),
       lineageEdges: count("lineage_edges"),
+      connections: count("source_connections"),
+      resources: count("source_resources"),
+      proposals: (this.db.prepare("SELECT COUNT(*) AS total FROM semantic_proposals WHERE status = 'proposed'").get() as { total: number }).total,
       modules: defaultModules
     };
   }
@@ -809,4 +937,17 @@ export class SemanticRepository {
       consumedAt: row.consumed_at
     };
   }
+}
+
+function contractMembers<T extends { metadata?: Record<string, unknown>; domain?: string }>(
+  items: T[],
+  contractId: string,
+  legacyDomain?: string
+): T[] {
+  const explicit = items.filter((item) => {
+    const contractIds = item.metadata?.contractIds;
+    return Array.isArray(contractIds) && contractIds.includes(contractId);
+  });
+  if (explicit.length > 0 || legacyDomain === undefined) return explicit;
+  return items.filter((item) => item.domain === legacyDomain);
 }

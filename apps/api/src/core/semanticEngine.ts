@@ -19,6 +19,7 @@ import type {
   SearchResult,
   SemanticUpdate,
   SourceArtifact,
+  SourceResource,
   SourceSystem,
   SourceSystemRecord,
   SourceWrite
@@ -50,6 +51,8 @@ import { PolicyEngine } from "../storage/policy.js";
 import type { ActorContext } from "../storage/policy.js";
 import type { SemanticRepository } from "../storage/repository.js";
 import { loadSourceSystems } from "../config/sourceSystems.js";
+import type { SourceManager } from "../sources/sourceManager.js";
+import type { ConnectorActionCandidate } from "../sources/connector.js";
 
 type IngestionPlan = IngestPreviewResponse;
 type RiskLevel = "low" | "medium" | "high" | "blocked";
@@ -57,6 +60,7 @@ type RiskLevel = "low" | "medium" | "high" | "blocked";
 export interface SemanticEngineOptions {
   maxAutonomousRisk?: Exclude<RiskLevel, "blocked">;
   sourceSystems?: SourceSystem[];
+  sourceManager?: SourceManager;
 }
 
 class BusinessActionExecutionFailure extends Error {
@@ -98,12 +102,14 @@ export class SemanticEngine {
 
   private readonly maxAutonomousRisk: Exclude<RiskLevel, "blocked">;
   private readonly configuredSourceSystems: SourceSystem[];
+  private readonly sourceManager?: SourceManager;
 
   constructor(private readonly repository: SemanticRepository, options: SemanticEngineOptions = {}) {
     this.maxAutonomousRisk = options.maxAutonomousRisk ?? "medium";
     this.configuredSourceSystems = structuredClone(options.sourceSystems ?? loadSourceSystems());
+    this.sourceManager = options.sourceManager;
     this.planner = new HybridQueryPlanner(repository);
-    this.discoveryAgent = new DiscoveryAgent(repository);
+    this.discoveryAgent = new DiscoveryAgent(repository, this.sourceManager);
   }
 
   previewIngest(rawRequest: unknown): IngestPreviewResponse {
@@ -170,7 +176,43 @@ export class SemanticEngine {
   }
 
   sourceSystems(): SourceSystem[] {
-    return structuredClone(this.configuredSourceSystems);
+    return structuredClone([...this.configuredSourceSystems, ...(this.sourceManager?.sourceSystems() ?? [])]);
+  }
+
+  createSourceConnection(rawRequest: unknown) {
+    return this.requireSourceManager().createConnection(rawRequest);
+  }
+
+  listSourceConnections() {
+    return this.requireSourceManager().listConnections();
+  }
+
+  testSourceConnection(id: string) {
+    return this.requireSourceManager().testConnection(id);
+  }
+
+  async syncSourceConnection(id: string, rawRequest: unknown) {
+    return this.requireSourceManager().syncConnection(id, rawRequest, this);
+  }
+
+  deleteSourceConnection(id: string, actor = "local-user"): void {
+    this.requireSourceManager().deleteConnection(id, actor);
+  }
+
+  sourceResources(connectionId?: string) {
+    return this.requireSourceManager().listResources(connectionId);
+  }
+
+  sourceSyncRuns(connectionId?: string) {
+    return this.requireSourceManager().listSyncRuns(connectionId);
+  }
+
+  semanticProposals(filters: { connectionId?: string; status?: "proposed" | "accepted" | "rejected" | "superseded" } = {}) {
+    return this.requireSourceManager().listProposals(filters);
+  }
+
+  decideSemanticProposal(id: string, rawRequest: unknown, actor = "local-user") {
+    return this.requireSourceManager().decideProposal(id, rawRequest, actor);
   }
 
   planBusinessAction(rawRequest: unknown): BusinessActionPlan {
@@ -348,14 +390,123 @@ export class SemanticEngine {
     return this.repository.catalog();
   }
 
-  search(rawRequest: SearchRequest): SearchResult[] {
+  catalogForActor(actor: ActorContext): CatalogSnapshot {
+    const catalog = this.repository.catalog();
+    const assets = catalog.assets.filter((asset) => this.policy.evaluateAsset(asset, actor).decision !== "deny");
+    const assetIds = new Set(assets.map((asset) => asset.id));
+    const domains = new Set(assets.map((asset) => asset.domain));
+    const result: CatalogSnapshot = {
+      assets,
+      metrics: catalog.metrics.filter((metric) => domains.has(metric.domain)),
+      policies: catalog.policies,
+      lineage: catalog.lineage.filter((edge) => assetIds.has(edge.fromAssetId) && assetIds.has(edge.toAssetId)),
+      contracts: catalog.contracts
+        .filter((contract) => domains.has(contract.domain))
+        .map((contract) => ({
+          ...contract,
+          assets: contract.assets.filter((asset) => assetIds.has(asset.id)),
+          metrics: contract.metrics.filter((metric) => domains.has(metric.domain))
+        })),
+      ontologyClasses: catalog.ontologyClasses
+    };
+    this.repository.audit(actor.actor, "catalog.read", "catalog", "allow", { returnedAssets: assets.length, filteredAssets: catalog.assets.length - assets.length });
+    return this.policy.applyDataPolicies(result, catalog.policies);
+  }
+
+  graphForActor(actor: ActorContext) {
+    const graph = this.repository.graphSnapshot();
+    const deniedAssetIds = new Set(
+      this.repository
+        .catalog()
+        .assets.filter((asset) => this.policy.evaluateAsset(asset, actor).decision === "deny")
+        .map((asset) => asset.id)
+    );
+    const deniedEntityIds = new Set(
+      this.repository
+        .getEntities()
+        .filter((entity) => {
+          const sensitivity = entity.metadata.sensitivity;
+          return typeof sensitivity === "string" && ["public", "internal", "confidential", "restricted"].includes(sensitivity)
+            ? this.policy.evaluateSensitivity(sensitivity as "public" | "internal" | "confidential" | "restricted", actor).decision === "deny"
+            : false;
+        })
+        .map((entity) => entity.id)
+    );
+    const denied = new Set([...deniedAssetIds, ...deniedEntityIds]);
+    const nodes = graph.nodes.filter((node) => !denied.has(node.id));
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    const result = {
+      nodes,
+      edges: graph.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
+    };
+    this.repository.audit(actor.actor, "graph.read", "semantic-graph", "allow", { returnedNodes: nodes.length, filteredNodes: graph.nodes.length - nodes.length });
+    return this.policy.applyDataPolicies(result, this.repository.catalog().policies);
+  }
+
+  sourceResourcesForActor(actor: ActorContext, connectionId?: string) {
+    const resources = this.requireSourceManager()
+      .listResources(connectionId)
+      .filter((resource) => this.policy.evaluateSensitivity(resource.sensitivity, actor).decision !== "deny")
+      .map((resource) => sourceResourceForActor(resource, actor));
+    this.repository.audit(actor.actor, "source_resources.read", connectionId ?? "all", "allow", { returned: resources.length });
+    return this.policy.applyDataPolicies(resources, this.repository.catalog().policies);
+  }
+
+  searchSourceResources(rawRequest: unknown, actor: ActorContext = automationActor) {
+    const resources = this.requireSourceManager()
+      .searchResources(rawRequest)
+      .filter((resource) => this.policy.evaluateSensitivity(resource.sensitivity, actor).decision !== "deny")
+      .map((resource) => ({
+        ...sourceResourceForActor(resource, actor),
+        governance: {
+          ...this.policy.evaluateSensitivity(resource.sensitivity, actor),
+          sensitivity: resource.sensitivity
+        }
+      }));
+    this.repository.audit(actor.actor, "source_resources.search", "resource-registry", "allow", { returned: resources.length });
+    return this.policy.applyDataPolicies(resources, this.repository.catalog().policies);
+  }
+
+  search(rawRequest: SearchRequest, actor: ActorContext = automationActor): SearchResult[] {
     const request = SearchRequestSchema.parse(rawRequest);
     const results = this.planner.search(request);
-    const policies = this.repository.catalog().policies;
-    const filtered = this.policy.applyResultPolicies(results, policies);
-    this.repository.audit("agent", "semantic_search", request.query, "allow", {
+    const catalog = this.repository.catalog();
+    const sources = new Map(this.repository.getSources().map((source) => [source.id, source]));
+    const resources = new Map((this.sourceManager?.listResources() ?? []).map((resource) => [resource.id, resource]));
+    const governed = results.flatMap((result) => {
+      const source = sources.get(result.sourceId);
+      const sensitivity =
+        source && typeof source.metadata.sensitivity === "string" && ["public", "internal", "confidential", "restricted"].includes(source.metadata.sensitivity)
+          ? (source.metadata.sensitivity as "public" | "internal" | "confidential" | "restricted")
+          : "internal";
+      const resourceId = source && typeof source.metadata.resourceId === "string" ? source.metadata.resourceId : null;
+      const resource = resourceId ? resources.get(resourceId) : null;
+      const asset = catalog.assets.find((candidate) => {
+        if (candidate.metadata.resourceId === resourceId || candidate.metadata.sourceResourceId === resourceId) return true;
+        if (!resource || candidate.metadata.connectionId !== resource.connectionId) return false;
+        return candidate.metadata.externalId === resource.externalId || candidate.metadata.sourceResourceExternalId === resource.externalId;
+      });
+      const decision = asset ? this.policy.evaluateAsset(asset, actor) : this.policy.evaluateSensitivity(sensitivity, actor);
+      if (decision.decision === "deny") return [];
+      return [
+        {
+          ...result,
+          governance: {
+            decision: decision.decision,
+            reason: decision.reason,
+            sensitivity: asset?.sensitivity ?? sensitivity,
+            owner: asset?.owner ?? null,
+            freshness: asset?.freshness ?? "unknown",
+            qualityScore: asset?.qualityScore ?? 0.5
+          }
+        }
+      ];
+    });
+    const filtered = this.policy.applyResultPolicies(governed, catalog.policies);
+    this.repository.audit(actor.actor, "semantic_search", request.query, "allow", {
       mode: request.mode,
-      returned: filtered.length
+      returned: filtered.length,
+      denied: results.length - governed.length
     });
     return filtered;
   }
@@ -368,31 +519,33 @@ export class SemanticEngine {
     return this.discoveryAgent.manifest();
   }
 
-  entityLookup(rawRequest: unknown) {
+  entityLookup(rawRequest: unknown, actor: ActorContext = automationActor) {
     const request = EntityLookupRequestSchema.parse(typeof rawRequest === "string" ? { name: rawRequest } : rawRequest);
     const normalized = request.name?.toLowerCase();
-    const graph = this.repository.graphSnapshot();
+    const graph = this.graphForActor(actor);
+    const allowedNodeIds = new Set(graph.nodes.map((node) => node.id));
     const entities = this.repository
       .getEntities()
       .filter((entity) =>
-        request.entityId
+        allowedNodeIds.has(entity.id) &&
+        (request.entityId
           ? entity.id === request.entityId
-          : Boolean(normalized) && (entity.canonicalName.toLowerCase().includes(normalized!) || entity.aliases.some((alias) => alias.toLowerCase().includes(normalized!)))
+          : Boolean(normalized) && (entity.canonicalName.toLowerCase().includes(normalized!) || entity.aliases.some((alias) => alias.toLowerCase().includes(normalized!))))
       )
       .slice(0, request.topK)
       .map((entity) => ({
         ...entity,
         degree: graph.edges.filter((edge) => edge.source === entity.id || edge.target === entity.id).length,
-        evidence: entity.evidenceChunkIds.map((chunkId) => this.getEvidence(chunkId)).filter((item) => item !== null)
+        evidence: entity.evidenceChunkIds.map((chunkId) => this.getEvidence(chunkId, actor)).filter((item) => item !== null)
       }));
-    this.repository.audit("agent", "entity_lookup", request.entityId ?? request.name ?? "unknown", "allow", { returned: entities.length });
+    this.repository.audit(actor.actor, "entity_lookup", request.entityId ?? request.name ?? "unknown", "allow", { returned: entities.length });
     return entities;
   }
 
-  graphNeighbors(rawRequest: unknown, legacyDepth?: number) {
+  graphNeighbors(rawRequest: unknown, legacyDepth?: number, actor: ActorContext = automationActor) {
     const request = GraphNeighborsRequestSchema.parse(typeof rawRequest === "string" ? { entityId: rawRequest, depth: legacyDepth } : rawRequest);
     const { entityId, depth: maxDepth } = request;
-    const graph = this.repository.graphSnapshot();
+    const graph = this.graphForActor(actor);
     const visited = new Set([entityId]);
     const frontier = new Set([entityId]);
     const selectedEdges = new Map<string, (typeof graph.edges)[number]>();
@@ -425,7 +578,7 @@ export class SemanticEngine {
       nodes: graph.nodes.filter((node) => visited.has(node.id)),
       edges: [...selectedEdges.values()]
     };
-    this.repository.audit("agent", "graph_neighbors", entityId, "allow", {
+    this.repository.audit(actor.actor, "graph_neighbors", entityId, "allow", {
       depth: maxDepth,
       nodes: result.nodes.length,
       edges: result.edges.length,
@@ -434,12 +587,12 @@ export class SemanticEngine {
     return result;
   }
 
-  findPaths(rawRequest: unknown, legacyToEntityId?: string, legacyMaxDepth?: number) {
+  findPaths(rawRequest: unknown, legacyToEntityId?: string, legacyMaxDepth?: number, actor: ActorContext = automationActor) {
     const request = FindPathsRequestSchema.parse(
       typeof rawRequest === "string" ? { fromEntityId: rawRequest, toEntityId: legacyToEntityId, maxDepth: legacyMaxDepth } : rawRequest
     );
     const { fromEntityId, toEntityId, maxDepth: boundedDepth } = request;
-    const graph = this.repository.graphSnapshot();
+    const graph = this.graphForActor(actor);
     const queue: Array<{ nodeId: string; path: string[] }> = [{ nodeId: fromEntityId, path: [] }];
     const visited = new Set<string>([fromEntityId]);
     let expansions = 0;
@@ -449,7 +602,7 @@ export class SemanticEngine {
       expansions += 1;
       if (current.nodeId === toEntityId) {
         const path = current.path.map((edgeId) => graph.edges.find((edge) => edge.id === edgeId)).filter((edge) => edge !== undefined);
-        this.repository.audit("agent", "find_paths", `${fromEntityId}->${toEntityId}`, "allow", { maxDepth: boundedDepth, edges: path.length });
+        this.repository.audit(actor.actor, "find_paths", `${fromEntityId}->${toEntityId}`, "allow", { maxDepth: boundedDepth, edges: path.length });
         return path;
       }
       if (current.path.length >= boundedDepth) continue;
@@ -460,7 +613,7 @@ export class SemanticEngine {
         queue.push({ nodeId: nextNode, path: [...current.path, edge.id] });
       }
     }
-    this.repository.audit("agent", "find_paths", `${fromEntityId}->${toEntityId}`, "allow", {
+    this.repository.audit(actor.actor, "find_paths", `${fromEntityId}->${toEntityId}`, "allow", {
       maxDepth: boundedDepth,
       edges: 0,
       expansions,
@@ -469,48 +622,64 @@ export class SemanticEngine {
     return [];
   }
 
-  expandContext(rawInput: unknown) {
+  expandContext(rawInput: unknown, actor: ActorContext = automationActor) {
     const input = ExpandContextRequestSchema.parse(rawInput);
-    const searchResults = input.query ? this.search({ query: input.query, topK: 5, mode: "hybrid" }) : [];
+    const searchResults = input.query ? this.search({ query: input.query, topK: 5, mode: "hybrid" }, actor) : [];
     const chunkIds = new Set([...(input.chunkIds ?? []), ...searchResults.map((result) => result.chunkId)]);
     for (const entityId of input.entityIds ?? []) {
       for (const entity of this.repository.getEntities().filter((candidate) => candidate.id === entityId)) {
         for (const chunkId of entity.evidenceChunkIds) chunkIds.add(chunkId);
       }
     }
-    const evidence = [...chunkIds].slice(0, 25).map((chunkId) => this.getEvidence(chunkId)).filter((item) => item !== null);
+    const evidence = [...chunkIds].slice(0, 25).map((chunkId) => this.getEvidence(chunkId, actor)).filter((item) => item !== null);
     const result = {
       query: input.query ?? null,
       evidence,
       entities: this.repository.getEntities().filter((entity) => evidence.some((item) => entity.evidenceChunkIds.includes(item.chunkId))).slice(0, 25),
       guidance: "Use these evidence spans as citations. If evidence is insufficient, stop instead of guessing."
     };
-    this.repository.audit("agent", "expand_context", input.query ?? "explicit_ids", "allow", { evidence: result.evidence.length, entities: result.entities.length });
+    this.repository.audit(actor.actor, "expand_context", input.query ?? "explicit_ids", "allow", { evidence: result.evidence.length, entities: result.entities.length });
     return result;
   }
 
-  getEvidence(chunkId: string) {
+  getEvidence(chunkId: string, actor: ActorContext = automationActor) {
     const evidence = this.repository.evidence(chunkId);
     if (!evidence) return null;
+    const source = this.repository.getSources().find((candidate) => candidate.id === evidence.sourceId);
+    const sensitivity =
+      source && typeof source.metadata.sensitivity === "string" && ["public", "internal", "confidential", "restricted"].includes(source.metadata.sensitivity)
+        ? (source.metadata.sensitivity as "public" | "internal" | "confidential" | "restricted")
+        : "internal";
+    if (this.policy.evaluateSensitivity(sensitivity, actor).decision === "deny") {
+      this.repository.audit(actor.actor, "evidence.read", chunkId, "deny", { sensitivity });
+      return null;
+    }
     const text = this.policy.applyTextPolicies(evidence.text, this.repository.catalog().policies);
     if (text === null) return null;
+    this.repository.audit(actor.actor, "evidence.read", chunkId, "allow", { sensitivity });
     return { ...evidence, text };
   }
 
-  getSources(): SourceArtifact[] {
+  getSources(actor: ActorContext = automationActor): SourceArtifact[] {
     const policies = this.repository.catalog().policies;
     return this.repository
       .getSources()
       .map((source) => {
-        if (source.ingestionMode !== "full_data") return { ...source, text: "" };
+        const sensitivity =
+          typeof source.metadata.sensitivity === "string" && ["public", "internal", "confidential", "restricted"].includes(source.metadata.sensitivity)
+            ? (source.metadata.sensitivity as "public" | "internal" | "confidential" | "restricted")
+            : "internal";
+        if (this.policy.evaluateSensitivity(sensitivity, actor).decision === "deny") return null;
+        const visibleSource = sourceArtifactForActor(source, actor);
+        if (source.ingestionMode !== "full_data") return { ...visibleSource, text: "" };
         const text = this.policy.applyTextPolicies(source.text, policies);
-        return text === null ? null : { ...source, text };
+        return text === null ? null : { ...visibleSource, text };
       })
       .filter((source): source is SourceArtifact => source !== null);
   }
 
   redactOperationalData<T>(value: T): T {
-    return this.policy.applyDataPolicies(value, this.repository.catalog().policies);
+    return stripOperationalData(this.policy.applyDataPolicies(value, this.repository.catalog().policies)) as T;
   }
 
   explainPermissions(intent: string) {
@@ -531,11 +700,18 @@ export class SemanticEngine {
   private buildBusinessActionPlan(request: BusinessActionRequest): BusinessActionPlan {
     const catalog = this.repository.catalog();
     const evidence = this.search({ query: request.intent, topK: 5, mode: "hybrid" }).slice(0, 4);
+    const connectorResolution = this.sourceManager?.resolveBusinessAction(request);
+    if (connectorResolution?.candidate) {
+      return this.buildConnectorBusinessActionPlan(request, connectorResolution.candidate, connectorResolution.warnings);
+    }
     const actionType = this.resolveBusinessActionType(request.intent);
-    const actionBlocked = actionType === "blocked" || actionType === "unsupported";
     const evidenceMissing = evidence.length === 0;
     const primaryMetric = this.findMetricForIntent(request.intent, catalog);
     const [fromAsset, toAsset] = this.findAssetPairForIntent(request.intent, catalog);
+    const groundingMissing =
+      ((actionType === "align_metric_definition" || actionType === "operational_semantic_update") && !primaryMetric) ||
+      ((actionType === "publish_traceability" || actionType === "operational_semantic_update") && (!fromAsset || !toAsset));
+    const actionBlocked = actionType === "blocked" || actionType === "unsupported" || groundingMissing;
     const governedAssets = [...new Map([fromAsset, toAsset].filter((asset) => asset !== null).map((asset) => [asset.id, asset])).values()];
     const assetDecisions = governedAssets.map((asset) => ({ asset, decision: this.policy.evaluateAsset(asset, automationActor) }));
     const deniedAssets = assetDecisions.filter((item) => item.decision.decision === "deny");
@@ -565,8 +741,10 @@ export class SemanticEngine {
     const approvalTargets = targets.filter((target) => target.autonomy === "approval_required");
     const id = stableId("action_plan", `${request.intent}:${actionType}:${targets.map((target) => target.objectKey).join("|")}`);
     const warnings = [
+      ...(connectorResolution?.warnings ?? []),
       actionType === "blocked" ? "The intent requests a destructive, privileged, secret-related, or access-policy action and is blocked." : null,
       actionType === "unsupported" ? "The requested action is not mapped to a configured business capability." : null,
+      groundingMissing ? "The intent could not be grounded to the required metric and asset identities. No fallback object was selected." : null,
       ...deniedAssets.map(({ asset, decision }) => `Asset ${asset.name} is not authorized for automation: ${decision.reason}`),
       ...reviewAssets.map(({ asset, decision }) => `Asset ${asset.name} requires human review: ${decision.reason}`),
       evidenceMissing ? "No authorized evidence was found. The plan is blocked until relevant evidence is ingested." : null,
@@ -597,6 +775,94 @@ export class SemanticEngine {
     };
   }
 
+  private buildConnectorBusinessActionPlan(
+    request: BusinessActionRequest,
+    candidate: ConnectorActionCandidate,
+    connectorWarnings: string[]
+  ): BusinessActionPlan {
+    const sourceSystem = this.sourceManager?.sourceSystems().find((system) => system.id === candidate.connectionId);
+    const authorizedEvidenceChunkIds = candidate.evidenceChunkIds.filter(
+      (chunkId) => this.getEvidence(chunkId, automationActor) !== null
+    );
+    const evidenceMissing = authorizedEvidenceChunkIds.length === 0;
+    const configuredPolicyResourceIds = Array.isArray(candidate.parameters.policyResourceIds)
+      ? candidate.parameters.policyResourceIds.filter((id): id is string => typeof id === "string")
+      : [];
+    const policyResourceIds = configuredPolicyResourceIds.length > 0
+      ? configuredPolicyResourceIds
+      : candidate.evidenceResourceIds;
+    const evidenceResources = (this.sourceManager?.listResources(candidate.connectionId) ?? [])
+      .filter((resource) => policyResourceIds.includes(resource.id));
+    const deniedResources = evidenceResources.filter(
+      (resource) => this.policy.evaluateSensitivity(resource.sensitivity, automationActor).decision === "deny"
+    );
+    const policyBlocked = deniedResources.length > 0;
+    const risk: RiskLevel = evidenceMissing || policyBlocked ? "blocked" : candidate.risk;
+    const autonomy = risk === "blocked"
+      ? "blocked"
+      : candidate.requiresApproval
+        ? "approval_required"
+        : this.autonomyFor(risk, request);
+    const target: BusinessActionTarget = {
+      stepId: stableId("step", `${candidate.connectionId}:${candidate.technicalOperation}:${candidate.objectKey}`),
+      systemId: candidate.connectionId,
+      systemName: sourceSystem?.name ?? candidate.connectionId,
+      capability: candidate.capability,
+      technicalOperation: candidate.technicalOperation,
+      objectType: candidate.objectType,
+      objectKey: candidate.objectKey,
+      risk,
+      autonomy,
+      status: autonomy === "blocked" ? "blocked" : autonomy === "approval_required" ? "approval_required" : "planned",
+      rationale: candidate.rationale,
+      evidenceChunkIds: authorizedEvidenceChunkIds,
+      parameters: {
+        ...candidate.parameters,
+        before: candidate.before,
+        after: candidate.after,
+        evidenceResourceIds: candidate.evidenceResourceIds
+      },
+      diff: {
+        summary: candidate.title,
+        before: candidate.before ? JSON.stringify(candidate.before, null, 2) : null,
+        after: JSON.stringify(candidate.after, null, 2)
+      }
+    };
+    const targets = [target];
+    const warnings = [
+      ...connectorWarnings,
+      evidenceMissing ? "The connector resolved an action but provided no source evidence; execution is blocked." : null,
+      ...deniedResources.map(
+        (resource) => `Source resource ${resource.qualifiedName} is ${resource.sensitivity} and is not authorized for the agent write boundary.`
+      ),
+      riskRank[request.maxAutonomousRisk] > riskRank[this.maxAutonomousRisk]
+        ? `Requested autonomy ${request.maxAutonomousRisk} exceeds the server ceiling ${this.maxAutonomousRisk}.`
+        : null,
+      autonomy === "approval_required" ? "The authoritative source capability requires approval before execution." : null
+    ].filter((item): item is string => Boolean(item));
+    const status: BusinessActionPlan["status"] = autonomy === "blocked" ? "blocked" : autonomy === "approval_required" ? "approval_required" : "planned";
+    const id = stableId("action_plan", `${request.intent}:${candidate.capability}:${candidate.connectionId}:${candidate.objectKey}`);
+    const actionType = candidate.capability;
+    const fingerprint = sha256(
+      JSON.stringify({ id, intent: request.intent, actionType, mode: request.mode, maxAutonomousRisk: request.maxAutonomousRisk, risk, targets, warnings })
+    );
+    return {
+      id,
+      fingerprint,
+      intent: request.intent,
+      actionType,
+      title: candidate.title,
+      summary: `Resolved one authoritative ${sourceSystem?.kind ?? "source"} capability with version preconditions, an exact diff, and independent readback postconditions.`,
+      mode: request.mode,
+      maxAutonomousRisk: request.maxAutonomousRisk,
+      risk,
+      status,
+      targets,
+      warnings,
+      createdAt: nowIso()
+    };
+  }
+
   private buildBusinessActionTargets(input: {
     request: BusinessActionRequest;
     actionType: string;
@@ -611,7 +877,7 @@ export class SemanticEngine {
   }): BusinessActionTarget[] {
     const sharedRationale = "Selected by the semantic action router from the intent, matching catalog concepts, lineage assets, and available source-system capabilities.";
     const targets: BusinessActionTarget[] = [];
-    const addTarget = (target: Omit<BusinessActionTarget, "autonomy" | "status" | "evidenceChunkIds"> & { risk: RiskLevel }) => {
+    const addTarget = (target: Omit<BusinessActionTarget, "autonomy" | "status" | "evidenceChunkIds" | "parameters"> & { risk: RiskLevel }) => {
       const capability = this.configuredSourceSystems
         .find((system) => system.id === target.systemId)
         ?.capabilities.find((candidate) => candidate.businessCapability === target.capability && candidate.technicalOperation === target.technicalOperation);
@@ -626,7 +892,8 @@ export class SemanticEngine {
         risk,
         autonomy,
         status: autonomy === "blocked" ? "blocked" : autonomy === "approval_required" ? "approval_required" : "planned",
-        evidenceChunkIds: input.evidenceChunkIds
+        evidenceChunkIds: input.evidenceChunkIds,
+        parameters: {}
       });
     };
 
@@ -708,6 +975,9 @@ export class SemanticEngine {
   private executeSourceWrite(plan: BusinessActionPlan, target: BusinessActionTarget, request: BusinessActionRequest, actor: string): SourceWrite {
     const createdAt = nowIso();
     const writeId = stableId("write", `${plan.fingerprint}:${target.stepId}`);
+    const connectorResult = this.sourceManager?.isManagedSystem(target.systemId)
+      ? this.sourceManager.executeAction(target, request)
+      : null;
     if (target.systemId === "source.data-catalog") {
       this.applyCatalogTarget(target, plan, request);
     }
@@ -736,6 +1006,11 @@ export class SemanticEngine {
       autonomy: target.autonomy,
       diff: target.diff,
       evidenceChunkIds: target.evidenceChunkIds,
+      connectorReadback: connectorResult?.readback ?? null,
+      connectorSourceVersion: connectorResult?.sourceVersion ?? null,
+      connectorPostcondition: connectorResult?.postcondition ?? null,
+      externalPostconditionPassed: connectorResult?.postconditionPassed ?? true,
+      connectorMetadata: connectorResult?.metadata ?? {},
       actor,
       appliedAt: createdAt
     };
@@ -757,7 +1032,7 @@ export class SemanticEngine {
       objectType: target.objectType,
       objectKey: target.objectKey,
       operation: target.technicalOperation,
-      status: "executed",
+      status: connectorResult && !connectorResult.postconditionPassed ? "failed" : "executed",
       dryRun: false,
       payload: {
         ...payload,
@@ -792,6 +1067,7 @@ export class SemanticEngine {
           record.payload.intent === request.intent &&
           record.payload.planId === plan.id &&
           record.payload.expectedHash === write.payload.expectedHash &&
+          record.payload.externalPostconditionPassed !== false &&
           sha256(JSON.stringify(observedRecord)) === write.payload.expectedHash
       );
       return {
@@ -974,23 +1250,44 @@ export class SemanticEngine {
 
   private findMetricForIntent(intent: string, catalog: CatalogSnapshot) {
     const normalized = this.normalizedTerms(intent);
-    return (
-      catalog.metrics.find((metric) => this.hasTermOverlap(normalized, `${metric.name} ${metric.label} ${metric.description}`)) ??
-      catalog.metrics[0] ??
-      null
-    );
+    return catalog.metrics.find((metric) => this.hasTermOverlap(normalized, `${metric.name} ${metric.label} ${metric.description}`)) ?? null;
   }
 
   private findAssetPairForIntent(intent: string, catalog: CatalogSnapshot) {
     const normalized = this.normalizedTerms(intent);
     const matchedAssets = catalog.assets.filter((asset) => this.hasTermOverlap(normalized, `${asset.name} ${asset.description} ${asset.kind}`));
-    const pipeline = matchedAssets.find((asset) => asset.kind === "pipeline") ?? catalog.assets.find((asset) => asset.kind === "pipeline") ?? matchedAssets[0] ?? catalog.assets[0] ?? null;
-    const dataset = matchedAssets.find((asset) => asset.kind === "dataset" || asset.kind === "table") ?? catalog.assets.find((asset) => asset.kind === "dataset" || asset.kind === "table") ?? matchedAssets[1] ?? catalog.assets[1] ?? pipeline;
+    const pipeline = matchedAssets.find((asset) => asset.kind === "pipeline") ?? null;
+    const dataset = matchedAssets.find((asset) => asset.kind === "dataset" || asset.kind === "table") ?? null;
     return [pipeline, dataset] as const;
   }
 
   private normalizedTerms(value: string): Set<string> {
-    return new Set(value.toLowerCase().replace(/[_-]+/g, " ").split(/\W+/).filter((term) => term.length > 2));
+    const genericTerms = new Set([
+      "align",
+      "change",
+      "contract",
+      "data",
+      "definition",
+      "metric",
+      "publish",
+      "rate",
+      "semantic",
+      "source",
+      "system",
+      "update",
+      "with",
+      "across",
+      "from",
+      "into",
+      "then"
+    ]);
+    return new Set(
+      value
+        .toLowerCase()
+        .replace(/[_-]+/g, " ")
+        .split(/\W+/)
+        .filter((term) => term.length > 2 && !genericTerms.has(term))
+    );
   }
 
   private hasTermOverlap(terms: Set<string>, value: string): boolean {
@@ -1094,6 +1391,13 @@ export class SemanticEngine {
     };
   }
 
+  private requireSourceManager(): SourceManager {
+    if (!this.sourceManager) {
+      throw new DomainError("SOURCE_REGISTRY_UNAVAILABLE", "The source connection registry is not configured in this runtime.", 503);
+    }
+    return this.sourceManager;
+  }
+
   private planIngestion(rawRequest: unknown): IngestionPlan {
     const request = IngestRequestSchema.parse(rawRequest);
     if (!this.parser.supports(request.mimeType)) {
@@ -1187,4 +1491,34 @@ export class SemanticEngine {
     this.repository.saveEntities([entity]);
     return entity;
   }
+}
+
+const OPERATIONAL_PATH_KEYS = new Set(["databasePath", "repositoryPath", "rootPath", "modelPath", "resolvedPath"]);
+
+function sourceResourceForActor(resource: SourceResource, actor: ActorContext): SourceResource {
+  if (actor.roles.includes("semantic-operator")) return resource;
+  return {
+    ...resource,
+    uri: `semantic-junkyard://resource/${encodeURIComponent(resource.id)}`,
+    metadata: stripOperationalData(resource.metadata) as Record<string, unknown>
+  };
+}
+
+function sourceArtifactForActor(source: SourceArtifact, actor: ActorContext): SourceArtifact {
+  if (actor.roles.includes("semantic-operator")) return source;
+  return {
+    ...source,
+    uri: `semantic-junkyard://source/${encodeURIComponent(source.id)}`,
+    metadata: stripOperationalData(source.metadata) as Record<string, unknown>
+  };
+}
+
+function stripOperationalData(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripOperationalData);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !OPERATIONAL_PATH_KEYS.has(key))
+      .map(([key, item]) => [key, stripOperationalData(item)])
+  );
 }

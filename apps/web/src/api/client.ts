@@ -1,35 +1,137 @@
-import type { AppSnapshot, CuratedRelationReport, IngestPreviewReport, SearchEnvelope } from "../types/app";
-import { createJsonRequester, resolveApiUrl } from "@semantic-junkyard/shared";
-import type { BusinessActionApproval, BusinessActionPlan, BusinessActionRun, CatalogSnapshot, DiscoveryRun, GraphSnapshot, IngestResponse, ProviderConfig, SourceSystem, SourceSystemRecord, SystemStatus } from "@semantic-junkyard/shared";
+import type { AppSnapshot, CuratedRelationReport, IngestPreviewReport, SearchEnvelope, SnapshotSurface, SourceResourceSearchEnvelope } from "../types/app";
+import { createJsonRequester, resolveApiUrl, retryApiStartup } from "@semantic-junkyard/shared";
+import type {
+  BusinessActionApproval,
+  BusinessActionPlan,
+  BusinessActionRun,
+  CatalogSnapshot,
+  CreateSourceConnectionRequest,
+  DiscoveryRun,
+  GraphSnapshot,
+  IngestResponse,
+  ProviderConfig,
+  SemanticProposal,
+  SemanticProposalDecisionRequest,
+  SourceConnection,
+  SourceConnectionTestResult,
+  SourceResource,
+  SourceSyncRun,
+  SyncSourceConnectionRequest,
+  SourceSystem,
+  SourceSystemRecord,
+  SystemStatus
+} from "@semantic-junkyard/shared";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
 const request = createJsonRequester(API_BASE);
+const longRequest = createJsonRequester(API_BASE, 150_000);
 
 export function apiHref(path: string): string {
   return resolveApiUrl(API_BASE, path);
 }
 
 export async function loadSnapshot(): Promise<AppSnapshot> {
-  const [status, catalog, graph] = await Promise.all([
-    request<SystemStatus>("/api/status"),
-    request<CatalogSnapshot>("/api/catalog"),
-    request<GraphSnapshot>("/api/graph")
-  ]);
+  return retryApiStartup(loadSnapshotOnce);
+}
+
+async function loadSnapshotOnce(): Promise<AppSnapshot> {
   const degraded: string[] = [];
-  const optional = <T>(label: string, promise: Promise<T>, fallback: T) =>
-    promise.catch(() => {
+  const surfaceErrors: AppSnapshot["surfaceErrors"] = {};
+  const snapshotRequest = <T>(path: string) => request<T>(path);
+  const optional = <T>(surface: SnapshotSurface, label: string, promise: Promise<T>, fallback: T) =>
+    promise.catch((error: unknown) => {
       degraded.push(label);
+      surfaceErrors[surface] = error instanceof Error ? error.message : `${label} could not be loaded.`;
       return fallback;
     });
-  const [discoveryRuns, manifest, provider, mcp, actionRuns, sourceSystemsEnvelope] = await Promise.all([
-    optional("discovery runs", request<DiscoveryRun[]>("/api/discovery/runs"), []),
-    optional<AppSnapshot["manifest"]>("agent manifest", request<NonNullable<AppSnapshot["manifest"]>>("/api/agent/manifest"), null),
-    optional<ProviderConfig | null>("provider", request<ProviderConfig>("/api/providers"), null),
-    optional<AppSnapshot["mcp"]>("MCP capabilities", request<NonNullable<AppSnapshot["mcp"]>>("/api/mcp/capabilities"), null),
-    optional("business action runs", request<BusinessActionRun[]>("/api/business/actions/runs"), []),
-    optional("source systems", request<{ systems: SourceSystem[]; records: SourceSystemRecord[] }>("/api/source-systems"), { systems: [], records: [] })
+  const required = <T>(label: string, promise: Promise<T>) =>
+    promise.catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "Unknown API error.";
+      throw new Error(`${label} unavailable: ${message}`, { cause: error });
+    });
+  const [status, catalog, graph, discoveryRuns, manifest, provider, mcp, actionRuns, sourceSystemsEnvelope, sourceConnections, sourceResources, sourceSyncRuns, semanticProposals] = await Promise.all([
+    required("System status", snapshotRequest<SystemStatus>("/api/status")),
+    required("Catalog", snapshotRequest<CatalogSnapshot>("/api/catalog")),
+    required("Graph", snapshotRequest<GraphSnapshot>("/api/graph")),
+    optional("discoveryRuns", "discovery runs", snapshotRequest<DiscoveryRun[]>("/api/discovery/runs"), []),
+    optional<AppSnapshot["manifest"]>("manifest", "agent manifest", snapshotRequest<NonNullable<AppSnapshot["manifest"]>>("/api/agent/manifest"), null),
+    optional<ProviderConfig | null>("provider", "provider", snapshotRequest<ProviderConfig>("/api/providers"), null),
+    optional<AppSnapshot["mcp"]>("mcp", "MCP capabilities", snapshotRequest<NonNullable<AppSnapshot["mcp"]>>("/api/mcp/capabilities"), null),
+    optional("actionRuns", "business action runs", snapshotRequest<BusinessActionRun[]>("/api/business/actions/runs"), []),
+    optional("sourceSystems", "source systems", snapshotRequest<{ systems: SourceSystem[]; records: SourceSystemRecord[] }>("/api/source-systems"), { systems: [], records: [] }),
+    optional("sourceConnections", "source connections", snapshotRequest<SourceConnection[]>("/api/source-connections"), []),
+    optional("sourceResources", "source resources", snapshotRequest<SourceResource[]>("/api/source-resources"), []),
+    optional("sourceSyncRuns", "source sync runs", snapshotRequest<SourceSyncRun[]>("/api/source-sync-runs"), []),
+    optional("semanticProposals", "semantic proposals", snapshotRequest<SemanticProposal[]>("/api/semantic/proposals"), [])
   ]);
-  return { status, catalog, graph, discoveryRuns, manifest, provider, mcp, actionRuns, sourceSystems: sourceSystemsEnvelope.systems, sourceRecords: sourceSystemsEnvelope.records, degraded };
+  return {
+    status,
+    catalog,
+    graph,
+    discoveryRuns,
+    manifest,
+    provider,
+    mcp,
+    actionRuns,
+    sourceSystems: sourceSystemsEnvelope.systems,
+    sourceRecords: sourceSystemsEnvelope.records,
+    sourceConnections,
+    sourceResources,
+    sourceSyncRuns,
+    semanticProposals,
+    degraded,
+    surfaceErrors
+  };
+}
+
+export async function createSourceConnection(input: CreateSourceConnectionRequest) {
+  return request<SourceConnection>("/api/source-connections", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function testSourceConnection(connectionId: string) {
+  return request<SourceConnectionTestResult>(`/api/source-connections/${encodeURIComponent(connectionId)}/test`, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
+export async function syncSourceConnection(connectionId: string, input: SyncSourceConnectionRequest) {
+  return longRequest<SourceSyncRun>(`/api/source-connections/${encodeURIComponent(connectionId)}/sync`, {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function deleteSourceConnection(connectionId: string): Promise<void> {
+  const response = await fetch(apiHref(`/api/source-connections/${encodeURIComponent(connectionId)}`), {
+    method: "DELETE",
+    headers: { Accept: "application/json" }
+  });
+  if (response.ok) return;
+  const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+  throw new Error(payload?.error ?? `Connection deletion failed with status ${response.status}.`);
+}
+
+export async function decideSemanticProposal(proposalId: string, input: SemanticProposalDecisionRequest) {
+  return request<SemanticProposal>(`/api/semantic/proposals/${encodeURIComponent(proposalId)}/decision`, {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function searchSourceResources(input: { query: string; connectionId?: string; topK?: number }) {
+  return request<SourceResourceSearchEnvelope>("/api/tools/source_resource_search", {
+    method: "POST",
+    body: JSON.stringify({
+      query: input.query,
+      connectionId: input.connectionId,
+      kinds: [],
+      topK: input.topK ?? 12
+    })
+  });
 }
 
 export async function ingestText(input: { name: string; text: string; mimeType: string; ingestionMode: "full_data" | "metadata_only" | "external_reference" }) {

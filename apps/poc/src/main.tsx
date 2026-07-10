@@ -1,143 +1,143 @@
 import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import {
-  Activity,
   AlertTriangle,
-  Bot,
+  Boxes,
   Braces,
   CheckCircle2,
+  ChevronRight,
+  CircleStop,
   Database,
   FileSearch,
-  GitPullRequest,
   Loader2,
+  MonitorCog,
   Network,
-  Play,
   RefreshCw,
   Route,
   Search,
   Send,
   ShieldCheck,
-  Workflow,
-  Zap
+  Waypoints,
+  Workflow
 } from "lucide-react";
-import type { BusinessActionPlan, BusinessActionRun, ContextEnvelope, GraphSnapshot, PocAgentReport, PocSnapshot, SearchResult, ToolProvider } from "./types/app";
 import {
-  apiHref,
-  entityLookup,
-  executeBusinessAction,
-  expandContext,
-  explainPermissions,
-  graphNeighbors,
-  loadPocSnapshot,
-  planBusinessAction,
-  runDiscovery,
-  runLocalAgentPoc,
-  semanticSearch
-} from "./api/client";
+  runProductConversation,
+  type ConversationArtifact,
+  type ConversationEvent,
+  type ConversationMode,
+  type ConversationStatus,
+  type MessageKind,
+  type NarrationEvent,
+  type ToolEvent
+} from "./agent/conversation";
+import { apiHref, loadPocSnapshot } from "./api/client";
+import type {
+  AgentIntentPlan,
+  BusinessActionPlan,
+  BusinessActionRun,
+  ContextEnvelope,
+  EvidenceSpan,
+  GraphSnapshot,
+  IntentInterpreterProvider,
+  PermissionEnvelope,
+  PocSnapshot,
+  SearchResult,
+  SourceResource
+} from "./types/app";
 import "./styles.css";
 
-const PRODUCT_APP_URL = import.meta.env.VITE_PRODUCT_URL || (import.meta.env.DEV ? "http://localhost:5173" : "/");
-const DEFAULT_INTENT = "Align Failed Payment Rate definition across Finance and Billing, then make it reflected in source systems.";
+const PRODUCT_APP_URL = import.meta.env.VITE_PRODUCT_URL || "http://localhost:5173";
+const POC_APP_URL = import.meta.env.VITE_POC_URL || globalThis.location.href;
+const DEFAULT_REQUEST = "Set order ORD-1001 status to dispatched";
 
-type MessageKind = "user" | "assistant" | "tool" | "audit" | "write" | "error";
-type ToolStatus = "running" | "completed" | "failed";
-
-interface ConversationMessage {
+interface ConversationMessage extends NarrationEvent {
   id: string;
-  kind: MessageKind;
-  title: string;
-  body: string;
   at: string;
-}
-
-interface ToolEvent {
-  id: string;
-  name: string;
-  endpoint: string;
-  status: ToolStatus;
-  summary: string;
-  startedAt: string;
-  completedAt?: string;
 }
 
 function App() {
   const [snapshot, setSnapshot] = useState<PocSnapshot | null>(null);
-  const [input, setInput] = useState(DEFAULT_INTENT);
-  const [activeIntent, setActiveIntent] = useState(DEFAULT_INTENT);
+  const [snapshotState, setSnapshotState] = useState<"loading" | "ready" | "error">("loading");
+  const [snapshotBusy, setSnapshotBusy] = useState(false);
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  const [input, setInput] = useState(DEFAULT_REQUEST);
+  const [activeRequest, setActiveRequest] = useState(DEFAULT_REQUEST);
+  const [provider, setProvider] = useState<IntentInterpreterProvider>("local-huggingface");
+  const [conversationMode, setConversationMode] = useState<ConversationMode>("autonomous");
+  const [conversationStatus, setConversationStatus] = useState<ConversationStatus>("idle");
+  const [conversationError, setConversationError] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([
     {
       id: "welcome",
       kind: "assistant",
-      title: "Ask Semantic Junkyard",
-      body: "Ask for a business outcome. I will call the product APIs, show each tool call, explain what happened, write through the gateway when policy allows it, and reread the semantic layer before claiming completion.",
+      title: "External product client ready",
+      body: "Each turn begins with the selected product intent interpreter, then follows governed source, discovery, evidence, planning, and writeback APIs as required.",
       at: new Date().toLocaleTimeString()
     }
   ]);
   const [toolEvents, setToolEvents] = useState<ToolEvent[]>([]);
+  const [intentPlan, setIntentPlan] = useState<AgentIntentPlan | null>(null);
+  const [resourceResults, setResourceResults] = useState<SourceResource[]>([]);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [contextPack, setContextPack] = useState<ContextEnvelope | null>(null);
   const [graph, setGraph] = useState<GraphSnapshot | null>(null);
+  const [initialContext, setInitialContext] = useState<ContextEnvelope | null>(null);
+  const [refreshedContext, setRefreshedContext] = useState<ContextEnvelope | null>(null);
+  const [initialEvidence, setInitialEvidence] = useState<EvidenceSpan | null>(null);
+  const [refreshedEvidence, setRefreshedEvidence] = useState<EvidenceSpan | null>(null);
+  const [permissions, setPermissions] = useState<PermissionEnvelope | null>(null);
   const [plan, setPlan] = useState<BusinessActionPlan | null>(null);
   const [run, setRun] = useState<BusinessActionRun | null>(null);
-  const [pocReport, setPocReport] = useState<PocAgentReport | null>(null);
   const [discoveryTitle, setDiscoveryTitle] = useState("waiting");
-  const [provider, setProvider] = useState<ToolProvider>("local-huggingface");
-  const [conversationMode, setConversationMode] = useState<"read_only" | "plan_only" | "autonomous">("autonomous");
-  const [conversationBusy, setConversationBusy] = useState(false);
-  const [agentBusy, setAgentBusy] = useState(false);
-  const [snapshotBusy, setSnapshotBusy] = useState(false);
-  const [snapshotState, setSnapshotState] = useState<"loading" | "ready" | "error">("loading");
-  const [error, setError] = useState<string | null>(null);
   const messageThreadRef = useRef<HTMLDivElement | null>(null);
 
-  const displayedRun = run;
-  const displayedPlan = plan ?? displayedRun?.plan ?? null;
-  const reflectedWrites = displayedRun?.reflections.filter((reflection) => reflection.status === "verified").length ?? 0;
-  const semanticChunks = displayedRun?.semanticUpdates.reduce((total, update) => total + update.chunkIds.length, 0) ?? 0;
-  const latestToolStatus = toolEvents.some((event) => event.status === "running") ? "running" : "completed";
-  const topEvidence = searchResults[0];
-  const evidenceItems = useMemo(() => {
-    if (contextPack) {
-      return contextPack.evidence.slice(0, 4).map((item) => ({
-        id: item.chunkId,
-        sourceName: item.sourceName,
-        text: item.text
-      }));
-    }
-    return searchResults.slice(0, 4).map((item) => ({
-      id: item.chunkId,
-      sourceName: item.sourceName,
-      text: item.summary
-    }));
-  }, [contextPack, searchResults]);
-
-  const statusTiles = useMemo(
-    () => [
-      { label: "Source systems", value: snapshot?.sourceSystems.length ?? 0 },
-      { label: "Reflected records", value: snapshot?.sourceRecords.length ?? 0 },
-      { label: "Action runs", value: snapshot?.actionRuns.length ?? 0 },
-      { label: "Semantic chunks", value: snapshot?.status.chunks ?? 0 }
-    ],
-    [snapshot]
-  );
+  const conversationBusy = conversationStatus === "running";
+  const displayedPlan = plan ?? run?.plan ?? null;
+  const evidenceContext = refreshedContext ?? initialContext;
+  const evidenceItems = evidenceContext?.evidence.slice(0, 5) ?? searchResults.slice(0, 5).map((result) => ({
+    chunkId: result.chunkId,
+    sourceId: result.sourceId,
+    sourceName: result.sourceName,
+    text: result.summary,
+    metadata: {}
+  }));
+  const verifiedReflections = run?.reflections.filter((reflection) => reflection.status === "verified").length ?? 0;
+  const refreshedChunks = run?.semanticUpdates.reduce((total, update) => total + update.chunkIds.length, 0) ?? 0;
+  const registryItems = resourceResults.length > 0 ? resourceResults : snapshot?.sourceResources.slice(0, 8) ?? [];
+  const reflectedDetails = useMemo(() => {
+    if (!run) return [];
+    return run.writes.map((write) => {
+      const reflection = run.reflections.find((candidate) => candidate.writeId === write.id);
+      const record = snapshot?.sourceRecords.find((candidate) => candidate.id === reflection?.sourceRecordId);
+      return {
+        id: write.id,
+        target: `${write.systemName} / ${write.objectType}:${write.objectKey}`,
+        connectorVersion: formatValue(write.payload.connectorSourceVersion) ?? formatValue(write.payload.version) ?? "unreported",
+        reflectionVersion: record?.version ?? null,
+        postcondition: formatValue(write.payload.connectorPostcondition) ?? "Postcondition not reported",
+        passed: write.payload.externalPostconditionPassed === true && reflection?.status === "verified",
+        readback: write.payload.connectorReadback,
+        evidenceChunkId: reflection?.evidenceChunkId ?? null
+      };
+    });
+  }, [run, snapshot?.sourceRecords]);
 
   async function refreshSnapshot() {
     setSnapshotBusy(true);
     setSnapshotState("loading");
-    setError(null);
+    setSnapshotError(null);
     try {
       setSnapshot(await loadPocSnapshot());
       setSnapshotState("ready");
-    } catch (err) {
+    } catch (error) {
       setSnapshotState("error");
-      setError(err instanceof Error ? err.message : "Snapshot refresh failed");
+      setSnapshotError(error instanceof Error ? error.message : "Product snapshot refresh failed");
     } finally {
       setSnapshotBusy(false);
     }
   }
 
   useEffect(() => {
-    refreshSnapshot();
+    void refreshSnapshot();
   }, []);
 
   useEffect(() => {
@@ -147,336 +147,170 @@ function App() {
     });
   }, [messages.length]);
 
-  function pushMessage(message: Omit<ConversationMessage, "id" | "at">) {
+  function pushMessage(message: NarrationEvent) {
     setMessages((current) => [
       ...current,
       {
         ...message,
-        id: uid("msg"),
+        id: globalThis.crypto.randomUUID(),
         at: new Date().toLocaleTimeString()
       }
     ]);
   }
 
-  async function auditedTool<T>(input: {
-    name: string;
-    endpoint: string;
-    summary: string;
-    run: () => Promise<T>;
-    describe: (result: T) => string;
-  }): Promise<T> {
-    const id = uid("tool");
-    const startedAt = new Date().toLocaleTimeString();
-    setToolEvents((current) => [
-      {
-        id,
-        name: input.name,
-        endpoint: input.endpoint,
-        status: "running",
-        summary: input.summary,
-        startedAt
-      },
-      ...current
-    ]);
-    pushMessage({
-      kind: "tool",
-      title: input.name,
-      body: `${input.summary} Endpoint: ${input.endpoint}.`
-    });
-
-    try {
-      const result = await input.run();
-      const completedAt = new Date().toLocaleTimeString();
-      const summary = input.describe(result);
-      setToolEvents((current) => current.map((event) => (event.id === id ? { ...event, status: "completed", summary, completedAt } : event)));
-      pushMessage({
-        kind: "audit",
-        title: `${input.name} completed`,
-        body: summary
-      });
-      return result;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : `${input.name} failed`;
-      setToolEvents((current) => current.map((event) => (event.id === id ? { ...event, status: "failed", summary: message, completedAt: new Date().toLocaleTimeString() } : event)));
-      pushMessage({
-        kind: "error",
-        title: `${input.name} failed`,
-        body: message
-      });
-      throw err;
+  function applyArtifact(artifact: ConversationArtifact) {
+    switch (artifact.type) {
+      case "intent":
+        setIntentPlan(artifact.value);
+        break;
+      case "resources":
+        setResourceResults(artifact.value);
+        break;
+      case "discovery":
+        setDiscoveryTitle(artifact.value.events.at(-1)?.title ?? artifact.value.status);
+        break;
+      case "search":
+        setSearchResults(artifact.value);
+        break;
+      case "graph":
+        setGraph(artifact.value);
+        break;
+      case "context":
+        if (artifact.phase === "refreshed") setRefreshedContext(artifact.value);
+        else setInitialContext(artifact.value);
+        break;
+      case "evidence":
+        if (artifact.phase === "refreshed") setRefreshedEvidence(artifact.value);
+        else setInitialEvidence(artifact.value);
+        break;
+      case "permissions":
+        setPermissions(artifact.value);
+        break;
+      case "plan":
+        setPlan(artifact.value);
+        break;
+      case "run":
+        setRun(artifact.value);
+        setPlan(artifact.value.plan);
+        setSnapshot((current) =>
+          current
+            ? {
+                ...current,
+                actionRuns: [artifact.value, ...current.actionRuns.filter((candidate) => candidate.id !== artifact.value.id)]
+              }
+            : current
+        );
+        break;
+      case "source_state":
+        setSnapshot((current) =>
+          current
+            ? {
+                ...current,
+                sourceSystems: artifact.value.systems,
+                sourceRecords: artifact.value.records
+              }
+            : current
+        );
+        break;
+      case "entities":
+        break;
     }
   }
 
-  async function runConversation() {
-    const intent = input.trim();
-    if (!intent || conversationBusy || agentBusy) return;
+  function handleConversationEvent(event: ConversationEvent) {
+    switch (event.type) {
+      case "narration":
+        pushMessage(event.value);
+        break;
+      case "tool_started":
+        setToolEvents((current) => [event.value, ...current]);
+        break;
+      case "tool_finished":
+        setToolEvents((current) => current.map((item) => (item.id === event.value.id ? event.value : item)));
+        break;
+      case "artifact":
+        applyArtifact(event.value);
+        break;
+      case "status":
+        setConversationStatus(event.value);
+        break;
+    }
+  }
 
-    setConversationBusy(true);
-    setError(null);
-    setActiveIntent(intent);
+  function resetConversationArtifacts() {
+    setToolEvents([]);
+    setIntentPlan(null);
+    setResourceResults([]);
+    setSearchResults([]);
+    setGraph(null);
+    setInitialContext(null);
+    setRefreshedContext(null);
+    setInitialEvidence(null);
+    setRefreshedEvidence(null);
+    setPermissions(null);
     setPlan(null);
     setRun(null);
-    setGraph(null);
-    setContextPack(null);
-    setSearchResults([]);
-    pushMessage({ kind: "user", title: "Business request", body: intent });
-    pushMessage({
-      kind: "assistant",
-      title: "I am using the product behind the scenes",
-      body:
-        conversationMode === "read_only"
-          ? "I will check permissions, run discovery, and assemble evidence. This mode will not plan or write to source systems."
-          : conversationMode === "plan_only"
-            ? "I will check permissions, assemble evidence, and return an exact source-system plan for review without executing it."
-            : "I will first check autonomy and evidence, then plan source-system writes, execute only if policy allows it, and finally reread the reflected semantic state."
-    });
+    setDiscoveryTitle("waiting");
+  }
+
+  async function submitConversation() {
+    const message = input.trim();
+    if (!message || conversationBusy) return;
+
+    resetConversationArtifacts();
+    setConversationError(null);
+    setConversationStatus("running");
+    setActiveRequest(message);
+    pushMessage({ kind: "user", title: "Request", body: message });
 
     try {
-      const permissions = await auditedTool({
-        name: "explain_permissions",
-        endpoint: "POST /api/tools/explain_permissions",
-        summary: "Checking what an external agent may do before it touches data or source systems.",
-        run: () => explainPermissions(intent),
-        describe: (result) => `${result.decision}. Next safe step: ${result.safeNextSteps[0] ?? "semantic search"}.`
-      });
-      pushMessage({
-        kind: "assistant",
-        title: "Autonomy boundary",
-        body: `I can continue because the manifest allows read access, planning, and configured low/medium-risk writeback. Stop conditions remain active: ${permissions.manifest.stopConditions.slice(0, 2).join("; ")}.`
-      });
-
-      const discovery = await auditedTool({
-        name: "run_discovery",
-        endpoint: "POST /api/discovery/run",
-        summary: "Starting product-side discovery so the request is not handled as a blind command.",
-        run: () => runDiscovery(`PoC conversation discovery: ${intent}`),
-        describe: (result) => `${result.events.length} discovery events recorded; run status ${result.status}.`
-      });
-      setDiscoveryTitle(discovery.events.at(-1)?.title ?? discovery.status);
-
-      const search = await auditedTool({
-        name: "semantic_search",
-        endpoint: "POST /api/tools/semantic_search",
-        summary: "Searching lexical, vector, and graph signals for evidence behind the business request.",
-        run: () => semanticSearch(intent, "hybrid", 8),
-        describe: (result) => `${result.results.length} evidence candidates returned. Top source: ${result.results[0]?.sourceName ?? "none"}.`
-      });
-      setSearchResults(search.results);
-
-      const groundingEntityId = search.results.flatMap((result) => result.entityIds)[0];
-      let primaryEntity: { id: string; canonicalName: string; degree: number } | undefined;
-      if (groundingEntityId) {
-        const entityResult = await auditedTool({
-          name: "entity_lookup",
-          endpoint: "POST /api/tools/entity_lookup",
-          summary: `Grounding the request with entity ID '${groundingEntityId}' returned by semantic search.`,
-          run: () => entityLookup({ entityId: groundingEntityId, topK: 1 }),
-          describe: (result) => `${result.entities.length} entity candidate resolved. ${result.entities[0] ? `${result.entities[0].canonicalName} has graph degree ${result.entities[0].degree}.` : "No entity was resolved."}`
-        });
-        primaryEntity = entityResult.entities[0];
-      } else {
-        pushMessage({
-          kind: "audit",
-          title: "Graph grounding skipped",
-          body: "Semantic search returned no canonical entity IDs for this domain. The workflow will not substitute a finance-demo entity."
-        });
-      }
-
-      if (primaryEntity) {
-        const neighbors = await auditedTool({
-          name: "graph_neighbors",
-          endpoint: "POST /api/tools/graph_neighbors",
-          summary: `Reading bounded graph context around ${primaryEntity.canonicalName}.`,
-          run: () => graphNeighbors(primaryEntity.id, 1),
-          describe: (result) => `${result.nodes.length} nodes and ${result.edges.length} edges returned inside the approved graph boundary.`
-        });
-        setGraph(neighbors);
-      }
-
-      const context = await auditedTool({
-        name: "expand_context",
-        endpoint: "POST /api/tools/expand_context",
-        summary: "Building an evidence pack before any answer or writeback.",
-        run: () => expandContext({ query: intent, entityIds: primaryEntity ? [primaryEntity.id] : [] }),
-        describe: (result) => `${result.evidence.length} evidence spans assembled. Guidance: ${result.guidance}`
-      });
-      setContextPack(context);
-
-      if (conversationMode === "read_only") {
-        pushMessage({
-          kind: "assistant",
-          title: "Read-only discovery complete",
-          body: `${search.results.length} search results and ${context.evidence.length} policy-filtered evidence spans were collected. No business action was planned or executed.`
-        });
-        return;
-      }
-
-      const nextPlan = await auditedTool({
-        name: "business_action_plan",
-        endpoint: "POST /api/business/actions/plan",
-        summary: "Translating the business request into source-system targets, diffs, risk, and autonomy.",
-        run: () => planBusinessAction({ intent, mode: "autonomous", maxAutonomousRisk: "medium" }),
-        describe: (result) => `${result.targets.length} source targets planned; risk ${result.risk}; status ${result.status}.`
-      });
-      setPlan(nextPlan);
-      pushMessage({
-        kind: "assistant",
-        title: "Plan explanation",
-        body: `${nextPlan.title}. I will target ${nextPlan.targets.map((target) => target.systemName).join(", ")}. ${nextPlan.warnings.length > 0 ? `Warnings: ${nextPlan.warnings.join(" ")}` : "No approval warning was raised for the configured autonomy policy."}`
-      });
-
-      if (conversationMode === "plan_only") {
-        pushMessage({
-          kind: "assistant",
-          title: "Plan ready for review",
-          body: `The exact plan fingerprint is ${nextPlan.fingerprint.slice(0, 12)}. No source write was executed in plan-only mode.`
-        });
-        return;
-      }
-
-      if (nextPlan.status === "approval_required" || nextPlan.status === "blocked") {
-        pushMessage({
-          kind: "audit",
-          title: "Execution paused",
-          body: `The product returned ${nextPlan.status}, so the PoC stopped before writing. ${nextPlan.warnings.join(" ")}`
-        });
-        return;
-      }
-
-      const nextRun = await auditedTool({
-        name: "business_action_execute",
-        endpoint: "POST /api/business/actions/execute",
-        summary: "Executing through the writeback gateway and waiting for source reflection.",
-        run: () => executeBusinessAction({ plan: nextPlan, idempotencyKey: `${nextPlan.id}:${nextPlan.fingerprint}` }),
-        describe: (result) => `${result.writes.length} writes executed; ${result.reflections.filter((reflection) => reflection.status === "verified").length}/${result.reflections.length} reflections verified; status ${result.status}.`
-      });
-      setRun(nextRun);
-      setPlan(nextRun.plan);
-      if (nextRun.writes.length > 0) {
-        pushMessage({
-          kind: "write",
-          title: "Source writes returned",
-          body: `The writeback gateway touched ${nextRun.writes.map((write) => `${write.systemName}:${write.objectType}`).join(", ")}. Completion still depends on verified readback.`
-        });
-      }
-
-      const refreshed = await auditedTool({
-        name: "refresh_product_snapshot",
-        endpoint: "GET /api/status + /api/source-systems + /api/business/actions/runs",
-        summary: "Rereading product state after source writeback.",
-        run: () => loadPocSnapshot(),
-        describe: (result) => `${result.sourceRecords.length} source records are visible; latest action runs: ${result.actionRuns.length}.`
-      });
-      setSnapshot(refreshed);
-
-      if (nextRun.status !== "verified") {
-        pushMessage({
-          kind: nextRun.status === "reflected" ? "error" : "audit",
-          title: `Stopped on ${nextRun.status}`,
-          body: `${nextRun.reflections.filter((reflection) => reflection.status === "verified").length}/${nextRun.reflections.length} reflections verified. The PoC will not claim completion or treat unverified readback as current semantic truth.`
-        });
-        return;
-      }
-
-      const reflected = await auditedTool({
-        name: "semantic_search",
-        endpoint: "POST /api/tools/semantic_search",
-        summary: "Searching for reflected evidence created from the source reread.",
-        run: () => semanticSearch(`Business Action Reflection ${intent}`, "hybrid", 6),
-        describe: (result) => `${result.results.length} reflected evidence candidates returned. Top source: ${result.results[0]?.sourceName ?? "none"}.`
-      });
-      setSearchResults(reflected.results);
-      const reflectedContext = await auditedTool({
-        name: "expand_context",
-        endpoint: "POST /api/tools/expand_context",
-        summary: "Opening the post-write evidence pack so the UI shows current reflected source state.",
-        run: () =>
-          expandContext({
-            query: `Business Action Reflection ${intent}`,
-            chunkIds: reflected.results.slice(0, 6).map((result) => result.chunkId)
-          }),
-        describe: (result) => `${result.evidence.length} post-write evidence spans assembled from reflected source state.`
-      });
-      setContextPack(reflectedContext);
-
-      const refreshedChunks = nextRun.semanticUpdates.reduce((total, update) => total + update.chunkIds.length, 0);
-      pushMessage({
-        kind: "assistant",
-        title: "Completed with reflected readback",
-        body: `${nextRun.status} run complete. ${nextRun.writes.length} writes, ${nextRun.reflections.filter((reflection) => reflection.status === "verified").length} verified reflections, and ${refreshedChunks} semantic ${refreshedChunks === 1 ? "chunk" : "chunks"} refreshed from source evidence.`
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Conversation failed";
-      setError(message);
-    } finally {
-      setConversationBusy(false);
+      await runProductConversation(
+        {
+          message,
+          provider,
+          mode: conversationMode
+        },
+        handleConversationEvent
+      );
+    } catch (error) {
+      setConversationError(error instanceof Error ? error.message : "The external product conversation failed");
     }
   }
 
-  async function runAgentAudit() {
-    if (agentBusy || conversationBusy) return;
-    setAgentBusy(true);
-    setError(null);
-    pushMessage({
-      kind: "assistant",
-      title: "Starting local agent PoC",
-      body: `I am asking the product API for the bundled local agent use case using ${provider}. This run returns an audit-safe trace and model summary.`
-    });
-
-    try {
-      const report = await auditedTool({
-        name: "poc_local_agent",
-        endpoint: "POST /api/poc/local-agent",
-        summary: "Running the reproducible local agent PoC and collecting its tool trace.",
-        run: () => runLocalAgentPoc(provider),
-        describe: (result) => `${result.steps.length} agent steps returned; status ${result.overallStatus}; ${result.businessAction.writes} writes and ${result.businessAction.verifiedReflections} verified reflections. Provider: ${result.provider}.`
-      });
-      setPocReport(report);
-      pushMessage({
-        kind: "assistant",
-        title: `${report.provider} · ${report.model}`,
-        body: `Run status: ${report.overallStatus}. Orchestration: ${report.orchestrationProvider}. Model role: ${report.modelRole}. ${report.modelReasoningSummary || "The deterministic harness completed the evidence-backed trace."}`
-      });
-      for (const step of report.steps) {
-        pushMessage({
-          kind: step.tool.includes("execute") ? "write" : step.tool.includes("search") || step.tool.includes("lookup") ? "tool" : "audit",
-          title: `Agent step ${step.step}: ${step.tool}`,
-          body: `${step.rationale} Observation: ${step.observation}`
-        });
-      }
-      pushMessage({
-        kind: "assistant",
-        title: "Agent final answer",
-        body: report.finalAnswer
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Agent PoC failed");
-    } finally {
-      setAgentBusy(false);
-    }
-  }
+  const statusTiles = [
+    { label: "Observed resources", value: snapshot?.sourceResources.length ?? 0 },
+    { label: "Source sync runs", value: snapshot?.sourceSyncRuns.length ?? 0 },
+    { label: "Reflected records", value: snapshot?.sourceRecords.length ?? 0 },
+    { label: "Action runs", value: snapshot?.actionRuns.length ?? 0 }
+  ];
 
   return (
     <div className="poc-shell">
       <header className="poc-header">
         <div className="brand">
-          <Bot size={24} />
+          <Waypoints size={24} aria-hidden="true" />
           <div>
             <strong>Semantic Junkyard PoC</strong>
-            <span>External conversational agent cockpit</span>
+            <span>External REST conversation client</span>
           </div>
         </div>
-        <div className="header-status">
-          <span className={`health-dot ${snapshotState === "error" ? "error" : snapshotState === "ready" ? "ok" : "loading"}`} />
-          <strong>{snapshot?.provider.kind ?? "loading"} · {snapshot?.provider.model ?? "provider"}</strong>
-          <span>{latestToolStatus === "running" ? "tool running" : snapshotState}</span>
+
+        <div className="header-status" role="status">
+          <span className={`health-dot ${snapshotState}`} />
+          <strong>{snapshotState === "ready" ? "Product API connected" : snapshotState === "error" ? "Product API unavailable" : "Connecting to product API"}</strong>
+          <span>{snapshot ? `${snapshot.sourceResources.length} resources / ${snapshot.status.chunks} chunks` : "live read model"}</span>
         </div>
-        <nav className="header-actions">
-          <button className="icon-command" onClick={refreshSnapshot} disabled={snapshotBusy} aria-label="Refresh PoC snapshot" title="Refresh PoC snapshot">
+
+        <nav className="header-actions" aria-label="Application links">
+          <button className="icon-command" onClick={() => void refreshSnapshot()} disabled={snapshotBusy} aria-label="Refresh product snapshot" title="Refresh product snapshot">
             {snapshotBusy ? <Loader2 className="spin-icon" size={17} /> : <RefreshCw size={17} />}
           </button>
+          <a className="app-link current" href={POC_APP_URL} aria-current="page">
+            <MonitorCog size={15} />
+            PoC client
+          </a>
           <a className="app-link" href={PRODUCT_APP_URL} target="_blank" rel="noreferrer">
-            <Activity size={15} />
+            <Boxes size={15} />
             Product
           </a>
           <a className="app-link" href={apiHref("/api/openapi.json")} target="_blank" rel="noreferrer">
@@ -487,63 +321,90 @@ function App() {
       </header>
 
       <main className="poc-layout">
-        <section className="conversation-panel panel">
-          <div className="panel-header">
+        <section className="conversation-panel panel" aria-labelledby="conversation-title">
+          <div className="panel-header conversation-heading">
             <div>
-              <h1>Business conversation</h1>
-              <p>{activeIntent}</p>
+              <h1 id="conversation-title">Product conversation</h1>
+              <p>{activeRequest}</p>
             </div>
-            <span className={`run-state ${conversationBusy ? "running" : error ? "failed" : "ready"}`}>
-              {conversationBusy ? <Loader2 className="spin-icon" size={13} /> : error ? <AlertTriangle size={13} /> : <CheckCircle2 size={13} />}
-              {conversationBusy ? "running" : error ? "needs attention" : "ready"}
-            </span>
+            <StatusBadge status={conversationStatus} />
           </div>
 
-          <div className="conversation-mode" role="group" aria-label="Conversation execution mode">
-            {(["read_only", "plan_only", "autonomous"] as const).map((item) => (
-              <button
-                type="button"
-                key={item}
-                className={conversationMode === item ? "selected" : ""}
-                aria-pressed={conversationMode === item}
-                disabled={conversationBusy || agentBusy}
-                onClick={() => setConversationMode(item)}
-              >
-                {item.replaceAll("_", " ")}
-              </button>
-            ))}
+          <div className="control-grid">
+            <fieldset>
+              <legend>Intent interpreter</legend>
+              <div className="segmented-control">
+                <button
+                  type="button"
+                  className={provider === "local-huggingface" ? "selected" : ""}
+                  aria-pressed={provider === "local-huggingface"}
+                  disabled={conversationBusy}
+                  onClick={() => setProvider("local-huggingface")}
+                >
+                  Local model
+                </button>
+                <button
+                  type="button"
+                  className={provider === "deterministic" ? "selected" : ""}
+                  aria-pressed={provider === "deterministic"}
+                  disabled={conversationBusy}
+                  onClick={() => setProvider("deterministic")}
+                >
+                  Deterministic rules
+                </button>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>Execution boundary</legend>
+              <div className="segmented-control three">
+                {(["read_only", "plan_only", "autonomous"] as const).map((mode) => (
+                  <button
+                    type="button"
+                    key={mode}
+                    className={conversationMode === mode ? "selected" : ""}
+                    aria-pressed={conversationMode === mode}
+                    disabled={conversationBusy}
+                    onClick={() => setConversationMode(mode)}
+                  >
+                    {mode.replaceAll("_", " ")}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
           </div>
 
           <form
             className="conversation-form"
             onSubmit={(event) => {
               event.preventDefault();
-              runConversation();
+              void submitConversation();
             }}
           >
             <input
               value={input}
               onChange={(event) => setInput(event.target.value)}
-              placeholder="Ask for a business action that should reflect into source systems"
-              aria-label="Business request"
-              disabled={conversationBusy || agentBusy}
+              placeholder="Ask the product a governed question or action"
+              aria-label="Product request"
+              disabled={conversationBusy}
             />
-            <button className="primary-command" disabled={conversationBusy || agentBusy || input.trim().length === 0}>
+            <button className="primary-command" disabled={conversationBusy || input.trim().length === 0}>
               {conversationBusy ? <Loader2 className="spin-icon" size={16} /> : <Send size={16} />}
-              Ask product
+              {conversationBusy ? "Running" : "Ask product"}
             </button>
           </form>
 
-          {error ? <div className="error-banner" role="alert">{error}</div> : null}
+          {conversationError ? <div className="error-banner" role="alert">{conversationError}</div> : null}
+          {snapshotError ? <div className="error-banner subtle" role="alert">Snapshot: {snapshotError}</div> : null}
 
-          <div className="message-thread" ref={messageThreadRef} aria-live="polite">
+          <div className="message-thread" ref={messageThreadRef} aria-live="polite" aria-busy={conversationBusy}>
             {messages.map((message) => (
               <article className={`message ${message.kind}`} key={message.id}>
-                <span>{message.kind}</span>
+                <span>{messageKindLabel(message.kind)}</span>
                 <div>
                   <header>
                     <strong>{message.title}</strong>
-                    <small>{message.at}</small>
+                    <time>{message.at}</time>
                   </header>
                   <p>{message.body}</p>
                 </div>
@@ -552,14 +413,14 @@ function App() {
           </div>
         </section>
 
-        <aside className="inspector">
-          <section className="panel product-card">
+        <aside className="inspector" aria-label="Product observations and audit">
+          <section className="panel product-panel">
             <div className="panel-header compact">
               <div>
                 <h2>Product read model</h2>
-                <p>Live state via REST</p>
+                <p>Current state from external REST reads</p>
               </div>
-              <Database size={18} />
+              <Database size={18} aria-hidden="true" />
             </div>
             <div className="status-grid">
               {statusTiles.map((tile) => (
@@ -569,186 +430,215 @@ function App() {
                 </div>
               ))}
             </div>
-            <div className="source-list">
-              {snapshot?.sourceSystems.map((system) => (
-                <div key={system.id}>
-                  <strong>{system.name}</strong>
-                  <small>{system.capabilities.length} capabilities · {system.kind}</small>
+            <div className="inline-facts">
+              <span>Semantic chunks <strong>{snapshot?.status.chunks ?? 0}</strong></span>
+              <span>Provider <strong>{snapshot?.provider.kind ?? "waiting"}</strong></span>
+            </div>
+          </section>
+
+          <section className="panel interpreter-panel">
+            <div className="panel-header compact">
+              <div>
+                <h2>Intent contract</h2>
+                <p>{intentPlan ? providerLabel(intentPlan) : provider === "local-huggingface" ? "Local model selected" : "Deterministic rules selected"}</p>
+              </div>
+              <ShieldCheck size={18} aria-hidden="true" />
+            </div>
+            {intentPlan ? (
+              <div className="interpreter-content">
+                <div className="model-line">
+                  <span>{intentPlan.provider === "deterministic" ? "Rules" : "Local model"}</span>
+                  <strong>{intentPlan.modelId ?? "No model"}</strong>
                 </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="panel agent-controls">
-            <div className="panel-header compact">
-              <div>
-                <h2>Bundled agent PoC</h2>
-                <p>Deterministic harness with configurable trace summary</p>
-              </div>
-              <Zap size={18} />
-            </div>
-            <div className="provider-toggle" role="group" aria-label="Agent provider">
-              <button disabled={conversationBusy || agentBusy} aria-pressed={provider === "local-huggingface"} className={provider === "local-huggingface" ? "selected" : ""} onClick={() => setProvider("local-huggingface")}>
-                HF summary
-              </button>
-              <button disabled={conversationBusy || agentBusy} aria-pressed={provider === "deterministic"} className={provider === "deterministic" ? "selected" : ""} onClick={() => setProvider("deterministic")}>
-                Rules summary
-              </button>
-            </div>
-            <button className="secondary-command full" onClick={runAgentAudit} disabled={agentBusy || conversationBusy}>
-              {agentBusy ? <Loader2 className="spin-icon" size={16} /> : <Play size={16} />}
-              Run agent audit
-            </button>
-            <div className="mini-kpis">
-              <div>
-                <span>Steps</span>
-                <strong>{pocReport?.steps.length ?? 0}</strong>
-              </div>
-              <div>
-                <span>Writes</span>
-                <strong>{pocReport?.businessAction.writes ?? 0}</strong>
-              </div>
-              <div>
-                <span>Reflections</span>
-                <strong>{pocReport ? `${pocReport.businessAction.verifiedReflections}/${pocReport.businessAction.writes}` : "0/0"}</strong>
-              </div>
-            </div>
-          </section>
-
-          <section className="panel tool-log">
-            <div className="panel-header compact">
-              <div>
-                <h2>Client tool telemetry</h2>
-                <p>Calls initiated by this external app</p>
-              </div>
-              <Workflow size={18} />
-            </div>
-            <div className="tool-list">
-              {toolEvents.map((event) => (
-                <div className={`tool-event ${event.status}`} key={event.id}>
-                  <span>{event.status === "running" ? <Loader2 className="spin-icon" size={13} /> : event.status === "completed" ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}</span>
-                  <div>
-                    <strong>{event.name}</strong>
-                    <small>{event.endpoint}</small>
-                    <p>{event.summary}</p>
+                <div className="confidence-line">
+                  <label htmlFor="intent-confidence">Confidence</label>
+                  <meter id="intent-confidence" min="0" max="1" low={0.35} high={0.7} optimum={1} value={intentPlan.confidence} />
+                  <strong>{Math.round(intentPlan.confidence * 100)}%</strong>
+                </div>
+                <div className="safe-summary">
+                  <span>Harness summary</span>
+                  <p>{intentPlan.summary}</p>
+                </div>
+                {intentPlan.warnings.length > 0 ? (
+                  <div className="warning-list" role="note">
+                    {intentPlan.warnings.map((warning) => <p key={warning}>{warning}</p>)}
                   </div>
-                </div>
-              ))}
-            </div>
-            <div className="server-audit-list">
-              <strong>Product audit</strong>
-              {snapshot?.auditEvents.slice(0, 8).map((event) => (
-                <div key={event.id}>
-                  <span>{event.decision}</span>
-                  <p>{event.action} · {event.target}</p>
-                  <small>{event.createdAt}</small>
-                </div>
-              ))}
-            </div>
+                ) : null}
+                <details className="compact-details">
+                  <summary>Interpreted queries</summary>
+                  <dl>
+                    <div><dt>Resource</dt><dd>{intentPlan.resourceQuery}</dd></div>
+                    <div><dt>Search</dt><dd>{intentPlan.searchQuery}</dd></div>
+                    <div><dt>Entity</dt><dd>{intentPlan.entityQuery ?? "not requested"}</dd></div>
+                    <div><dt>Action</dt><dd>{intentPlan.actionIntent ?? "read-only"}</dd></div>
+                  </dl>
+                </details>
+              </div>
+            ) : (
+              <EmptyState text="Waiting for the first /api/agent/interpret response." />
+            )}
           </section>
 
-          <section className="panel action-card">
+          <section className="panel registry-panel">
             <div className="panel-header compact">
               <div>
-                <h2>Plan and writeback</h2>
-                <p>{displayedPlan?.status ?? displayedRun?.status ?? "waiting"}</p>
+                <h2>Source registry</h2>
+                <p>{resourceResults.length > 0 ? `${resourceResults.length} conversation matches` : `${snapshot?.sourceResources.length ?? 0} observed resources`}</p>
               </div>
-              <Route size={18} />
+              <Search size={18} aria-hidden="true" />
             </div>
-            <div className="action-meter">
-              <div>
-                <span>Targets</span>
-                <strong>{displayedPlan?.targets.length ?? 0}</strong>
-              </div>
-              <div>
-                <span>Writes</span>
-                <strong>{displayedRun?.writes.length ?? 0}</strong>
-              </div>
-              <div>
-                <span>Verified</span>
-                <strong>{reflectedWrites}/{displayedRun?.reflections.length ?? 0}</strong>
-              </div>
-              <div>
-                <span>Chunks</span>
-                <strong>{semanticChunks}</strong>
-              </div>
-            </div>
-            <div className="target-list">
-              {displayedPlan?.targets.map((target) => (
-                <div className="target-row" key={target.stepId}>
+            <div className="registry-list">
+              {registryItems.length > 0 ? registryItems.map((resource) => (
+                <div className="registry-row" key={resource.id}>
                   <div>
-                    <strong>{target.systemName}</strong>
-                    <small>{target.capability} · {target.risk} · {target.autonomy}</small>
+                    <strong>{resource.qualifiedName}</strong>
+                    <small>{resource.kind} / {resource.sensitivity}</small>
                   </div>
-                  <p>{target.diff.summary}</p>
-                  <span>{displayedRun?.reflections.find((reflection) => displayedRun.writes.find((write) => write.id === reflection.writeId)?.stepId === target.stepId)?.status ?? target.status}</span>
+                  <span className={resource.writable ? "write-enabled" : "read-only"}>{resource.writable ? "writable" : "read only"}</span>
                 </div>
-              ))}
+              )) : <EmptyState text={resourceResults.length === 0 && intentPlan ? "No source resource matched this conversation." : "No observed source resources are available."} />}
+            </div>
+            <div className="sync-line">
+              <span>Latest sync</span>
+              <strong>{snapshot?.sourceSyncRuns[0]?.status ?? "none"}</strong>
+              <small>{snapshot?.sourceSyncRuns[0]?.objective ?? "No source synchronization run reported."}</small>
             </div>
           </section>
 
-          <section className="panel evidence-card">
+          <section className="panel evidence-panel">
             <div className="panel-header compact">
               <div>
                 <h2>Evidence and graph</h2>
-                <p>{topEvidence?.sourceName ?? discoveryTitle}</p>
+                <p>{refreshedEvidence ? "Refreshed after verified write" : initialEvidence?.sourceName ?? discoveryTitle}</p>
               </div>
-              <FileSearch size={18} />
+              <FileSearch size={18} aria-hidden="true" />
             </div>
             <div className="evidence-summary">
-              <div>
-                <Search size={15} />
-                <span>{searchResults.length} search results</span>
-              </div>
-              <div>
-                <Network size={15} />
-                <span>{graph ? `${graph.nodes.length} nodes · ${graph.edges.length} edges` : "graph pending"}</span>
-              </div>
-              <div>
-                <ShieldCheck size={15} />
-                <span>{contextPack ? `${contextPack.evidence.length} evidence spans` : "context pending"}</span>
-              </div>
+              <span><Search size={14} /> {searchResults.length} results</span>
+              <span><Network size={14} /> {graph ? `${graph.nodes.length} nodes / ${graph.edges.length} edges` : "graph skipped"}</span>
+              <span><ShieldCheck size={14} /> {evidenceContext?.evidence.length ?? 0} evidence spans</span>
             </div>
+            {refreshedEvidence ? (
+              <div className="refreshed-evidence">
+                <span>Post-write evidence</span>
+                <strong>{refreshedEvidence.sourceName}</strong>
+                <p>{refreshedEvidence.text}</p>
+              </div>
+            ) : null}
             <div className="evidence-list">
-              {evidenceItems.map((item) => (
-                <div key={item.id}>
+              {evidenceItems.length > 0 ? evidenceItems.map((item) => (
+                <div className="evidence-row" key={item.chunkId}>
                   <strong>{item.sourceName}</strong>
                   <p>{item.text}</p>
+                  <small>{item.chunkId}</small>
                 </div>
-              ))}
+              )) : <EmptyState text="No governed evidence has been assembled." />}
             </div>
           </section>
 
-          <section className="panel raw-agent-card">
+          <section className="panel action-panel">
             <div className="panel-header compact">
               <div>
-                <h2>Agent raw trace</h2>
-                <p>{pocReport ? `${pocReport.overallStatus} · ${pocReport.provider} · ${pocReport.model}` : "waiting"}</p>
+                <h2>Exact plan and readback</h2>
+                <p>{displayedPlan?.status ?? "No action plan"}</p>
               </div>
-              <GitPullRequest size={18} />
+              <Route size={18} aria-hidden="true" />
             </div>
-            <div className="raw-steps">
-              {pocReport?.steps.map((step) => (
-                <div key={`${step.step}-${step.tool}`}>
-                  <span>{step.step}</span>
-                  <div>
-                    <strong>{step.tool}</strong>
-                    <p>{step.rationale}</p>
-                    <small>{step.observation}</small>
-                  </div>
-                </div>
-              ))}
-              {pocReport?.stopConditionEvaluations.map((evaluation, index) => (
-                <div key={`stop-${index}-${evaluation.condition}`}>
-                  <span>{evaluation.status === "passed" ? "OK" : evaluation.status === "triggered" ? "!" : "?"}</span>
-                  <div>
-                    <strong>Stop condition · {evaluation.status.replace("_", " ")}</strong>
-                    <p>{evaluation.condition}</p>
-                    <small>{evaluation.detail}</small>
-                  </div>
-                </div>
-              ))}
+            <div className="action-meter">
+              <div><span>Targets</span><strong>{displayedPlan?.targets.length ?? 0}</strong></div>
+              <div><span>Writes</span><strong>{run?.writes.length ?? 0}</strong></div>
+              <div><span>Verified</span><strong>{verifiedReflections}/{run?.reflections.length ?? 0}</strong></div>
+              <div><span>Chunks</span><strong>{refreshedChunks}</strong></div>
             </div>
+            {displayedPlan ? (
+              <div className="target-list">
+                {displayedPlan.targets.map((target) => (
+                  <div className="target-row" key={target.stepId}>
+                    <div className="target-heading">
+                      <div>
+                        <strong>{target.systemName}</strong>
+                        <small>{target.capability} / {target.risk}</small>
+                      </div>
+                      <span>{target.autonomy.replaceAll("_", " ")}</span>
+                    </div>
+                    <p>{target.diff.summary}</p>
+                    <details className="compact-details">
+                      <summary>Exact diff</summary>
+                      <pre>{formatJson({ before: target.diff.before, after: target.diff.after })}</pre>
+                    </details>
+                  </div>
+                ))}
+              </div>
+            ) : <EmptyState text="Read-only turns do not create a business-action plan." />}
+
+            {reflectedDetails.length > 0 ? (
+              <div className="readback-block">
+                <h3>Verified source readback</h3>
+                {reflectedDetails.map((detail) => (
+                  <div className="readback-row" key={detail.id}>
+                    <div className="readback-heading">
+                      {detail.passed ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+                      <strong>{detail.target}</strong>
+                    </div>
+                    <dl>
+                      <div><dt>Source version</dt><dd>{detail.connectorVersion}</dd></div>
+                      <div><dt>Reflection record</dt><dd>{detail.reflectionVersion ? `v${detail.reflectionVersion}` : "unreported"}</dd></div>
+                      <div><dt>Postcondition</dt><dd>{detail.passed ? "passed" : "not verified"}</dd></div>
+                    </dl>
+                    <p>{detail.postcondition}</p>
+                    <small>Evidence chunk: {detail.evidenceChunkId ?? "not refreshed"}</small>
+                    <details className="compact-details">
+                      <summary>Authoritative readback</summary>
+                      <pre>{formatJson(detail.readback)}</pre>
+                    </details>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </section>
+
+          <section className="panel trace-panel">
+            <div className="panel-header compact">
+              <div>
+                <h2>REST trace and audit</h2>
+                <p>{toolEvents.length} client calls / {permissions ? "autonomy checked" : "no action permission check"}</p>
+              </div>
+              <Workflow size={18} aria-hidden="true" />
+            </div>
+            <div className="tool-list">
+              {toolEvents.length > 0 ? toolEvents.map((event) => (
+                <details className={`tool-event ${event.status}`} data-tool-name={event.name} key={event.id}>
+                  <summary>
+                    <span className="tool-icon">{toolStatusIcon(event)}</span>
+                    <span>
+                      <strong>{event.name}</strong>
+                      <small>{event.endpoint}</small>
+                    </span>
+                    <ChevronRight className="details-chevron" size={15} />
+                  </summary>
+                  <p>{event.summary}</p>
+                  <div className="technical-grid">
+                    <div>
+                      <span>Request</span>
+                      <pre>{formatJson(event.request)}</pre>
+                    </div>
+                    <div>
+                      <span>{event.error ? "Error" : "Response"}</span>
+                      <pre>{formatJson(event.error ?? event.response ?? "waiting")}</pre>
+                    </div>
+                  </div>
+                  <time>{formatTimestamp(event.startedAt)}{event.completedAt ? ` - ${formatTimestamp(event.completedAt)}` : ""}</time>
+                </details>
+              )) : <EmptyState text="REST calls for the current conversation will appear here." />}
+            </div>
+            <details className="server-audit compact-details">
+              <summary>Product audit events ({snapshot?.auditEvents.length ?? 0})</summary>
+              <div>
+                {snapshot?.auditEvents.slice(0, 10).map((event) => (
+                  <p key={event.id}><strong>{event.decision}</strong> {event.action} / {event.target}</p>
+                ))}
+              </div>
+            </details>
           </section>
         </aside>
       </main>
@@ -756,11 +646,88 @@ function App() {
   );
 }
 
-function uid(prefix: string) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+function StatusBadge({ status }: { status: ConversationStatus }) {
+  const failed = ["failed", "blocked", "insufficient_evidence"].includes(status);
+  const pending = status === "running" || status === "approval_required" || status === "plan_ready";
+  return (
+    <span className={`run-state ${failed ? "failed" : pending ? "pending" : "ready"}`}>
+      {status === "running" ? <Loader2 className="spin-icon" size={13} /> : failed ? <CircleStop size={13} /> : pending ? <AlertTriangle size={13} /> : <CheckCircle2 size={13} />}
+      {statusLabel(status)}
+    </span>
+  );
 }
 
-createRoot(document.getElementById("root")!).render(
+function EmptyState({ text }: { text: string }) {
+  return <p className="empty-state">{text}</p>;
+}
+
+function toolStatusIcon(event: ToolEvent) {
+  if (event.status === "running") return <Loader2 className="spin-icon" size={14} />;
+  if (event.status === "failed") return <AlertTriangle size={14} />;
+  return <CheckCircle2 size={14} />;
+}
+
+function statusLabel(status: ConversationStatus): string {
+  const labels: Record<ConversationStatus, string> = {
+    idle: "ready",
+    running: "running",
+    answered: "answered",
+    plan_ready: "plan ready",
+    approval_required: "approval required",
+    blocked: "blocked",
+    insufficient_evidence: "insufficient evidence",
+    verified: "verified",
+    failed: "failed"
+  };
+  return labels[status];
+}
+
+function messageKindLabel(kind: MessageKind): string {
+  const labels: Record<MessageKind, string> = {
+    user: "You",
+    assistant: "Client",
+    tool: "Calling",
+    audit: "Observed",
+    write: "Write",
+    stop: "Stopped",
+    error: "Error"
+  };
+  return labels[kind];
+}
+
+function providerLabel(intent: AgentIntentPlan): string {
+  return intent.provider === "deterministic" ? "Deterministic rules / no model" : `Local Hugging Face / ${intent.modelId ?? "model unreported"}`;
+}
+
+function formatJson(value: unknown): string {
+  if (value === undefined) return "not available";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function formatValue(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return null;
+}
+
+function formatTimestamp(value: string): string {
+  return new Date(value).toLocaleTimeString();
+}
+
+declare global {
+  interface Window {
+    __semanticJunkyardPocRoot?: Root;
+  }
+}
+
+const rootElement = document.getElementById("root")!;
+const root = window.__semanticJunkyardPocRoot ?? createRoot(rootElement);
+window.__semanticJunkyardPocRoot = root;
+root.render(
   <StrictMode>
     <App />
   </StrictMode>

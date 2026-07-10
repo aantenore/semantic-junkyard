@@ -3,6 +3,7 @@ import type { CorsOptions } from "cors";
 import type express from "express";
 import { ZodError } from "zod";
 import { DomainError } from "../core/errors.js";
+import type { ActorContext } from "../storage/policy.js";
 
 export class HttpError extends Error {
   constructor(
@@ -28,6 +29,14 @@ export function requestActor(request: express.Request): string {
   if (typeof authenticatedActor === "string") return authenticatedActor;
   const candidate = request.header("x-semantic-junkyard-actor")?.trim();
   return candidate && /^[A-Za-z0-9@._ -]{1,255}$/.test(candidate) ? candidate : "local-user";
+}
+
+export function requestActorContext(request: express.Request): ActorContext {
+  const role = request.res?.locals.authRole;
+  if (role === "approver" || role === "local-approver") {
+    return { actor: requestActor(request), roles: ["semantic-reader", "semantic-operator", "approver"], clearance: "confidential" };
+  }
+  return { actor: requestActor(request), roles: ["semantic-reader", "business-action-planner"], clearance: "internal" };
 }
 
 export function apiTokenMiddleware(apiToken?: string, approvalToken?: string) {
@@ -68,6 +77,14 @@ export function requireApprovalRole(_request: express.Request, response: express
   next(new HttpError(403, "APPROVAL_ROLE_REQUIRED", "A distinct authenticated approver credential is required."));
 }
 
+export function requireOperatorRole(_request: express.Request, response: express.Response, next: express.NextFunction): void {
+  if (response.locals.authRole === "approver" || response.locals.authRole === "local-approver") {
+    next();
+    return;
+  }
+  next(new HttpError(403, "OPERATOR_ROLE_REQUIRED", "An authenticated operator credential is required for source, ingestion, catalog, or semantic-governance changes."));
+}
+
 function secureTokenEquals(supplied: string, expected?: string): boolean {
   if (!expected) return false;
   const expectedBuffer = Buffer.from(expected);
@@ -84,7 +101,7 @@ export function createCorsOptions(allowedOrigins: string[]): CorsOptions {
       }
       callback(new HttpError(403, "ORIGIN_NOT_ALLOWED", `Origin ${origin} is not allowed.`));
     },
-    methods: ["GET", "HEAD", "POST", "OPTIONS"],
+    methods: ["GET", "HEAD", "POST", "DELETE", "OPTIONS"],
     allowedHeaders: ["Authorization", "Content-Type", "X-Request-Id", "X-Semantic-Junkyard-Actor"],
     exposedHeaders: ["X-Request-Id"],
     maxAge: 600

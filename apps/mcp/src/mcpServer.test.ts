@@ -7,6 +7,25 @@ import { createSemanticJunkyardMcpServer } from "./mcpServer.js";
 describe("Semantic Junkyard MCP server", () => {
   it("exposes agent tools, resources, and prompts over MCP", async () => {
     const runtime = createSemanticRuntime(openMemoryDatabase(), { seed: true });
+    runtime.repository.upsertCatalog({
+      assets: [{
+        id: "asset.restricted.mcp-test",
+        kind: "dataset",
+        name: "MCP_RESTRICTED_SENTINEL",
+        domain: "Security",
+        owner: "Security",
+        description: "Must not be exposed to a confidential-clearance MCP actor.",
+        sensitivity: "restricted",
+        freshness: "fresh",
+        qualityScore: 1,
+        metadata: {}
+      }],
+      metrics: [],
+      policies: [],
+      lineage: [],
+      contracts: [],
+      ontologyClasses: []
+    });
     const server = createSemanticJunkyardMcpServer(runtime);
     const client = new Client({ name: "semantic-junkyard-mcp-test", version: "0.1.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -42,6 +61,13 @@ describe("Semantic Junkyard MCP server", () => {
       const searchContent = search.structuredContent as { results: Array<{ chunkId: string; sourceName: string }> };
       expect(searchContent.results.length).toBeGreaterThan(0);
       expect(searchContent.results[0]?.sourceName).toBeTruthy();
+
+      const resourceSearch = await client.callTool({
+        name: "source_resource_search",
+        arguments: { query: "failed payment", topK: 3, kinds: [] }
+      });
+      const resourceSearchContent = resourceSearch.structuredContent as { resources: Array<{ governance: { decision: string } }> };
+      expect(resourceSearchContent.resources.every((resource) => resource.governance.decision !== "deny")).toBe(true);
 
       const plan = await client.callTool({
         name: "business_action_plan",
@@ -104,6 +130,11 @@ describe("Semantic Junkyard MCP server", () => {
       expect(catalogContent.counts.assets).toBeGreaterThan(0);
       expect(catalogContent.catalog.assets.length).toBeLessThanOrEqual(500);
       expect(catalogContent.truncated).toBe(false);
+      expect(catalogText).not.toContain("MCP_RESTRICTED_SENTINEL");
+
+      const graph = await client.readResource({ uri: "semantic-junkyard://graph" });
+      const graphText = graph.contents[0] && "text" in graph.contents[0] ? graph.contents[0].text : "{}";
+      expect(graphText).not.toContain("MCP_RESTRICTED_SENTINEL");
 
       const prompt = await client.getPrompt({
         name: "governed_context_answer",
