@@ -1,180 +1,143 @@
 # Semantic Junkyard
 
-Semantic Junkyard is an open-source oriented platform for turning messy, unstructured data into a provenance-rich semantic substrate that AI agents can search, traverse, inspect, and cite.
+Semantic Junkyard is a local-first prototype for turning inline text into policy-filtered lexical, vector, and graph context for agents. The current repository contains a deterministic semantic runtime, a product workbench, a separate proof-of-concept (PoC) client, and an MCP stdio server.
 
-It is intentionally an orchestration layer, not a new database. The local MVP runs with SQLite/FTS, deterministic embeddings, and an in-process graph so it works immediately. The architecture exposes clean adapter seams for Qdrant, Neo4j, Kuzu, MinIO, Docling, Apache Tika, Unstructured, OpenSearch, PostgreSQL, and external LLM providers.
+This is not yet a production connector platform. SQLite is the only implemented store, ingestion is limited to an inline-text connector, and the named catalog, OpenMetadata, dbt, and ticketing integrations are simulated as local SQLite source records.
 
-## Why This Exists
+## Applications
 
-The current ecosystem is powerful but fragmented. GraphRAG-style projects build graph indexes, vector databases solve similarity search, document parsers extract structure, metadata catalogs govern assets, and agent frameworks call tools. Semantic Junkyard combines those concerns into an agent-native context fabric:
+The repository has two independent React applications over the same REST API:
 
-- Ingest raw sources with immutable provenance.
-- Parse content into source-spanned elements and chunks.
-- Build lexical, vector, graph, claim, and entity indexes.
-- Let discovery agents profile unknown corpora without predefined guidelines.
-- Expose query/navigation tools that agents can use safely.
-- Keep every result tied to evidence, confidence, module versions, and permissions.
+| Surface | Default URL | Current role |
+| --- | --- | --- |
+| Product workbench (`apps/web`) | `http://localhost:5173` | Ingestion preview and persistence, search, graph inspection, curation, discovery, action planning, local approval, execution, and reflected readback. |
+| PoC cockpit (`apps/poc`) | `http://localhost:5174` | External REST client that displays a deterministic, evidence-first tool trace. It can run read-only, plan-only, or autonomous flows and stops when approval is required. |
+| API (`apps/api`) | `http://127.0.0.1:8787` | Express API and in-process semantic runtime. |
+| MCP server (`apps/mcp`) | stdio | A real MCP server over the same engine and SQLite schema. It does not proxy the REST API. |
 
-## Product And PoC Surfaces
+The product and PoC applications do not share frontend state. The PoC is not embedded in the product and is not the MCP client; it calls the product REST API through its own client module.
 
-Semantic Junkyard now ships as two separate frontend apps over the same product API:
+## Runtime Boundary
 
-- Product workbench: [http://localhost:5173](http://localhost:5173). This is the actual semantic-layer dashboard for ingestion, discovery, semantic search, graph inspection, semantic curation, business action planning, writeback, and reflected readback.
-- PoC cockpit: [http://localhost:5174](http://localhost:5174). This is a separate external client that talks to the product API. It provides a conversational audit chat where a user asks for a business outcome and the PoC app narrates each product tool call as it happens: permission check, discovery, semantic search, entity lookup, graph neighborhood, context expansion, business-action plan, writeback execution, snapshot refresh, and reflected semantic search.
+The default semantic runtime is deterministic and offline:
 
-This separation is intentional. The product does not embed PoC state or agent-test controls. The PoC behaves like a real outside application using Semantic Junkyard through REST.
+- Local parsing for plain text, Markdown, simple HTML, and JSON.
+- Stable window chunking and extractive summaries.
+- Pattern-based entity, relation, and claim extraction.
+- 128-dimensional hash embeddings and cosine similarity.
+- SQLite FTS5 lexical retrieval, vectors stored as JSON, and graph tables.
+- Deterministic score fusion, discovery profiling, action routing, risk checks, writeback simulation, and reflection checks.
 
-The API exposes agent-friendly tools:
+`SEMANTIC_JUNKYARD_MODEL_PROVIDER=ollama` and `openai-compatible` change the configuration returned by `GET /api/providers`; they do not replace extraction, embeddings, reranking, planning, or policy logic. Those providers are explicitly reported as `runtimeUsage: "configuration-only"`.
 
-- `GET /api/source-systems`
-- `POST /api/ingest/preview`
-- `POST /api/ingest`
-- `POST /api/semantic/relations`
-- `POST /api/business/actions/plan`
-- `POST /api/business/actions/execute`
-- `GET /api/business/actions/runs`
-- `POST /api/tools/semantic_search`
-- `POST /api/tools/entity_lookup`
-- `POST /api/tools/graph_neighbors`
-- `POST /api/tools/find_paths`
-- `POST /api/tools/expand_context`
-- `GET /api/evidence/:chunkId`
-
-The MCP server exposes the same agent surface over stdio:
-
-- Tools: `explain_permissions`, `semantic_search`, `entity_lookup`, `graph_neighbors`, `find_paths`, `expand_context`, `get_evidence`, `run_discovery`, `business_action_plan`, `business_action_execute`
-- Resources: `semantic-junkyard://status`, `semantic-junkyard://manifest`, `semantic-junkyard://catalog`, `semantic-junkyard://graph`, `semantic-junkyard://source-systems`, `semantic-junkyard://evidence/{chunkId}`
-- Prompts: `agent_discovery_brief`, `governed_context_answer`, `semantic_mapping_review`
-
-## Controlled Ingestion And Curation
-
-Use ingestion preview when you want to inspect semantics before writing anything:
-
-```bash
-curl -X POST http://localhost:8787/api/ingest/preview \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "payments-note.md",
-    "mimeType": "text/markdown",
-    "ingestionMode": "full_data",
-    "text": "Payments API depends on Billing Pipeline. Billing Pipeline writes Revenue Mart."
-  }'
-```
-
-Use semantic curation when a domain owner wants to control what depends on what:
-
-```bash
-curl -X POST http://localhost:8787/api/semantic/relations \
-  -H "Content-Type: application/json" \
-  -d '{
-    "sourceName": "Payments API",
-    "sourceType": "System",
-    "relationType": "DEPENDS_ON",
-    "targetName": "Billing Pipeline",
-    "targetType": "Process",
-    "rationale": "Confirmed by the platform owner."
-  }'
-```
-
-Curated relations are persisted as evidence-backed graph edges. The UI exposes the same workflow in the Ingest preview and Semantic control panels.
-
-## Business Actions With Source Reflection
-
-Semantic Junkyard now supports business-level actions that write to configured source systems and then reread those sources before updating the semantic read model. The user asks for an outcome, not a connector call:
-
-```text
-Align Failed Payment Rate definition across Finance and Billing,
-then make it reflected in source systems.
-```
-
-Plan first:
-
-```bash
-curl -X POST http://localhost:8787/api/business/actions/plan \
-  -H "Content-Type: application/json" \
-  -d '{
-    "intent": "Align Failed Payment Rate definition across Finance and Billing, then make it reflected in source systems.",
-    "mode": "autonomous",
-    "maxAutonomousRisk": "medium"
-  }'
-```
-
-Execute through the writeback gateway:
-
-```bash
-curl -X POST http://localhost:8787/api/business/actions/execute \
-  -H "Content-Type: application/json" \
-  -d '{
-    "intent": "Align Failed Payment Rate definition across Finance and Billing, then make it reflected in source systems.",
-    "mode": "autonomous",
-    "maxAutonomousRisk": "medium"
-  }'
-```
-
-The local product writes source records for Data Catalog, OpenMetadata-style lineage, dbt semantic repository PR proposals, and governance ticketing. It then rereads those records, creates reflection evidence, refreshes search/graph context, and records a business action run. A write is considered complete only when reflection verifies the source state.
+The optional Hugging Face path is different: `npm run poc:agent:hf` performs real local generation through MLX, but only after the deterministic tool sequence has completed. The model receives a bounded evidence prompt and produces an audit summary. It does not choose tools, approve actions, execute writes, or change the final policy decision. See [Local models](docs/local-models.md).
 
 ## Quick Start
 
+Prerequisites are Node.js 20 or later and npm. Use the lockfile for a reproducible install:
+
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
-Open the product at [http://localhost:5173](http://localhost:5173) and the PoC cockpit at [http://localhost:5174](http://localhost:5174). The API runs on [http://localhost:8787](http://localhost:8787).
+`npm run dev` builds the shared package, then starts the API, product workbench, and PoC cockpit. The API seeds a demo catalog and corpus only when their corresponding tables are empty.
 
-Useful frontend environment variables are `VITE_API_URL`, `VITE_PRODUCT_URL`, `VITE_POC_URL`, and `VITE_POC_ENTITY_HINTS` for configuring API routing, cross-app links, and PoC graph-grounding hints.
-
-Run only the product surface:
+Focused development commands:
 
 ```bash
-npm run dev:product
+npm run dev:product  # API and product workbench
+npm run dev:poc      # API and PoC cockpit
+npm run seed         # seed the configured API database
+npm start            # built API only
 ```
 
-Run only the PoC cockpit plus API:
+Runtime variables must be exported into the API process or supplied by a process manager. The API does not load a root `.env` file itself. Vite does load root environment files for the two frontend dev servers.
 
-```bash
-npm run dev:poc
+## Product API
+
+The generated OpenAPI document is available at `GET /api/openapi.json`. Principal routes are:
+
+- State: `GET /api/status`, `/api/catalog`, `/api/sources`, `/api/source-systems`, `/api/graph`, `/api/providers`.
+- Ingestion and curation: `POST /api/ingest/preview`, `/api/ingest`, `/api/catalog/import`, `/api/semantic/relations`.
+- Discovery: `POST /api/discovery/run`, `GET /api/discovery/runs`.
+- Agent reads: `POST /api/tools/explain_permissions`, `/semantic_search`, `/entity_lookup`, `/graph_neighbors`, `/find_paths`, `/expand_context`; `GET /api/evidence/:chunkId`.
+- Actions: `POST /api/business/actions/plan`, `/approve`, `/execute`; `GET /api/business/actions/runs`, `/approvals`.
+- Audit and protocol metadata: `GET /api/audit/events`, `/api/agent/manifest`, `/api/mcp/tools`, `/api/mcp/capabilities`.
+- Bundled PoC runner: `POST /api/poc/local-agent` with `{ "provider": "deterministic" }` or `{ "provider": "local-huggingface" }`.
+
+Request schemas are strict. Unknown fields, including the former caller-supplied `approved` flag, are rejected.
+
+## Exact Action Protocol
+
+Business actions use a plan-review-execute protocol. Execution is not accepted from an intent alone.
+
+1. Plan with `POST /api/business/actions/plan`:
+
+```json
+{
+  "intent": "Align Failed Payment Rate definition across Finance and Billing",
+  "mode": "autonomous",
+  "maxAutonomousRisk": "medium",
+  "context": {}
+}
 ```
 
-Seed the demo corpus:
+The response contains the server-generated `id`, 64-character SHA-256 `fingerprint`, targets, diffs, evidence IDs, risk, autonomy, and status. Planning does not persist the plan or write source records.
 
-```bash
-npm run seed
+2. If the returned status is `approval_required`, an approver calls `POST /api/business/actions/approve` with the exact plan fields:
+
+```json
+{
+  "planId": "<plan.id>",
+  "planFingerprint": "<plan.fingerprint>",
+  "intent": "<plan.intent>",
+  "mode": "<plan.mode>",
+  "maxAutonomousRisk": "<plan.maxAutonomousRisk>",
+  "rationale": "Reviewed target systems, diffs, evidence, and autonomy.",
+  "context": {}
+}
 ```
 
-Run checks:
+Approval requires the HTTP approver role. It creates an active approval bound to one plan ID and fingerprint. MCP deliberately has no approval-creation tool.
 
-```bash
-npm run typecheck
-npm run test
-npm run build
+3. Execute with `POST /api/business/actions/execute`:
+
+```json
+{
+  "planId": "<plan.id>",
+  "planFingerprint": "<plan.fingerprint>",
+  "intent": "<plan.intent>",
+  "mode": "<plan.mode>",
+  "maxAutonomousRisk": "<plan.maxAutonomousRisk>",
+  "approvalId": "<approval.id when required>",
+  "idempotencyKey": "<unique key for this exact plan>",
+  "context": {}
+}
 ```
 
-Run the local autonomous agent PoC:
+The server rebuilds the plan from the submitted request and current local state. Both `planId` and `planFingerprint` must match; otherwise it returns `409 PLAN_CHANGED`. The plan ID is a stable truncated hash of the intent, resolved action type, and target object keys. The fingerprint is SHA-256 over the plan ID, intent, action type, mode, requested autonomy ceiling, resolved risk, full targets, and warnings. `createdAt` is not fingerprinted.
 
-```bash
-npm run poc:agent
-```
+The idempotency key is a caller-owned string of 8 to 128 characters and is globally unique in the SQLite action-run table. A terminal run (`planned` dry run, `blocked`, `verified`, `reflected`, or `failed`) is returned unchanged when the same exact request retries the key. An `approval_required` run is the exception: the same request and key may resume after an exact approval is supplied. Reusing a key with another plan ID, fingerprint, intent, mode, or autonomy ceiling returns `409 IDEMPOTENCY_CONFLICT`.
 
-The PoC creates an in-memory semantic layer, runs a local agent loop over a governed finance use case, checks its autonomy boundary, searches evidence, resolves entities, traverses a bounded graph neighborhood, expands context, plans a business action, executes policy-governed source writeback, verifies reflection, refreshes semantic evidence, and writes a reproducible report to `artifacts/poc/local-agent-use-case-report.json`.
+Execution writes all targets in one SQLite transaction, rereads each local source record, and verifies record identity, version, write ID, intent, plan ID, target, operation, diff, and expected hash. Only verified records produce reflection evidence and semantic updates. The run is `verified` only when every write verifies; partial or drifted readback is `reflected`. An approval is consumed after the executing transaction completes, including a transaction whose readback status is `reflected`.
 
-Run the same PoC with a local Hugging Face MLX model:
+## Local Source Simulation
 
-```bash
-npm run poc:agent:hf
-```
+The action router currently recognizes a small, regex-driven set of intents and maps them to four local capability shapes. The default capability catalog is built in, and `SEMANTIC_JUNKYARD_SOURCE_SYSTEMS_FILE` can replace it with a validated JSON array. That file configures capability metadata, risk, and autonomy; it does not install connector code or add new routing/write implementations.
 
-The local model runner autodiscovers `~/.cache/huggingface/hub`, prefers `mlx-community/Qwen3-1.7B-4bit` when present, and executes through `uv` with `mlx-lm`. The PoC cockpit exposes the same flow as an external app. It shows audit-safe operational reasoning summaries, tool choices, discoveries, observations, and citations; it does not expose private chain-of-thought.
+| Displayed source | Simulated capability | Local effect |
+| --- | --- | --- |
+| Data Catalog | Metric or asset description update | Updates local catalog rows and saves a versioned source record. |
+| OpenMetadata Mirror | Lineage publication | Updates local lineage rows and saves a versioned source record. |
+| dbt Semantic Repository | Contract pull-request proposal | Saves a source record only; no Git provider is called. |
+| Governance Ticketing | Owner-review task | Saves a source record only; no ticketing provider is called. |
 
-Run the MCP agent PoC:
+These are not network connectors and require no external credentials. Names such as OpenMetadata, dbt, Git, Jira, and ServiceNow describe intended adapter shapes, not installed integrations. See [Adapter contracts](docs/adapter-contracts.md).
 
-```bash
-npm run poc:agent:mcp
-```
+## MCP
 
-This builds the MCP server, starts it over stdio, connects a real MCP client, lists tools/resources/prompts, calls discovery tools, opens evidence, plans and executes a reflected business action, and writes `artifacts/poc/mcp-agent-use-case-report.json`.
-
-Start the MCP server for an external agent:
+Build the workspaces, then start the stdio server:
 
 ```bash
 npm run build
@@ -194,80 +157,96 @@ Example client configuration:
 }
 ```
 
-Use `SEMANTIC_JUNKYARD_DB=/path/to/semantic-junkyard.sqlite` or `--db /path/to/semantic-junkyard.sqlite` to point the MCP server at a specific local database. Without either option, the server uses the product database at `apps/api/data/semantic-junkyard.sqlite`.
+The MCP server exposes these tools:
 
-## Default Local Architecture
+`explain_permissions`, `semantic_search`, `entity_lookup`, `graph_neighbors`, `find_paths`, `expand_context`, `get_evidence`, `run_discovery`, `business_action_plan`, and `business_action_execute`.
 
-```mermaid
-flowchart LR
-  A["Sources: text, markdown, html"] --> B["Connector Registry"]
-  B --> C["Parser Registry"]
-  C --> D["Chunker"]
-  D --> E["Semantic Extractors"]
-  D --> F["SQLite FTS lexical index"]
-  D --> G["Local deterministic vector index"]
-  E --> H["Entity, relation, claim graph"]
-  F --> I["Hybrid Query Planner"]
-  G --> I
-  H --> I
-  I --> J["Agent Tool API"]
-  I --> K["React Workbench"]
-  H --> L["Discovery Agent"]
-  J --> M["Business Action Router"]
-  M --> N["Source Writeback Gateway"]
-  N --> O["Source systems"]
-  O --> P["Reflection Engine"]
-  P --> H
-  P --> I
+Resources are `semantic-junkyard://status`, `semantic-junkyard://manifest`, `semantic-junkyard://catalog`, `semantic-junkyard://graph`, `semantic-junkyard://source-systems`, and `semantic-junkyard://evidence/{chunkId}`. Catalog and graph resources are bounded snapshots with total counts and a `truncated` flag; agents should use bounded tools for deeper navigation. Prompts are `agent_discovery_brief`, `governed_context_answer`, and `semantic_mapping_review`.
+
+Use `--db <path>` or `SEMANTIC_JUNKYARD_DB=<path>` to select a database, `--memory` for an in-memory runtime, and `--no-seed` to suppress startup seeding. With no override, MCP resolves `apps/api/data/semantic-junkyard.sqlite` from the installed MCP module location, independent of the client's working directory.
+
+MCP opens SQLite directly and does not inherit REST authentication or CORS. The spawning agent therefore has the MCP process's filesystem authority.
+
+Run the MCP integration PoC with:
+
+```bash
+npm run poc:agent:mcp
 ```
 
-## Adapter Strategy
+It starts a real stdio MCP client/server pair, uses an in-memory seeded database, and prints the report. Artifact writing is opt-in with `npm run poc:agent:mcp -w apps/mcp -- --write-report`.
 
-The MVP is embedded by default and pluggable by design:
+## Configuration
 
-| Capability | Local default | Production adapters |
-| --- | --- | --- |
-| Metadata and jobs | SQLite | PostgreSQL |
-| Lexical search | SQLite FTS5 | OpenSearch, PostgreSQL full text |
-| Vector search | Local hashed embeddings | Qdrant, pgvector, Milvus, Weaviate, LanceDB |
-| Graph traversal | SQLite graph tables | Neo4j, Kuzu, Memgraph, Apache AGE |
-| Raw objects | Local text rows | Filesystem, S3, MinIO |
-| Parsing | Text/Markdown/HTML parsers | Docling, Apache Tika, Unstructured |
-| LLM extraction | Deterministic extractor, local Hugging Face MLX PoC | OpenAI-compatible, local Ollama, Anthropic-compatible adapters |
-| Agent access | REST tool endpoints | MCP server, GraphQL, SDKs |
-| Business action routing | Semantic action planner | LangGraph, Temporal, workflow engines |
-| Source writeback | Local source records | OpenMetadata, DataHub, GitHub PRs, Jira, ServiceNow, DB comments |
-| Reflection | Immediate source-record readback | CDC, webhooks, catalog harvesters, OpenLineage events |
+Active API variables are:
+
+- `HOST` (`127.0.0.1`), `PORT` (`8787`), and `SEMANTIC_JUNKYARD_DB` (`data/semantic-junkyard.sqlite`).
+- `SEMANTIC_JUNKYARD_SOURCE_SYSTEMS_FILE` (optional validated JSON capability catalog; built-in defaults when unset).
+- `SEMANTIC_JUNKYARD_CORS_ORIGINS` (the localhost and `127.0.0.1` origins for ports 5173 and 5174).
+- `SEMANTIC_JUNKYARD_REQUEST_BODY_LIMIT` (`5mb`).
+- `SEMANTIC_JUNKYARD_MAX_AUTONOMOUS_RISK` (`medium`).
+- `SEMANTIC_JUNKYARD_ENABLE_LOCAL_POC` (`true`).
+- `SEMANTIC_JUNKYARD_API_TOKEN` and `SEMANTIC_JUNKYARD_APPROVAL_TOKEN`.
+
+Active frontend variables are `VITE_API_URL`, `VITE_PRODUCT_URL`, `VITE_POC_URL`, and `VITE_DEV_API_TARGET`. During Vite development, both `/api` proxies read `SEMANTIC_JUNKYARD_API_TOKEN` server-side; the product proxy uses the distinct `SEMANTIC_JUNKYARD_APPROVAL_TOKEN` only for approval routes. No token is exposed through a `VITE_` variable, and no frontend variable exists for entity hints.
+
+Provider and MLX variables are documented in [Local models](docs/local-models.md). The complete inventory is in `.env.example`; that file is a template, not an automatic API configuration loader.
+
+## Network Defaults
+
+- The API binds to loopback at `127.0.0.1:8787` by default.
+- Browser CORS defaults allow only `http://localhost:5173`, `http://127.0.0.1:5173`, `http://localhost:5174`, and `http://127.0.0.1:5174`.
+- Requests without an `Origin` header are allowed. `*` is accepted when explicitly configured.
+- With no API token, HTTP routes are unauthenticated and requests receive the local approver role. This is for loopback development only.
+- A non-loopback `HOST` requires an API token. Whenever an API token is configured, a different approval token is also required. Both must contain at least 32 characters.
+- `OPTIONS` and `GET /api/health` bypass bearer authentication. Other routes accept either token; only the approval token may call the approval route in authenticated mode.
+
+See [Security](SECURITY.md) before exposing any process beyond a developer workstation.
+
+## Tests
+
+Run the repository checks from the root:
+
+```bash
+npm run typecheck
+npm test
+npm run build
+npm run test:e2e
+```
+
+`npm run check` runs type checking, Vitest, and the production build in sequence; it does not include Playwright. Root `npm test` builds the shared and API packages, then runs the API and MCP Vitest suites. `npm run test:e2e` starts the local stack through Playwright and exercises both frontends at desktop and mobile viewports. See [Evaluation](docs/evaluation.md) for coverage and gaps.
+
+## Current Limitations
+
+- The runtime uses concrete local classes; there is no runtime adapter registry or dependency-injection mechanism yet.
+- Ollama and OpenAI-compatible provider settings are configuration-only and make no model calls.
+- The MLX model is a PoC summarizer, not an autonomous planner, extractor, embedding provider, or policy engine.
+- Only inline text is ingested. `metadata_only` and `external_reference` index a registration note, but the submitted `text` is still stored in the `sources` table; these modes are not a no-copy security boundary.
+- Source-system capability metadata can be loaded from JSON, but action routing and write implementations remain fixed to the demo systems and operations. All writebacks are local SQLite simulations.
+- SQLite, in-process execution, static bearer tokens, and the local policy engine are not multi-tenant production controls.
+- Plans are recomputed rather than stored as first-class records. The accepted `context` object is currently not used by routing and is not part of the fingerprint.
+- Approvals have no expiry or revocation endpoint. The trusted development proxy can route the separate approver token, but a production browser deployment still needs a human-authenticated backend channel and must not expose either token to client JavaScript.
+- The automated suites use in-memory SQLite and mock drift. Real connector, deployment, concurrency, migration, and model-faithfulness tests are not implemented; MLX generation is an opt-in platform-dependent verification command.
 
 ## Repository Layout
 
 ```text
-apps/api           Express API, semantic engine, storage adapters
-apps/mcp           MCP stdio server and MCP agent PoC
-apps/web           React workbench
-packages/shared    Shared contracts and types
-docs               Architecture, module specs, market scan, roadmap
-examples/data      Demo corpus
-assets/design      Generated UI concept and verification screenshots
+apps/api           Express API, deterministic semantic engine, SQLite repository, local PoC runner
+apps/mcp           MCP stdio server and MCP client PoC
+apps/poc           Separate React PoC cockpit
+apps/web           React product workbench
+packages/shared    Zod request/response contracts and shared API client helpers
+docs               Architecture, contracts, security-adjacent guidance, evaluation, and research notes
+examples/data      Demo input
+assets/design      Design and verification images
 ```
 
-## Design Principles
+## Documentation
 
-- No hardcoded ontology: schemas and merge rules are configuration-owned.
-- Provenance first: every chunk, entity, relation, and claim points back to evidence.
-- Datastore agnostic: use small interfaces and documented adapter contracts.
-- Agent-native: expose structures agents can traverse, not only chat answers.
-- Incremental discovery: unknown data should be profiled before extraction becomes strict.
-- Evaluatable: retrieval quality, citation accuracy, graph usefulness, drift, and cost are first-class.
-
-## Related Ecosystem
-
-This project is inspired by and designed to interoperate with the existing ecosystem:
-
-- [Microsoft GraphRAG](https://microsoft.github.io/graphrag/) for graph-based RAG patterns.
-- [Qdrant hybrid search](https://qdrant.tech/documentation/search/hybrid-queries/) for dense/sparse retrieval strategies.
-- [Kuzu](https://kuzudb.github.io/) for embedded graph workloads.
-- [Docling](https://docling-project.github.io/docling/) for structured document parsing.
-- [OpenMetadata](https://github.com/open-metadata/OpenMetadata), [DataHub](https://datahub.com/), and similar metadata platforms for governance lessons.
-
-Semantic Junkyard's wedge is not to replace those systems. It provides the modular semantic control plane that lets an agent safely move across them.
+- [Architecture](docs/architecture.md)
+- [Agent contract](docs/agent-contract.md)
+- [Adapter contracts](docs/adapter-contracts.md)
+- [Local models](docs/local-models.md)
+- [Evaluation](docs/evaluation.md)
+- [Market scan](docs/market-scan.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security](SECURITY.md)

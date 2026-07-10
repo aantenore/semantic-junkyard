@@ -3,6 +3,9 @@
   "question": "Can an autonomous AI agent answer which governed finance context should be used for failed payment analysis, and can it perform a business writeback that reflects into source systems?",
   "provider": "local-huggingface-mlx",
   "model": "mlx-community/Qwen3-1.7B-4bit",
+  "orchestrationProvider": "deterministic-policy-harness",
+  "modelRole": "trace-summarizer",
+  "overallStatus": "completed",
   "autonomyDecision": "read access and business-action planning are autonomous; configured low/medium-risk source writes may execute autonomously through policy-governed writeback, while privileged or destructive actions require approval",
   "steps": [
     {
@@ -61,7 +64,7 @@
     "verifiedReflections": 3,
     "semanticChunksRefreshed": 1
   },
-  "finalAnswer": "Yes. The agent can autonomously answer this governed discovery and business-action question because the capability manifest allows semantic search, entity lookup, bounded graph traversal, context expansion, evidence opening, business action planning, and policy-governed writeback. For failed payment analysis, the governed finance context is the Finance Semantic Contract plus the Billing Pipeline and Revenue Mart lineage. The local catalog also defines Failed Payment Rate as a governed metric with dimensions such as payment provider, plan, and retry policy. The agent may discover and cite metadata, graph relationships, metric definitions, policies, and source spans. It may also execute configured low/medium-risk business writebacks through the source writeback gateway, but completion is only valid after source reflection verifies the changed records and the semantic read model is refreshed. It may not execute generated SQL, expose secrets, bypass masking, mutate restricted production data, or perform destructive changes without approval. Local Hugging Face model summary: - The Finance Semantic Contract governs the finance context for failed payment analysis.  \n- The agent executes a reflected business writeback by using governed metadata and semantic contracts to process failed payments.",
+  "finalAnswer": "Yes. This run found authorized evidence and completed the configured business action with verified source reflection. For failed payment analysis, the governed finance context is the Finance Semantic Contract plus the Billing Pipeline and Revenue Mart lineage. The local catalog also defines Failed Payment Rate as a governed metric with dimensions such as payment provider, plan, and retry policy. The agent may discover and cite metadata, graph relationships, metric definitions, policies, and source spans. It may also execute configured low/medium-risk business writebacks through the source writeback gateway, but completion is only valid after source reflection verifies the changed records and the semantic read model is refreshed. It may not execute generated SQL, expose secrets, bypass masking, mutate restricted production data, or perform destructive changes without approval. Local Hugging Face model summary: - The Finance Semantic Contract governs the finance context for failed payment analysis.  \n- The agent executes a reflected business writeback by using governed metadata and semantic contracts to process failed payments.",
   "modelReasoningSummary": "- The Finance Semantic Contract governs the finance context for failed payment analysis.  \n- The agent executes a reflected business writeback by using governed metadata and semantic contracts to process failed payments.",
   "citations": [
     {
@@ -85,5 +88,27 @@
     "Candidate assets are stale, restricted, or below quality threshold.",
     "The task requires direct source mutation, external communication, deletion, privileged access, or a write outside configured capabilities.",
     "Graph paths contradict source evidence or confidence is too low."
+  ],
+  "stopConditionEvaluations": [
+    {
+      "condition": "No authorized evidence can support the answer.",
+      "status": "passed",
+      "detail": "3 authorized evidence spans were available."
+    },
+    {
+      "condition": "Candidate assets are stale, restricted, or below quality threshold.",
+      "status": "passed",
+      "detail": "Mapped action assets passed freshness, quality, and sensitivity gates."
+    },
+    {
+      "condition": "The task requires direct source mutation, external communication, deletion, privileged access, or a write outside configured capabilities.",
+      "status": "passed",
+      "detail": "Every write target resolved to a configured capability and executed through the governed writeback gateway."
+    },
+    {
+      "condition": "Graph paths contradict source evidence or confidence is too low.",
+      "status": "not_evaluated",
+      "detail": "This deterministic use case does not run a contradiction adjudicator."
+    }
   ]
 }

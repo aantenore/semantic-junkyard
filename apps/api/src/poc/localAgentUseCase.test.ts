@@ -28,7 +28,10 @@ describe("local autonomous agent PoC", () => {
     expect(report.finalAnswer).toMatch(/Finance Semantic Contract/);
     expect(report.finalAnswer).toMatch(/source writeback gateway/);
     expect(report.modelReasoningSummary).toContain("Deterministic planner");
+    expect(report.overallStatus).toBe("completed");
     expect(report.stopConditionsChecked.length).toBeGreaterThan(0);
+    expect(report.stopConditionEvaluations).toHaveLength(report.stopConditionsChecked.length);
+    expect(report.stopConditionEvaluations.some((evaluation) => evaluation.status === "passed")).toBe(true);
   });
 
   it("writes a reproducible PoC report", async () => {

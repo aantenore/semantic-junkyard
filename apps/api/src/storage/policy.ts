@@ -52,26 +52,59 @@ export class PolicyEngine {
   }
 
   applyResultPolicies(results: SearchResult[], policies: PolicyRule[]): SearchResult[] {
-    const deniedTerms = policies
-      .filter((policy) => policy.effect === "deny")
-      .flatMap((policy) => policy.appliesTo)
-      .map((term) => term.toLowerCase());
-    const maskTerms = policies
-      .filter((policy) => policy.effect === "mask")
-      .flatMap((policy) => policy.appliesTo)
-      .map((term) => term.toLowerCase());
-
     return results
-      .filter((result) => !deniedTerms.some((term) => result.text.toLowerCase().includes(term)))
       .map((result) => {
-        let text = result.text;
-        let summary = result.summary;
-        for (const term of maskTerms) {
-          const regex = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
-          text = text.replace(regex, "[masked]");
-          summary = summary.replace(regex, "[masked]");
-        }
-        return { ...result, text, summary };
-      });
+        const text = this.applyTextPolicies(result.text, policies);
+        const summary = this.applyTextPolicies(result.summary, policies);
+        return text === null || summary === null ? null : { ...result, text, summary };
+      })
+      .filter((result): result is SearchResult => result !== null);
+  }
+
+  applyTextPolicies(value: string, policies: PolicyRule[]): string | null {
+    const deniedTerms = this.termsForEffect(policies, "deny");
+    if (deniedTerms.some((term) => value.toLowerCase().includes(term))) return null;
+
+    let result = value;
+    for (const term of this.termsForEffect(policies, "mask")) {
+      const regex = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+      result = result.replace(regex, "[masked]");
+    }
+    return result;
+  }
+
+  applyDataPolicies<T>(value: T, policies: PolicyRule[]): T {
+    return this.redactValue(value, policies) as T;
+  }
+
+  private redactValue(value: unknown, policies: PolicyRule[]): unknown {
+    if (typeof value === "string") {
+      let redacted = value;
+      for (const term of this.termsForEffect(policies, "deny")) {
+        redacted = redacted.replace(this.termPattern(term), "[denied]");
+      }
+      for (const term of this.termsForEffect(policies, "mask")) {
+        redacted = redacted.replace(this.termPattern(term), "[masked]");
+      }
+      return redacted;
+    }
+    if (Array.isArray(value)) return value.map((item) => this.redactValue(item, policies));
+    if (value && typeof value === "object") {
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, this.redactValue(item, policies)]));
+    }
+    return value;
+  }
+
+  private termsForEffect(policies: PolicyRule[], effect: PolicyRule["effect"]): string[] {
+    return policies
+      .filter((policy) => policy.effect === effect)
+      .flatMap((policy) => policy.appliesTo)
+      .map((term) => term.toLowerCase());
+  }
+
+  private termPattern(term: string): RegExp {
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pluralAware = /^[a-z]+$/i.test(term) ? `${escaped}s?` : escaped;
+    return new RegExp(`\\b${pluralAware}\\b`, "gi");
   }
 }

@@ -11,31 +11,24 @@ import type {
   ToolProvider
 } from "../types/app";
 
-import type { DiscoveryRun, ProviderConfig, SourceSystem, SourceSystemRecord, SystemStatus } from "@semantic-junkyard/shared";
+import type { AuditEvent, DiscoveryRun, ProviderConfig, SourceSystem, SourceSystemRecord, SystemStatus } from "@semantic-junkyard/shared";
+import { createJsonRequester, resolveApiUrl } from "@semantic-junkyard/shared";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
+const request = createJsonRequester(API_BASE);
+const longRequest = createJsonRequester(API_BASE, 150_000);
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {})
-    }
-  });
-  if (!response.ok) {
-    const payload = (await response.json().catch(() => ({ error: response.statusText }))) as { error?: string };
-    throw new Error(payload.error ?? response.statusText);
-  }
-  return (await response.json()) as T;
+export function apiHref(path: string): string {
+  return resolveApiUrl(API_BASE, path);
 }
 
 export async function loadPocSnapshot(): Promise<PocSnapshot> {
-  const [status, provider, actionRuns, sourceSystemsEnvelope] = await Promise.all([
+  const [status, provider, actionRuns, sourceSystemsEnvelope, auditEvents] = await Promise.all([
     request<SystemStatus>("/api/status"),
     request<ProviderConfig>("/api/providers"),
     request<BusinessActionRun[]>("/api/business/actions/runs"),
-    request<{ systems: SourceSystem[]; records: SourceSystemRecord[] }>("/api/source-systems")
+    request<{ systems: SourceSystem[]; records: SourceSystemRecord[] }>("/api/source-systems"),
+    request<AuditEvent[]>("/api/audit/events?limit=40")
   ]);
 
   return {
@@ -43,7 +36,8 @@ export async function loadPocSnapshot(): Promise<PocSnapshot> {
     provider,
     actionRuns,
     sourceSystems: sourceSystemsEnvelope.systems,
-    sourceRecords: sourceSystemsEnvelope.records
+    sourceRecords: sourceSystemsEnvelope.records,
+    auditEvents
   };
 }
 
@@ -61,10 +55,10 @@ export async function semanticSearch(query: string, mode: "hybrid" | "lexical" |
   });
 }
 
-export async function entityLookup(name: string) {
+export async function entityLookup(input: { name?: string; entityId?: string; topK?: number }) {
   return request<EntityLookupEnvelope>("/api/tools/entity_lookup", {
     method: "POST",
-    body: JSON.stringify({ name })
+    body: JSON.stringify(input)
   });
 }
 
@@ -89,10 +83,18 @@ export async function planBusinessAction(input: { intent: string; mode?: "autono
   });
 }
 
-export async function executeBusinessAction(input: { intent: string; mode?: "autonomous" | "approval_required" | "dry_run"; approved?: boolean; maxAutonomousRisk?: "low" | "medium" | "high" }) {
+export async function executeBusinessAction(input: { plan: BusinessActionPlan; idempotencyKey: string }) {
+  const { plan, idempotencyKey } = input;
   return request<BusinessActionRun>("/api/business/actions/execute", {
     method: "POST",
-    body: JSON.stringify(input)
+    body: JSON.stringify({
+      planId: plan.id,
+      planFingerprint: plan.fingerprint,
+      intent: plan.intent,
+      mode: plan.mode,
+      maxAutonomousRisk: plan.maxAutonomousRisk,
+      idempotencyKey
+    })
   });
 }
 
@@ -104,5 +106,8 @@ export async function runDiscovery(objective: string) {
 }
 
 export async function runLocalAgentPoc(provider: ToolProvider = "deterministic") {
-  return request<PocAgentReport>(`/api/poc/local-agent?provider=${provider}`);
+  return longRequest<PocAgentReport>("/api/poc/local-agent", {
+    method: "POST",
+    body: JSON.stringify({ provider })
+  });
 }

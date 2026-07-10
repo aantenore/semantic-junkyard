@@ -1,8 +1,17 @@
-import { execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { z } from "zod";
+
+const MAX_PROCESS_OUTPUT_BYTES = 8 * 1024 * 1024;
+const LocalModelEnvironmentSchema = z.object({
+  SEMANTIC_JUNKYARD_HF_CACHE_ROOT: z.string().min(1).optional().or(z.literal("")),
+  SEMANTIC_JUNKYARD_HF_MODEL: z.string().min(1).optional().or(z.literal("")),
+  SEMANTIC_JUNKYARD_HF_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(120_000),
+  SEMANTIC_JUNKYARD_HF_MAX_TOKENS: z.coerce.number().int().min(16).max(1_024).default(72)
+});
 
 export interface LocalHuggingFaceModel {
   id: string;
@@ -18,7 +27,18 @@ export interface LocalModelGeneration {
   text: string;
 }
 
-export function discoverLocalHuggingFaceModels(cacheRoot = path.join(os.homedir(), ".cache/huggingface/hub")): LocalHuggingFaceModel[] {
+export interface LocalModelGenerationOptions {
+  runtimeCommand?: string;
+}
+
+export class LocalModelExecutionError extends Error {
+  constructor(public readonly code: "LOCAL_MODEL_NOT_FOUND" | "LOCAL_MODEL_RUNTIME_UNAVAILABLE" | "LOCAL_MODEL_TIMEOUT" | "LOCAL_MODEL_OUTPUT_LIMIT" | "LOCAL_MODEL_FAILED", message: string) {
+    super(message);
+    this.name = "LocalModelExecutionError";
+  }
+}
+
+export function discoverLocalHuggingFaceModels(cacheRoot = localModelConfig().cacheRoot): LocalHuggingFaceModel[] {
   if (!fs.existsSync(cacheRoot)) return [];
   const repoDirs = fs
     .readdirSync(cacheRoot, { withFileTypes: true })
@@ -35,11 +55,12 @@ export function discoverLocalHuggingFaceModels(cacheRoot = path.join(os.homedir(
       if (!fs.existsSync(configPath)) continue;
       const hasWeights = fs.readdirSync(snapshotPath).some((name) => name.endsWith(".safetensors"));
       if (!hasWeights) continue;
-      const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
-        model_type?: string;
-        architectures?: string[];
-        quantization?: { bits?: number; group_size?: number; mode?: string };
-      };
+      let config: { model_type?: string; architectures?: string[]; quantization?: { bits?: number; group_size?: number; mode?: string } };
+      try {
+        config = JSON.parse(fs.readFileSync(configPath, "utf8")) as typeof config;
+      } catch {
+        continue;
+      }
       models.push({
         id: repoIdFromCachePath(repoDir),
         snapshotPath,
@@ -56,27 +77,35 @@ export function discoverLocalHuggingFaceModels(cacheRoot = path.join(os.homedir(
 }
 
 export function pickDefaultLocalModel(models = discoverLocalHuggingFaceModels()): LocalHuggingFaceModel | null {
-  return models.find((model) => model.id === "mlx-community/Qwen3-1.7B-4bit") ?? models.find((model) => model.modelType === "qwen3") ?? models[0] ?? null;
+  const configuredModel = localModelConfig().modelId;
+  return models.find((model) => model.id === configuredModel) ?? models.find((model) => model.id === "mlx-community/Qwen3-1.7B-4bit") ?? models.find((model) => model.modelType === "qwen3") ?? models[0] ?? null;
 }
 
-export function generateWithLocalHuggingFace(prompt: string, model = pickDefaultLocalModel()): LocalModelGeneration {
+export async function generateWithLocalHuggingFace(
+  prompt: string,
+  model = pickDefaultLocalModel(),
+  options: LocalModelGenerationOptions = {}
+): Promise<LocalModelGeneration> {
   if (!model) {
-    throw new Error("No local Hugging Face MLX model found in ~/.cache/huggingface/hub.");
+    throw new LocalModelExecutionError("LOCAL_MODEL_NOT_FOUND", "No compatible local Hugging Face MLX model was found.");
   }
   const scriptPath = resolveMlxScriptPath();
-  const output = execFileSync(
-    "uv",
-    ["run", "--with", "mlx-lm", "--with", "transformers<4.54", "--with", "huggingface-hub", "python", scriptPath, model.snapshotPath, prompt],
-    {
-      encoding: "utf8",
-      timeout: 120_000,
-      maxBuffer: 1024 * 1024 * 8
-    }
-  );
+  const config = localModelConfig();
+  const stdout = await runMlxProcess(options.runtimeCommand ?? "uv", scriptPath, model.snapshotPath, prompt, config.maxTokens, config.timeoutMs);
   return {
     provider: "local-huggingface-mlx",
     model,
-    text: output.trim()
+    text: stdout.trim()
+  };
+}
+
+function localModelConfig() {
+  const parsed = LocalModelEnvironmentSchema.parse(process.env);
+  return {
+    cacheRoot: parsed.SEMANTIC_JUNKYARD_HF_CACHE_ROOT || path.join(os.homedir(), ".cache/huggingface/hub"),
+    modelId: parsed.SEMANTIC_JUNKYARD_HF_MODEL || "mlx-community/Qwen3-1.7B-4bit",
+    timeoutMs: parsed.SEMANTIC_JUNKYARD_HF_TIMEOUT_MS,
+    maxTokens: parsed.SEMANTIC_JUNKYARD_HF_MAX_TOKENS
   };
 }
 
@@ -93,9 +122,63 @@ function resolveMlxScriptPath(): string {
   ];
   const scriptPath = candidates.find((candidate) => fs.existsSync(candidate));
   if (!scriptPath) {
-    throw new Error(`MLX generation script not found. Checked: ${candidates.join(", ")}`);
+    throw new LocalModelExecutionError("LOCAL_MODEL_RUNTIME_UNAVAILABLE", "The local MLX generation runtime is not installed correctly.");
   }
   return scriptPath;
+}
+
+function runMlxProcess(command: string, scriptPath: string, modelPath: string, prompt: string, maxTokens: number, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      command,
+      ["run", "--with", "mlx-lm", "--with", "transformers<4.54", "--with", "huggingface-hub", "python", scriptPath, modelPath, String(maxTokens)],
+      {
+        env: safeChildEnvironment(),
+        stdio: ["pipe", "pipe", "pipe"]
+      }
+    );
+    const stdoutChunks: Buffer[] = [];
+    let stdoutBytes = 0;
+    let settled = false;
+    const finish = (error?: LocalModelExecutionError, output?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) reject(error);
+      else resolve(output ?? "");
+    };
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(new LocalModelExecutionError("LOCAL_MODEL_TIMEOUT", "Local model generation timed out."));
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdoutBytes += chunk.byteLength;
+      if (stdoutBytes > MAX_PROCESS_OUTPUT_BYTES) {
+        child.kill("SIGKILL");
+        finish(new LocalModelExecutionError("LOCAL_MODEL_OUTPUT_LIMIT", "Local model output exceeded the configured safety limit."));
+        return;
+      }
+      stdoutChunks.push(chunk);
+    });
+    child.stderr.resume();
+    child.on("error", () => finish(new LocalModelExecutionError("LOCAL_MODEL_RUNTIME_UNAVAILABLE", "The local model process could not be started.")));
+    child.on("close", (code) => {
+      if (settled) return;
+      if (code !== 0) {
+        finish(new LocalModelExecutionError("LOCAL_MODEL_FAILED", "Local model generation failed."));
+        return;
+      }
+      finish(undefined, Buffer.concat(stdoutChunks).toString("utf8"));
+    });
+    child.stdin.on("error", () => finish(new LocalModelExecutionError("LOCAL_MODEL_FAILED", "The local model prompt could not be delivered.")));
+    child.stdin.end(prompt, "utf8");
+  });
+}
+
+function safeChildEnvironment(): NodeJS.ProcessEnv {
+  const allowedKeys = ["PATH", "HOME", "TMPDIR", "UV_CACHE_DIR", "HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "XDG_CACHE_HOME"];
+  return Object.fromEntries(allowedKeys.flatMap((key) => (process.env[key] ? [[key, process.env[key]]] : [])));
 }
 
 function scoreModel(model: LocalHuggingFaceModel): number {

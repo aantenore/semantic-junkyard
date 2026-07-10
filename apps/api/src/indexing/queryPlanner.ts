@@ -14,16 +14,22 @@ export class HybridQueryPlanner {
     const queryTerms = new Set(tokenize(request.query));
     const relations = this.repository.getRelations();
     const entities = this.repository.getEntities();
+    const entityIdsByChunk = this.repository.getEntityIdsByChunk();
     const entityById = new Map(entities.map((entity) => [entity.id, entity]));
+    const degreeByEntity = new Map<string, number>();
+    for (const relation of relations) {
+      degreeByEntity.set(relation.sourceEntityId, (degreeByEntity.get(relation.sourceEntityId) ?? 0) + 1);
+      degreeByEntity.set(relation.targetEntityId, (degreeByEntity.get(relation.targetEntityId) ?? 0) + 1);
+    }
 
     const results = chunks.map<SearchResult>((chunk) => {
       const vectorScore = cosineSimilarity(queryVector, vectors.get(chunk.id) ?? []);
       const lexicalHit = lexical.get(chunk.id);
-      const entityIds = this.repository.entitiesForChunk(chunk.id).map((entity) => entity.id);
+      const entityIds = entityIdsByChunk.get(chunk.id) ?? [];
       const graphBoost = entityIds.reduce((score, entityId) => {
         const entity = entityById.get(entityId);
         const nameHit = entity ? tokenize(entity.canonicalName).some((term) => queryTerms.has(term)) : false;
-        const degree = relations.filter((relation) => relation.sourceEntityId === entityId || relation.targetEntityId === entityId).length;
+        const degree = degreeByEntity.get(entityId) ?? 0;
         return score + (nameHit ? 0.18 : 0) + Math.min(0.12, degree * 0.015);
       }, 0);
       const lexicalScore = lexicalHit?.lexicalScore ?? lexicalFallbackScore(chunk.text, queryTerms);

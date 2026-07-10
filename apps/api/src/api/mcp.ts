@@ -16,23 +16,7 @@ export interface McpToolDescriptor extends McpDescriptor {
 
 export function toMcpToolDescriptors(manifest: AgentManifest) {
   return [
-    ...manifest.capabilities.map((capability) => ({
-      name: capability.name,
-      description: `${capability.description} Risk: ${capability.risk}. Evidence required: ${capability.evidenceRequired}.`,
-      inputSchema: {
-        type: "object" as const,
-        additionalProperties: true,
-        properties: Object.fromEntries(
-          Object.entries(capability.inputSchema).map(([key, value]) => [
-            key,
-            {
-              type: String(value).includes("number") ? "number" : String(value).includes("[]") ? "array" : "string",
-              description: String(value)
-            }
-          ])
-        )
-      }
-    })),
+    ...manifest.capabilities.map(manifestCapabilityToDescriptor),
     {
       name: "get_evidence",
       description: "Open a single evidence chunk by ID and return source-spanned text for citation.",
@@ -47,7 +31,7 @@ export function toMcpToolDescriptors(manifest: AgentManifest) {
     },
     {
       name: "run_discovery",
-      description: "Run the read-only discovery profiler over the current semantic fabric.",
+      description: "Profile the current semantic fabric and persist a new discovery run with audit events.",
       inputSchema: {
         type: "object" as const,
         additionalProperties: false,
@@ -97,21 +81,25 @@ export function mcpCapabilitySnapshot(manifest: AgentManifest) {
 }
 
 export function legacyMcpToolDescriptors(manifest: AgentManifest) {
-  return manifest.capabilities.map((capability) => ({
+  return manifest.capabilities.map(manifestCapabilityToDescriptor);
+}
+
+function manifestCapabilityToDescriptor(capability: AgentManifest["capabilities"][number]): McpToolDescriptor {
+  const entries = Object.entries(capability.inputSchema);
+  return {
     name: capability.name,
     description: `${capability.description} Risk: ${capability.risk}. Evidence required: ${capability.evidenceRequired}.`,
     inputSchema: {
       type: "object",
-      additionalProperties: true,
+      additionalProperties: false,
+      required: entries.filter(([, value]) => !String(value).includes("optional")).map(([key]) => key),
       properties: Object.fromEntries(
-        Object.entries(capability.inputSchema).map(([key, value]) => [
-          key,
-          {
-            type: String(value).includes("number") ? "number" : String(value).includes("[]") ? "array" : "string",
-            description: String(value)
-          }
-        ])
+        entries.map(([key, value]) => {
+          const description = String(value);
+          const type = description.includes("number") ? "number" : description.includes("boolean") ? "boolean" : description.includes("[]") ? "array" : "string";
+          return [key, { type, description }];
+        })
       )
     }
-  }));
+  };
 }

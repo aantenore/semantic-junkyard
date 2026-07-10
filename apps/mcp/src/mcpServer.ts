@@ -1,7 +1,28 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, GetPromptResult, ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
 import type { SemanticEngine, SemanticRepository, SemanticRuntime } from "@semantic-junkyard/api";
+import {
+  BusinessActionExecutionRequestSchema,
+  BusinessActionPlanSchema,
+  BusinessActionRequestSchema,
+  BusinessActionRunSchema,
+  DiscoveryRequestSchema,
+  DiscoveryRunSchema,
+  EntityLookupRequestSchema,
+  EvidenceSpanSchema,
+  ExpandContextRequestSchema,
+  ExplainPermissionsRequestSchema,
+  FindPathsRequestSchema,
+  GraphNeighborsRequestSchema,
+  GraphSnapshotSchema,
+  SearchRequestSchema,
+  SearchResultSchema
+} from "@semantic-junkyard/shared";
 import { z } from "zod";
+
+const MAX_CATALOG_RESOURCE_ITEMS = 500;
+const MAX_GRAPH_RESOURCE_NODES = 500;
+const MAX_GRAPH_RESOURCE_EDGES = 1_000;
 
 export function createSemanticJunkyardMcpServer(runtime: SemanticRuntime): McpServer {
   const server = new McpServer(
@@ -23,6 +44,8 @@ export function createSemanticJunkyardMcpServer(runtime: SemanticRuntime): McpSe
 }
 
 function registerTools(server: McpServer, engine: SemanticEngine, repository: SemanticRepository): void {
+  const toolResult = (data: unknown) => jsonToolResult(data);
+  const operationalToolResult = (data: unknown) => jsonToolResult(engine.redactOperationalData(data));
   const readOnlyAnnotations = {
     readOnlyHint: true,
     destructiveHint: false,
@@ -30,6 +53,12 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
     openWorldHint: false
   };
   const writebackAnnotations = {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false
+  };
+  const persistedRunAnnotations = {
     readOnlyHint: false,
     destructiveHint: false,
     idempotentHint: false,
@@ -41,10 +70,10 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
     {
       title: "Explain Permissions",
       description: "Explain what an agent can and cannot do with the current semantic layer.",
-      inputSchema: { intent: z.string().min(1) },
+      inputSchema: ExplainPermissionsRequestSchema,
       annotations: readOnlyAnnotations
     },
-    ({ intent }) => jsonToolResult(engine.explainPermissions(intent))
+    ({ intent }) => toolResult(engine.explainPermissions(intent))
   );
 
   server.registerTool(
@@ -52,14 +81,11 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
     {
       title: "Semantic Search",
       description: "Hybrid lexical, vector, and graph-aware retrieval with source citations and policy filtering.",
-      inputSchema: {
-        query: z.string().min(1),
-        topK: z.number().int().positive().max(25).default(8),
-        mode: z.enum(["hybrid", "lexical", "vector", "graph"]).default("hybrid")
-      },
+      inputSchema: SearchRequestSchema,
+      outputSchema: z.object({ results: z.array(SearchResultSchema) }).strict(),
       annotations: readOnlyAnnotations
     },
-    ({ query, topK, mode }) => jsonToolResult({ results: engine.search({ query, topK, mode }) })
+    ({ query, topK, mode }) => toolResult({ results: engine.search({ query, topK, mode }) })
   );
 
   server.registerTool(
@@ -67,10 +93,10 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
     {
       title: "Entity Lookup",
       description: "Resolve canonical entities, aliases, confidence, evidence chunks, and related graph degree.",
-      inputSchema: { name: z.string().min(1) },
+      inputSchema: EntityLookupRequestSchema,
       annotations: readOnlyAnnotations
     },
-    ({ name }) => jsonToolResult({ entities: engine.entityLookup(name) })
+    ({ name, entityId, topK }) => toolResult({ entities: engine.entityLookup({ name, entityId, topK }) })
   );
 
   server.registerTool(
@@ -78,13 +104,11 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
     {
       title: "Graph Neighbors",
       description: "Inspect a bounded graph neighborhood around an entity.",
-      inputSchema: {
-        entityId: z.string().min(1),
-        depth: z.number().int().positive().max(2).default(1)
-      },
+      inputSchema: GraphNeighborsRequestSchema,
+      outputSchema: GraphSnapshotSchema,
       annotations: readOnlyAnnotations
     },
-    ({ entityId, depth }) => jsonToolResult(engine.graphNeighbors(entityId, depth))
+    ({ entityId, depth }) => toolResult(engine.graphNeighbors({ entityId, depth }))
   );
 
   server.registerTool(
@@ -92,14 +116,10 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
     {
       title: "Find Paths",
       description: "Find short relation paths between two entities for multi-hop reasoning.",
-      inputSchema: {
-        fromEntityId: z.string().min(1),
-        toEntityId: z.string().min(1),
-        maxDepth: z.number().int().positive().max(4).default(4)
-      },
+      inputSchema: FindPathsRequestSchema,
       annotations: readOnlyAnnotations
     },
-    ({ fromEntityId, toEntityId, maxDepth }) => jsonToolResult({ path: engine.findPaths(fromEntityId, toEntityId, maxDepth) })
+    ({ fromEntityId, toEntityId, maxDepth }) => toolResult({ path: engine.findPaths({ fromEntityId, toEntityId, maxDepth }) })
   );
 
   server.registerTool(
@@ -107,14 +127,10 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
     {
       title: "Expand Context",
       description: "Build an evidence pack around a query, entity set, or chunk set.",
-      inputSchema: {
-        query: z.string().optional(),
-        chunkIds: z.array(z.string()).optional(),
-        entityIds: z.array(z.string()).optional()
-      },
+      inputSchema: ExpandContextRequestSchema,
       annotations: readOnlyAnnotations
     },
-    ({ query, chunkIds, entityIds }) => jsonToolResult(engine.expandContext({ query, chunkIds, entityIds }))
+    ({ query, chunkIds, entityIds }) => toolResult(engine.expandContext({ query, chunkIds, entityIds }))
   );
 
   server.registerTool(
@@ -122,13 +138,14 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
     {
       title: "Get Evidence",
       description: "Open a single evidence chunk by ID and return source-spanned text for citation.",
-      inputSchema: { chunkId: z.string().min(1) },
+      inputSchema: z.object({ chunkId: z.string().trim().min(1).max(255) }).strict(),
+      outputSchema: z.object({ evidence: EvidenceSpanSchema }).strict(),
       annotations: readOnlyAnnotations
     },
     ({ chunkId }) => {
-      const evidence = repository.evidence(chunkId);
+      const evidence = engine.getEvidence(chunkId);
       if (!evidence) throw new Error(`Evidence chunk not found: ${chunkId}`);
-      return jsonToolResult({ evidence });
+      return toolResult({ evidence });
     }
   );
 
@@ -136,11 +153,12 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
     "run_discovery",
     {
       title: "Run Discovery",
-      description: "Run the read-only discovery profiler over the current semantic fabric.",
-      inputSchema: { objective: z.string().optional() },
-      annotations: readOnlyAnnotations
+      description: "Profile the current semantic fabric and persist a new discovery run with audit events.",
+      inputSchema: DiscoveryRequestSchema,
+      outputSchema: DiscoveryRunSchema,
+      annotations: persistedRunAnnotations
     },
-    ({ objective }) => jsonToolResult(engine.runDiscovery(objective))
+    ({ objective }) => toolResult(engine.runDiscovery(objective))
   );
 
   server.registerTool(
@@ -148,54 +166,53 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
     {
       title: "Plan Business Action",
       description: "Resolve a business intent into source-system writeback targets, diffs, autonomy, risk, and evidence before writing.",
-      inputSchema: {
-        intent: z.string().min(1),
-        mode: z.enum(["autonomous", "approval_required", "dry_run"]).default("autonomous"),
-        maxAutonomousRisk: z.enum(["low", "medium", "high"]).default("medium")
-      },
+      inputSchema: BusinessActionRequestSchema,
+      outputSchema: BusinessActionPlanSchema,
       annotations: readOnlyAnnotations
     },
-    ({ intent, mode, maxAutonomousRisk }) => jsonToolResult(engine.planBusinessAction({ intent, mode, maxAutonomousRisk }))
+    ({ intent, mode, maxAutonomousRisk, context }) => toolResult(engine.planBusinessAction({ intent, mode, maxAutonomousRisk, context }))
   );
 
   server.registerTool(
     "business_action_execute",
     {
       title: "Execute Business Action",
-      description: "Execute a policy-governed business action through source writeback, reread source systems, and reflect verified updates into the semantic layer.",
-      inputSchema: {
-        intent: z.string().min(1),
-        mode: z.enum(["autonomous", "approval_required", "dry_run"]).default("autonomous"),
-        approved: z.boolean().default(false),
-        maxAutonomousRisk: z.enum(["low", "medium", "high"]).default("medium")
-      },
+      description: "Execute an exact fingerprinted plan. The tool cannot create approvals; an optional approvalId must come from the separate human-facing product channel.",
+      inputSchema: BusinessActionExecutionRequestSchema,
+      outputSchema: BusinessActionRunSchema,
       annotations: writebackAnnotations
     },
-    ({ intent, mode, approved, maxAutonomousRisk }) => jsonToolResult(engine.executeBusinessAction({ intent, mode, approved, maxAutonomousRisk, actor: "mcp-agent" }))
+    ({ planId, planFingerprint, intent, mode, maxAutonomousRisk, approvalId, idempotencyKey, context }) =>
+      operationalToolResult(engine.executeBusinessAction({ planId, planFingerprint, intent, mode, maxAutonomousRisk, approvalId, idempotencyKey, context }, "mcp-agent"))
   );
 }
 
 function registerResources(server: McpServer, engine: SemanticEngine, repository: SemanticRepository): void {
   registerJsonResource(server, "status", "semantic-junkyard://status", "System Status", "Current semantic fabric counts and active modules.", () => repository.status());
   registerJsonResource(server, "manifest", "semantic-junkyard://manifest", "Agent Manifest", "Agent capability manifest, operating rules, and stop conditions.", () => engine.agentManifest());
-  registerJsonResource(server, "catalog", "semantic-junkyard://catalog", "Catalog", "Governed assets, metrics, policies, lineage, contracts, and ontology classes.", () => repository.catalog());
-  registerJsonResource(server, "graph", "semantic-junkyard://graph", "Graph", "Current entity and relation graph snapshot.", () => repository.graphSnapshot());
+  registerJsonResource(server, "catalog", "semantic-junkyard://catalog", "Catalog", "Bounded governed catalog snapshot with total counts.", () => boundedCatalogResource(repository));
+  registerJsonResource(server, "graph", "semantic-junkyard://graph", "Graph", "Bounded entity and relation graph snapshot with total counts.", () => boundedGraphResource(repository));
   registerJsonResource(server, "source-systems", "semantic-junkyard://source-systems", "Source Systems", "Configured writeback source systems and recent reflected records.", () => ({
     systems: engine.sourceSystems(),
-    records: repository.listSourceSystemRecords()
+    records: engine.redactOperationalData(repository.listSourceSystemRecords())
   }));
 
   server.registerResource(
     "evidence",
     new ResourceTemplate("semantic-junkyard://evidence/{chunkId}", {
       list: () => ({
-        resources: repository.getChunks().slice(0, 50).map((chunk) => ({
-          uri: `semantic-junkyard://evidence/${chunk.id}`,
-          name: `Evidence ${chunk.id}`,
-          title: chunk.sourceName,
-          description: chunk.summary,
-          mimeType: "application/json"
-        }))
+        resources: repository
+          .getChunks()
+          .map((chunk) => ({ chunk, evidence: engine.getEvidence(chunk.id) }))
+          .filter((item) => item.evidence !== null)
+          .slice(0, 50)
+          .map(({ chunk, evidence }) => ({
+            uri: `semantic-junkyard://evidence/${chunk.id}`,
+            name: `Evidence ${chunk.id}`,
+            title: chunk.sourceName,
+            description: evidence?.text.slice(0, 180) ?? "",
+            mimeType: "application/json"
+          }))
       })
     }),
     {
@@ -205,7 +222,7 @@ function registerResources(server: McpServer, engine: SemanticEngine, repository
     },
     (uri, variables) => {
       const chunkId = String(variables.chunkId ?? "");
-      const evidence = repository.evidence(chunkId);
+      const evidence = engine.getEvidence(chunkId);
       if (!evidence) throw new Error(`Evidence chunk not found: ${chunkId}`);
       return jsonResource(uri.href, evidence);
     }
@@ -277,4 +294,40 @@ function promptResult(text: string): GetPromptResult {
 function asStructuredContent(data: unknown): Record<string, unknown> {
   if (data && typeof data === "object" && !Array.isArray(data)) return data as Record<string, unknown>;
   return { value: data };
+}
+
+function boundedCatalogResource(repository: SemanticRepository) {
+  const catalog = repository.catalog();
+  const counts = {
+    assets: catalog.assets.length,
+    metrics: catalog.metrics.length,
+    policies: catalog.policies.length,
+    lineage: catalog.lineage.length,
+    contracts: catalog.contracts.length,
+    ontologyClasses: catalog.ontologyClasses.length
+  };
+  return {
+    counts,
+    truncated: Object.values(counts).some((count) => count > MAX_CATALOG_RESOURCE_ITEMS),
+    catalog: {
+      assets: catalog.assets.slice(0, MAX_CATALOG_RESOURCE_ITEMS),
+      metrics: catalog.metrics.slice(0, MAX_CATALOG_RESOURCE_ITEMS),
+      policies: catalog.policies.slice(0, MAX_CATALOG_RESOURCE_ITEMS),
+      lineage: catalog.lineage.slice(0, MAX_CATALOG_RESOURCE_ITEMS),
+      contracts: catalog.contracts.slice(0, MAX_CATALOG_RESOURCE_ITEMS),
+      ontologyClasses: catalog.ontologyClasses.slice(0, MAX_CATALOG_RESOURCE_ITEMS)
+    }
+  };
+}
+
+function boundedGraphResource(repository: SemanticRepository) {
+  const graph = repository.graphSnapshot();
+  const nodes = graph.nodes.slice(0, MAX_GRAPH_RESOURCE_NODES);
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const matchingEdges = graph.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
+  return {
+    counts: { nodes: graph.nodes.length, edges: graph.edges.length },
+    truncated: graph.nodes.length > nodes.length || matchingEdges.length > MAX_GRAPH_RESOURCE_EDGES,
+    graph: { nodes, edges: matchingEdges.slice(0, MAX_GRAPH_RESOURCE_EDGES) }
+  };
 }

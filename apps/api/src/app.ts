@@ -1,12 +1,19 @@
 import cors from "cors";
 import express from "express";
+import helmet from "helmet";
 import type Database from "better-sqlite3";
+import { z } from "zod";
+import { DiscoveryRequestSchema, ExplainPermissionsRequestSchema } from "@semantic-junkyard/shared";
 import { defaultCatalogSnapshot } from "./core/catalogSeed.js";
 import { demoDocuments } from "./core/demoCorpus.js";
 import { SemanticEngine } from "./core/semanticEngine.js";
 import { loadProviderConfig } from "./config/providers.js";
+import { loadRuntimeConfig, type RuntimeConfig } from "./config/runtime.js";
+import { loadSourceSystems } from "./config/sourceSystems.js";
+import type { SourceSystem } from "@semantic-junkyard/shared";
 import { openApiDocument } from "./api/openapi.js";
 import { mcpCapabilitySnapshot, toMcpToolDescriptors } from "./api/mcp.js";
+import { apiTokenMiddleware, createCorsOptions, errorHandler, HttpError, notFoundHandler, requestActor, requestIdMiddleware, requireApprovalRole } from "./api/http.js";
 import { runLocalAgentUseCase } from "./poc/localAgentUseCase.js";
 import { SemanticRepository } from "./storage/repository.js";
 
@@ -15,9 +22,22 @@ export interface SemanticRuntime {
   engine: SemanticEngine;
 }
 
-export function createSemanticRuntime(db: Database.Database, options: { seed?: boolean } = {}): SemanticRuntime {
+export interface SemanticRuntimeOptions {
+  seed?: boolean;
+  maxAutonomousRisk?: RuntimeConfig["maxAutonomousRisk"];
+  sourceSystems?: SourceSystem[];
+}
+
+export interface CreateAppOptions extends SemanticRuntimeOptions {
+  runtimeConfig?: RuntimeConfig;
+}
+
+export function createSemanticRuntime(db: Database.Database, options: SemanticRuntimeOptions = {}): SemanticRuntime {
   const repository = new SemanticRepository(db);
-  const engine = new SemanticEngine(repository);
+  const engine = new SemanticEngine(repository, {
+    maxAutonomousRisk: options.maxAutonomousRisk,
+    sourceSystems: options.sourceSystems ?? loadSourceSystems()
+  });
 
   if (options.seed ?? true) {
     seedIfEmpty(engine, repository);
@@ -26,12 +46,39 @@ export function createSemanticRuntime(db: Database.Database, options: { seed?: b
   return { repository, engine };
 }
 
-export function createApp(db: Database.Database, options: { seed?: boolean } = {}) {
+export function createApp(db: Database.Database, options: CreateAppOptions = {}) {
   const app = express();
-  const { repository, engine } = createSemanticRuntime(db, options);
+  const config = options.runtimeConfig ?? loadRuntimeConfig();
+  const providerConfig = loadProviderConfig();
+  const { repository, engine } = createSemanticRuntime(db, {
+    seed: options.seed,
+    maxAutonomousRisk: options.maxAutonomousRisk ?? config.maxAutonomousRisk,
+    sourceSystems: options.sourceSystems ?? loadSourceSystems(config.sourceSystemsFile)
+  });
+  let localPocRun: Promise<Awaited<ReturnType<typeof runLocalAgentUseCase>>> | null = null;
 
-  app.use(cors());
-  app.use(express.json({ limit: "5mb" }));
+  app.disable("x-powered-by");
+  app.use(helmet());
+  app.use(requestIdMiddleware);
+  app.use(cors(createCorsOptions(config.corsOrigins)));
+  app.use(apiTokenMiddleware(config.apiToken, config.approvalToken));
+  app.use(express.json({ limit: config.requestBodyLimit }));
+  app.use((request, response, next) => {
+    const startedAt = performance.now();
+    response.on("finish", () => {
+      if (request.path === "/api/health") return;
+      try {
+        repository.audit(requestActor(request), "api.request", `${request.method} ${request.path}`, response.statusCode < 400 ? "allow" : "deny", {
+          requestId: response.locals.requestId,
+          status: response.statusCode,
+          durationMs: Number((performance.now() - startedAt).toFixed(2))
+        });
+      } catch (error) {
+        console.error(`[${String(response.locals.requestId ?? "unknown")}] Failed to persist request audit`, error);
+      }
+    });
+    next();
+  });
 
   app.get("/api/health", (_request, response) => {
     response.json({ ok: true });
@@ -42,7 +89,7 @@ export function createApp(db: Database.Database, options: { seed?: boolean } = {
   });
 
   app.get("/api/providers", (_request, response) => {
-    response.json(loadProviderConfig());
+    response.json(providerConfig);
   });
 
   app.get("/api/catalog", (_request, response) => {
@@ -50,17 +97,14 @@ export function createApp(db: Database.Database, options: { seed?: boolean } = {
   });
 
   app.get("/api/sources", (_request, response) => {
-    response.json(repository.getSources().map((source) => ({
-      ...source,
-      text: source.ingestionMode === "full_data" ? source.text : ""
-    })));
+    response.json(engine.getSources());
   });
 
   app.get("/api/source-systems", (_request, response) => {
-    response.json({
+    response.json(engine.redactOperationalData({
       systems: engine.sourceSystems(),
       records: repository.listSourceSystemRecords()
-    });
+    }));
   });
 
   app.post("/api/catalog/import", (request, response) => {
@@ -83,20 +127,34 @@ export function createApp(db: Database.Database, options: { seed?: boolean } = {
     response.json(engine.planBusinessAction(request.body));
   });
 
+  app.post("/api/business/actions/approve", requireApprovalRole, (request, response) => {
+    response.status(201).json(engine.approveBusinessAction(request.body, requestActor(request)));
+  });
+
   app.post("/api/business/actions/execute", (request, response) => {
-    response.status(201).json(engine.executeBusinessAction(request.body));
+    response.status(201).json(engine.redactOperationalData(engine.executeBusinessAction(request.body, requestActor(request))));
   });
 
   app.get("/api/business/actions/runs", (_request, response) => {
-    response.json(repository.listBusinessActionRuns());
+    response.json(engine.redactOperationalData(repository.listBusinessActionRuns()));
+  });
+
+  app.get("/api/business/actions/approvals", requireApprovalRole, (_request, response) => {
+    response.json(engine.redactOperationalData(repository.listBusinessActionApprovals()));
+  });
+
+  app.get("/api/audit/events", (request, response) => {
+    const limit = z.coerce.number().int().positive().max(250).default(100).parse(request.query.limit);
+    response.json(engine.redactOperationalData(repository.listAuditEvents(limit)));
   });
 
   app.post("/api/discovery/run", (request, response) => {
-    response.json(engine.runDiscovery(request.body?.objective));
+    const input = DiscoveryRequestSchema.parse(request.body ?? {});
+    response.json(engine.runDiscovery(input.objective));
   });
 
   app.get("/api/discovery/runs", (_request, response) => {
-    response.json(repository.listDiscoveryRuns());
+    response.json(engine.redactOperationalData(repository.listDiscoveryRuns()));
   });
 
   app.get("/api/graph", (_request, response) => {
@@ -119,12 +177,15 @@ export function createApp(db: Database.Database, options: { seed?: boolean } = {
     response.json(mcpCapabilitySnapshot(engine.agentManifest()));
   });
 
-  app.get("/api/poc/local-agent", async (request, response, next) => {
+  app.post("/api/poc/local-agent", async (request, response) => {
+    if (!config.enableLocalPoc) throw new HttpError(404, "POC_DISABLED", "The bundled local PoC is disabled.");
+    if (localPocRun) throw new HttpError(409, "POC_ALREADY_RUNNING", "A local PoC model run is already in progress.");
+    const input = z.object({ provider: z.enum(["local-huggingface", "deterministic"]).default("deterministic") }).strict().parse(request.body ?? {});
+    localPocRun = runLocalAgentUseCase({ provider: input.provider, writeReport: false });
     try {
-      const provider = request.query.provider === "local-huggingface" ? "local-huggingface" : "deterministic";
-      response.json(await runLocalAgentUseCase({ provider, writeReport: false }));
-    } catch (error) {
-      next(error);
+      response.json(engine.redactOperationalData(await localPocRun));
+    } finally {
+      localPocRun = null;
     }
   });
 
@@ -133,17 +194,15 @@ export function createApp(db: Database.Database, options: { seed?: boolean } = {
   });
 
   app.post("/api/tools/entity_lookup", (request, response) => {
-    response.json({ entities: engine.entityLookup(String(request.body?.name ?? "")) });
+    response.json({ entities: engine.entityLookup(request.body) });
   });
 
   app.post("/api/tools/graph_neighbors", (request, response) => {
-    response.json(engine.graphNeighbors(String(request.body?.entityId ?? ""), Number(request.body?.depth ?? 1)));
+    response.json(engine.graphNeighbors(request.body));
   });
 
   app.post("/api/tools/find_paths", (request, response) => {
-    response.json({
-      path: engine.findPaths(String(request.body?.fromEntityId ?? ""), String(request.body?.toEntityId ?? ""), Number(request.body?.maxDepth ?? 4))
-    });
+    response.json({ path: engine.findPaths(request.body) });
   });
 
   app.post("/api/tools/expand_context", (request, response) => {
@@ -151,11 +210,12 @@ export function createApp(db: Database.Database, options: { seed?: boolean } = {
   });
 
   app.post("/api/tools/explain_permissions", (request, response) => {
-    response.json(engine.explainPermissions(String(request.body?.intent ?? "")));
+    const input = ExplainPermissionsRequestSchema.parse(request.body);
+    response.json(engine.explainPermissions(input.intent));
   });
 
   app.get("/api/evidence/:chunkId", (request, response) => {
-    const evidence = repository.evidence(request.params.chunkId);
+    const evidence = engine.getEvidence(request.params.chunkId);
     if (!evidence) {
       response.status(404).json({ error: "Evidence chunk not found" });
       return;
@@ -163,12 +223,10 @@ export function createApp(db: Database.Database, options: { seed?: boolean } = {
     response.json(evidence);
   });
 
-  app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
-    const message = error instanceof Error ? error.message : "Unexpected error";
-    response.status(400).json({ error: message });
-  });
+  app.use(notFoundHandler);
+  app.use(errorHandler);
 
-  return { app, repository, engine };
+  return { app, repository, engine, config };
 }
 
 function seedIfEmpty(engine: SemanticEngine, repository: SemanticRepository): void {

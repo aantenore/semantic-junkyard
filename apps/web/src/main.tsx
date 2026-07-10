@@ -1,20 +1,14 @@
-import { StrictMode, useEffect, useMemo, useState } from "react";
+import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
-  Bell,
-  Boxes,
   Braces,
   CheckCircle2,
-  ChevronDown,
   CircleDot,
   Database,
   FileSearch,
-  Filter,
   GitBranch,
   GitPullRequest,
-  KeyRound,
-  Layers3,
   LineChart,
   Loader2,
   LockKeyhole,
@@ -24,21 +18,20 @@ import {
   Route,
   Search,
   Send,
-  Settings,
   ShieldCheck,
   Upload,
   Workflow,
   Zap
 } from "lucide-react";
-import type { BusinessActionPlan, BusinessActionRun, SearchResult } from "@semantic-junkyard/shared";
+import type { BusinessActionApproval, BusinessActionPlan, BusinessActionRun, SearchResult } from "@semantic-junkyard/shared";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { IconButton } from "./components/IconButton";
-import { curateRelation, executeBusinessAction, ingestText, loadSnapshot, planBusinessAction, previewIngest, runDiscovery, semanticSearch } from "./api/client";
+import { apiHref, approveBusinessAction, curateRelation, executeBusinessAction, ingestText, loadSnapshot, planBusinessAction, previewIngest, runDiscovery, semanticSearch } from "./api/client";
 import type { AppSnapshot, CuratedRelationReport, IngestPreviewReport } from "./types/app";
 import { starterText } from "./data/sample";
 import "./styles.css";
 
-const POC_APP_URL = import.meta.env.VITE_POC_URL ?? "http://localhost:5174";
+const POC_APP_URL = import.meta.env.VITE_POC_URL || (import.meta.env.DEV ? "http://localhost:5174" : "/poc/");
 
 function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
@@ -57,23 +50,43 @@ function App() {
   const [businessIntent, setBusinessIntent] = useState("Align Failed Payment Rate definition across Finance and Billing, then make it reflected in source systems.");
   const [actionPlan, setActionPlan] = useState<BusinessActionPlan | null>(null);
   const [actionRun, setActionRun] = useState<BusinessActionRun | null>(null);
-  const [actionPhase, setActionPhase] = useState<"idle" | "planning" | "planned" | "executing" | "verified" | "approval_required" | "failed">("idle");
+  const [actionApproval, setActionApproval] = useState<BusinessActionApproval | null>(null);
+  const [actionMode, setActionMode] = useState<"autonomous" | "approval_required" | "dry_run">("autonomous");
+  const [actionRisk, setActionRisk] = useState<"low" | "medium" | "high">("medium");
+  const [actionPhase, setActionPhase] = useState<"idle" | "planning" | "planned" | "executing" | "reflected" | "verified" | "approval_required" | "blocked" | "failed">("idle");
   const [actionNotice, setActionNotice] = useState("Write a business request, then plan it before execution.");
   const [lastActionAt, setLastActionAt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [snapshotState, setSnapshotState] = useState<"loading" | "ready" | "degraded" | "error">("loading");
+  const [activeSection, setActiveSection] = useState("dashboard");
+  const initializedRef = useRef(false);
+  const searchRequestRef = useRef(0);
 
-  async function refresh() {
-    const next = await loadSnapshot();
-    setSnapshot(next);
+  async function refresh(): Promise<boolean> {
+    setSnapshotState("loading");
+    setError(null);
+    try {
+      const next = await loadSnapshot();
+      setSnapshot(next);
+      setSnapshotState(next.degraded.length > 0 ? "degraded" : "ready");
+      if (next.degraded.length > 0) setError(`Product loaded with unavailable optional surfaces: ${next.degraded.join(", ")}.`);
+      return true;
+    } catch (err) {
+      setSnapshotState("error");
+      setError(err instanceof Error ? err.message : "API unavailable");
+      return false;
+    }
   }
 
   async function executeSearch(nextQuery = query, nextMode = mode) {
+    const requestId = searchRequestRef.current + 1;
+    searchRequestRef.current = requestId;
     setBusy(true);
     setError(null);
     try {
       const response = await semanticSearch(nextQuery, nextMode);
-      setSearchResults(response.results);
+      if (searchRequestRef.current === requestId) setSearchResults(response.results);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Search failed");
     } finally {
@@ -82,9 +95,11 @@ function App() {
   }
 
   useEffect(() => {
-    refresh()
-      .then(() => executeSearch())
-      .catch((err) => setError(err instanceof Error ? err.message : "API unavailable"));
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+    void (async () => {
+      if (await refresh()) await executeSearch();
+    })();
   }, []);
 
   const groupedModules = useMemo(() => {
@@ -140,6 +155,27 @@ function App() {
     "writeback-gateway": "Writeback",
     "reflection-engine": "Reflection"
   };
+  const navigationItems = [
+    { id: "dashboard", label: "Dashboard", icon: <Activity size={17} /> },
+    { id: "ingest", label: "Ingest", icon: <Upload size={17} /> },
+    { id: "actions", label: "Actions", icon: <Route size={17} /> },
+    { id: "graph", label: "Graph", icon: <Network size={17} /> },
+    { id: "agents", label: "Agents", icon: <Zap size={17} /> },
+    { id: "discovery", label: "Discovery", icon: <FileSearch size={17} /> }
+  ];
+
+  function navigateTo(sectionId: string) {
+    setActiveSection(sectionId);
+    document.getElementById(sectionId)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function invalidateActionPlan() {
+    setActionPlan(null);
+    setActionRun(null);
+    setActionApproval(null);
+    setActionPhase("idle");
+    setActionNotice("Request or policy changed. Create a new plan before execution.");
+  }
 
   async function onIngest() {
     setBusy(true);
@@ -147,8 +183,11 @@ function App() {
     try {
       await ingestText(ingestInput());
       setIngestPreview(null);
-      await refresh();
-      await executeSearch(query, mode);
+      if (await refresh()) {
+        await executeSearch(query, mode);
+      } else {
+        setError("Ingestion succeeded, but the refreshed product snapshot could not be loaded. Use Refresh before retrying.");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ingest failed");
     } finally {
@@ -181,7 +220,9 @@ function App() {
         rationale: curationRationale
       });
       setCuratedRelation(relation);
-      await refresh();
+      if (!(await refresh())) {
+        setError("Curation succeeded, but the refreshed graph could not be loaded. Use Refresh before retrying.");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Curation failed");
     } finally {
@@ -193,13 +234,18 @@ function App() {
     setBusy(true);
     setError(null);
     setActionRun(null);
+    setActionApproval(null);
     setActionPhase("planning");
     setActionNotice("Planning source writes from the business intent...");
     try {
-      const plan = await planBusinessAction({ intent: businessIntent, mode: "autonomous", maxAutonomousRisk: "medium" });
+      const plan = await planBusinessAction({ intent: businessIntent, mode: actionMode, maxAutonomousRisk: actionRisk });
       setActionPlan(plan);
-      setActionPhase(plan.status === "approval_required" ? "approval_required" : "planned");
-      setActionNotice(`${plan.targets.length} source targets planned. Review the diffs, then execute.`);
+      setActionPhase(plan.status === "blocked" ? "blocked" : plan.status === "approval_required" ? "approval_required" : "planned");
+      setActionNotice(
+        plan.status === "blocked"
+          ? plan.warnings.join(" ")
+          : `${plan.targets.length} source targets planned. Review the diffs${plan.status === "approval_required" ? ", approve the exact fingerprint," : ""} then execute.`
+      );
       setLastActionAt(new Date().toLocaleTimeString());
     } catch (err) {
       setActionPhase("failed");
@@ -210,24 +256,67 @@ function App() {
     }
   }
 
+  async function onApproveBusinessAction() {
+    if (!actionPlan || actionPlan.status !== "approval_required") return;
+    setBusy(true);
+    setError(null);
+    try {
+      const approval = await approveBusinessAction(actionPlan, "Reviewed target systems, diffs, evidence, and autonomy in the product workbench.");
+      setActionApproval(approval);
+      setActionNotice(`Plan approved by ${approval.approvedBy}. Approval ${approval.id} is valid for this fingerprint once.`);
+      setLastActionAt(new Date().toLocaleTimeString());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Business action approval failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onExecuteBusinessAction() {
+    if (!actionPlan || actionPlan.intent !== businessIntent) {
+      setError("Create and review a current plan before execution.");
+      return;
+    }
     setBusy(true);
     setError(null);
     setActionPhase("executing");
     setActionNotice("Executing through writeback gateway, then rereading source systems...");
     try {
-      const run = await executeBusinessAction({ intent: businessIntent, mode: "autonomous", maxAutonomousRisk: "medium" });
+      const run = await executeBusinessAction({
+        plan: actionPlan,
+        approvalId: actionApproval?.id,
+        idempotencyKey: `${actionPlan.id}:${actionPlan.fingerprint}`
+      });
       setActionRun(run);
       setActionPlan(run.plan);
-      setActionPhase(run.status === "verified" ? "verified" : run.status === "approval_required" ? "approval_required" : "failed");
+      setActionPhase(
+        run.status === "verified"
+          ? "verified"
+          : run.status === "reflected"
+            ? "reflected"
+            : run.status === "approval_required"
+              ? "approval_required"
+              : run.status === "blocked"
+                ? "blocked"
+                : run.status === "planned"
+                  ? "planned"
+                  : "failed"
+      );
       setActionNotice(
         run.status === "verified"
           ? `${run.writes.length} source writes executed and ${run.reflections.filter((item) => item.status === "verified").length}/${run.reflections.length} reflections verified. Search results were refreshed from source evidence.`
-          : `Action finished with status ${run.status}. Review target autonomy and approval policy.`
+          : run.status === "reflected"
+            ? "Source readback reported drift or missing state. Only verified writes were added to the semantic read model."
+            : `No source completion was claimed. Action status: ${run.status}.`
       );
       setLastActionAt(new Date().toLocaleTimeString());
-      await refresh();
-      await executeSearch(businessIntent, "hybrid");
+      if (run.status === "verified" || run.status === "reflected") {
+        if (await refresh()) {
+          await executeSearch(businessIntent, "hybrid");
+        } else {
+          setError(`The ${run.status} run was saved, but the refreshed snapshot could not be loaded. Use Refresh; do not execute again.`);
+        }
+      }
     } catch (err) {
       setActionPhase("failed");
       setActionNotice("Execution failed. Check the error banner.");
@@ -276,38 +365,13 @@ function App() {
           <span>Semantic Junkyard</span>
         </div>
         <nav className="nav-list">
-          {[
-            ["Dashboard", <Activity size={17} />],
-            ["Ingest", <Upload size={17} />],
-            ["Discovery", <FileSearch size={17} />],
-            ["Actions", <Route size={17} />],
-            ["Graph", <Network size={17} />],
-            ["Agents", <Zap size={17} />],
-            ["Catalog", <Layers3 size={17} />],
-            ["Policies", <ShieldCheck size={17} />],
-            ["Lineage", <GitBranch size={17} />]
-          ].map(([label, icon], index) => (
-            <button className={`nav-item ${index === 0 ? "active" : ""}`} key={String(label)}>
-              {icon}
-              <span>{label}</span>
+          {navigationItems.map((item) => (
+            <button className={`nav-item ${activeSection === item.id ? "active" : ""}`} key={item.id} onClick={() => navigateTo(item.id)}>
+              {item.icon}
+              <span>{item.label}</span>
             </button>
           ))}
         </nav>
-        <div className="system-nav">
-          <span>SYSTEM</span>
-          <button className="nav-item">
-            <Boxes size={17} />
-            <span>Modules</span>
-          </button>
-          <button className="nav-item">
-            <KeyRound size={17} />
-            <span>Access</span>
-          </button>
-          <button className="nav-item">
-            <Settings size={17} />
-            <span>Settings</span>
-          </button>
-        </div>
         <div className="workspace-card">
           <span>Workspace</span>
           <strong>Local Junkyard</strong>
@@ -321,11 +385,11 @@ function App() {
             <span className="meta-label">Workspace</span>
             <strong className="mobile-product-name">Semantic Junkyard</strong>
             <strong>Agentic Semantic Layer</strong>
-            <span className="status-pill">Active</span>
+            <span className={`status-pill status-${snapshotState}`}>{snapshotState === "ready" ? "Active" : snapshotState === "loading" ? "Loading" : snapshotState === "degraded" ? "Degraded" : "Unavailable"}</span>
           </div>
           <div className="topbar-section wide">
             <span className="meta-label">Provider</span>
-            <strong>{snapshot?.provider.kind ?? "deterministic"} · {snapshot?.provider.model ?? "loading"}</strong>
+            <strong>{snapshot?.provider ? `${snapshot.provider.kind} · ${snapshot.provider.model}` : snapshotState === "loading" ? "Loading provider" : "Provider unavailable"}</strong>
             <span className="dot" />
             <a className="external-app-link" href={POC_APP_URL} target="_blank" rel="noreferrer">
               <Zap size={14} />
@@ -333,15 +397,22 @@ function App() {
             </a>
           </div>
           <div className="topbar-actions">
-            <IconButton icon={<RefreshCw size={17} />} label="Refresh" onClick={() => refresh()} />
-            <IconButton icon={<Bell size={17} />} label="Notifications" />
-            <IconButton icon={<Braces size={17} />} label="OpenAPI" onClick={() => window.open("/api/openapi.json", "_blank")} />
+            <IconButton icon={<RefreshCw size={17} />} label="Refresh" onClick={() => void refresh()} />
+            <IconButton icon={<Braces size={17} />} label="OpenAPI" onClick={() => window.open(apiHref("/api/openapi.json"), "_blank", "noopener,noreferrer")} />
             <div className="avatar">SJ</div>
           </div>
         </header>
 
-        <section className="content-grid">
-          <section className="ingest-panel panel">
+        <nav className="mobile-section-nav" aria-label="Product sections">
+          {navigationItems.map((item) => (
+            <button key={item.id} className={activeSection === item.id ? "active" : ""} onClick={() => navigateTo(item.id)} aria-label={item.label} title={item.label}>
+              {item.icon}
+            </button>
+          ))}
+        </nav>
+
+        <section className="content-grid" id="dashboard">
+          <section className="ingest-panel panel" id="ingest">
             <div className="panel-header">
               <div>
                 <h2>Ingest</h2>
@@ -363,15 +434,15 @@ function App() {
                 ["metadata_only", "Metadata only"],
                 ["external_reference", "External reference"]
               ] as const).map(([value, label]) => (
-                <button key={value} className={ingestionMode === value ? "selected" : ""} onClick={() => setIngestionMode(value)}>
+                <button type="button" key={value} className={ingestionMode === value ? "selected" : ""} aria-pressed={ingestionMode === value} onClick={() => setIngestionMode(value)}>
                   {label}
                 </button>
               ))}
             </div>
-            <div className="segmented vertical subtle">
-              <button className="selected">Parser: local</button>
-              <button>MCP/API-ready</button>
-              <button>Policy: ABAC</button>
+            <div className="runtime-badges" aria-label="Active ingestion runtime">
+              <span>Parser: local</span>
+              <span>MCP/API-ready</span>
+              <span>Policy: ABAC</span>
             </div>
             <div className="ingest-actions">
               <button className="secondary-action" onClick={onPreviewIngest} disabled={busy || text.trim().length === 0}>
@@ -405,10 +476,12 @@ function App() {
             </div>
           </section>
 
-          <section className="search-panel panel">
+          <section className="search-panel panel" id="actions">
             <div className="search-bar">
               <Search size={19} />
               <input
+                type="search"
+                aria-label="Search semantic evidence"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 onKeyDown={(event) => {
@@ -430,6 +503,8 @@ function App() {
                   <button
                     key={item}
                     className={mode === item ? "selected" : ""}
+                    aria-pressed={mode === item}
+                    disabled={busy}
                     onClick={() => {
                       setMode(item);
                       executeSearch(query, item);
@@ -439,20 +514,20 @@ function App() {
                   </button>
                 ))}
               </div>
-              <button className="filter-button">
-                <Filter size={15} />
+              <span className="filter-button" aria-label="Policy-aware filtering is active">
+                <ShieldCheck size={15} />
                 Policy-aware
-              </button>
+              </span>
             </div>
 
-            {error ? <div className="error-banner">{error}</div> : null}
+            {error ? <div className="error-banner" role="alert">{error}</div> : null}
 
             <div className={`business-action-panel action-${actionPhase}`} aria-busy={actionPhase === "planning" || actionPhase === "executing"}>
               <div className="panel-subhead">
                 <h3>Business action router</h3>
                 <span className={`action-state ${actionPhase}`}>
                   {(actionPhase === "planning" || actionPhase === "executing") ? <Loader2 className="spin-icon" size={13} /> : null}
-                  {actionRun?.status ?? actionPlan?.status ?? `${snapshot?.sourceSystems.length ?? 0} source systems`}
+                  {actionRun?.status ?? actionPlan?.status ?? (snapshotState === "loading" ? "Loading sources" : `${snapshot?.sourceSystems.length ?? 0} source systems`)}
                 </span>
               </div>
               <div className="action-feedback">
@@ -462,15 +537,70 @@ function App() {
                 </div>
                 {lastActionAt ? <small>{lastActionAt}</small> : null}
               </div>
+              <div className="action-policy-controls">
+                <div className="segmented" role="group" aria-label="Business action mode">
+                  {(["autonomous", "approval_required", "dry_run"] as const).map((item) => (
+                    <button
+                      type="button"
+                      key={item}
+                      className={actionMode === item ? "selected" : ""}
+                      aria-pressed={actionMode === item}
+                      onClick={() => {
+                        setActionMode(item);
+                        invalidateActionPlan();
+                      }}
+                    >
+                      {item.replaceAll("_", " ")}
+                    </button>
+                  ))}
+                </div>
+                <label>
+                  <span>Autonomy ceiling</span>
+                  <select
+                    value={actionRisk}
+                    onChange={(event) => {
+                      setActionRisk(event.target.value as typeof actionRisk);
+                      invalidateActionPlan();
+                    }}
+                  >
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High (server-capped)</option>
+                  </select>
+                </label>
+              </div>
               <div className="business-intent-row">
-                <input value={businessIntent} onChange={(event) => setBusinessIntent(event.target.value)} />
+                <input
+                  aria-label="Business action request"
+                  value={businessIntent}
+                  onChange={(event) => {
+                    setBusinessIntent(event.target.value);
+                    invalidateActionPlan();
+                  }}
+                />
                 <button className="secondary-action" onClick={onPlanBusinessAction} disabled={busy || !businessIntent.trim()}>
                   {actionPhase === "planning" ? <Loader2 className="spin-icon" size={15} /> : <Route size={15} />}
                   {actionPhase === "planning" ? "Planning" : actionPlan ? "Replan" : "Plan"}
                 </button>
-                <button className="primary-action compact-action" onClick={onExecuteBusinessAction} disabled={busy || !businessIntent.trim()}>
+                {actionPlan?.status === "approval_required" ? (
+                  <button className="secondary-action" onClick={onApproveBusinessAction} disabled={busy || Boolean(actionApproval)}>
+                    <ShieldCheck size={15} />
+                    {actionApproval ? "Approved" : "Approve plan"}
+                  </button>
+                ) : null}
+                <button
+                  className="primary-action compact-action"
+                  onClick={onExecuteBusinessAction}
+                  disabled={
+                    busy ||
+                    !actionPlan ||
+                    actionPlan.intent !== businessIntent ||
+                    actionPlan.status === "blocked" ||
+                    (actionPlan.status === "approval_required" && !actionApproval)
+                  }
+                >
                   {actionPhase === "executing" ? <Loader2 className="spin-icon" size={15} /> : <Send size={15} />}
-                  {actionPhase === "executing" ? "Executing" : actionRun?.status === "verified" ? "Run again" : "Execute"}
+                  {actionPhase === "executing" ? "Executing" : actionMode === "dry_run" ? "Record dry run" : "Execute plan"}
                 </button>
               </div>
               <div className="action-stepper">
@@ -595,18 +725,18 @@ function App() {
           </section>
 
           <aside className="right-rail">
-            <section className="panel graph-panel">
+            <section className="panel graph-panel" id="graph">
               <div className="panel-header">
                 <div>
                   <h2>Knowledge graph</h2>
-                  <p>{snapshot?.graph.nodes.length ?? 0} nodes · {snapshot?.graph.edges.length ?? 0} edges</p>
+                  <p>{snapshotState === "loading" ? "Loading graph" : `${snapshot?.graph.nodes.length ?? 0} nodes · ${snapshot?.graph.edges.length ?? 0} edges`}</p>
                 </div>
-                <span className="live-pill">Live</span>
+                <span className={`live-pill ${snapshotState}`}>{snapshotState === "ready" ? "Live" : snapshotState}</span>
               </div>
               <GraphCanvas graph={snapshot?.graph ?? { nodes: [], edges: [] }} />
             </section>
 
-            <section className="panel agent-panel">
+            <section className="panel agent-panel" id="agents">
               <div className="panel-header">
                 <div>
                   <h2>Agent autonomy</h2>
@@ -614,23 +744,23 @@ function App() {
                 </div>
                 <LockKeyhole size={18} />
               </div>
-              <p className="manifest-copy">{snapshot?.manifest.autonomyBoundary}</p>
+              <p className="manifest-copy">{snapshot?.manifest?.autonomyBoundary ?? (snapshotState === "loading" ? "Loading agent capability manifest." : "Agent manifest unavailable.")}</p>
               <div className="mcp-surface">
                 <div>
                   <span>MCP server</span>
-                  <strong>{snapshot?.mcp.summary ?? "loading"}</strong>
+                  <strong>{snapshot?.mcp?.summary ?? (snapshotState === "loading" ? "loading" : "unavailable")}</strong>
                 </div>
-                <small>{snapshot?.mcp.server.transport ?? "stdio"} - {snapshot?.mcp.server.command ?? "node apps/mcp/dist/server.js"}</small>
+                <small>{snapshotState === "loading" ? "Loading MCP capability metadata" : `${snapshot?.mcp?.server.transport ?? "not connected"} - ${snapshot?.mcp?.server.command ?? "configure MCP runtime"}`}</small>
               </div>
               <div className="source-surface">
                 <div>
                   <span>Source writeback</span>
-                  <strong>{snapshot?.sourceRecords.length ?? 0} reflected records</strong>
+                  <strong>{snapshotState === "loading" ? "loading" : `${snapshot?.sourceRecords.length ?? 0} reflected records`}</strong>
                 </div>
-                <small>{snapshot?.sourceSystems.map((system) => system.name).slice(0, 3).join(" · ") ?? "loading"}</small>
+                <small>{snapshotState === "loading" ? "Loading source-system capabilities" : snapshot?.sourceSystems.map((system) => system.name).slice(0, 3).join(" · ") || "No source systems configured"}</small>
               </div>
               <div className="capability-list">
-                {snapshot?.manifest.capabilities.slice(0, 6).map((capability) => (
+                {snapshot?.manifest?.capabilities.slice(0, 6).map((capability) => (
                   <div key={capability.name} className="capability-row">
                     <CheckCircle2 size={15} />
                     <span>{capability.name}</span>
@@ -640,7 +770,7 @@ function App() {
               </div>
             </section>
 
-            <section className="panel timeline-panel">
+            <section className="panel timeline-panel" id="discovery">
               <div className="panel-header">
                 <div>
                   <h2>Discovery timeline</h2>
@@ -669,7 +799,6 @@ function App() {
               {kind.includes("graph") ? <Network size={18} /> : kind.includes("policy") ? <ShieldCheck size={18} /> : kind.includes("metric") ? <LineChart size={18} /> : <Database size={18} />}
               <span>{moduleLabels[kind] ?? kind}</span>
               <strong>{modules.length} active</strong>
-              <ChevronDown size={14} />
             </div>
           ))}
         </footer>

@@ -17,6 +17,9 @@ export interface PocAgentReport {
   question: string;
   provider: string;
   model: string;
+  orchestrationProvider: "deterministic-policy-harness";
+  modelRole: "trace-summarizer" | "deterministic-summary";
+  overallStatus: "completed" | "degraded" | "blocked" | "failed";
   autonomyDecision: string;
   steps: PocAgentStep[];
   businessAction: {
@@ -34,6 +37,11 @@ export interface PocAgentReport {
     excerpt: string;
   }>;
   stopConditionsChecked: string[];
+  stopConditionEvaluations: Array<{
+    condition: string;
+    status: "passed" | "triggered" | "not_evaluated";
+    detail: string;
+  }>;
 }
 
 export interface RunPocOptions {
@@ -71,7 +79,7 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
     observation: `${searchResults.length} evidence candidates returned. Top source: ${searchResults[0]?.sourceName ?? "none"}.`
   });
 
-  const entityCandidates = engine.entityLookup("Billing Pipeline");
+  const entityCandidates = engine.entityLookup({ name: "Billing Pipeline", topK: 5 });
   const primaryEntity = entityCandidates[0] ?? null;
   steps.push({
     step: 3,
@@ -82,7 +90,7 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
       : "No canonical Billing Pipeline entity was resolved."
   });
 
-  const neighbors = primaryEntity ? engine.graphNeighbors(primaryEntity.id, 1) : { nodes: [], edges: [] };
+  const neighbors = primaryEntity ? engine.graphNeighbors({ entityId: primaryEntity.id, depth: 1 }) : { nodes: [], edges: [] };
   steps.push({
     step: 4,
     tool: "graph_neighbors",
@@ -115,9 +123,12 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
   });
 
   const actionRun = engine.executeBusinessAction({
+    planId: actionPlan.id,
+    planFingerprint: actionPlan.fingerprint,
     intent: businessIntent,
     mode: "autonomous",
-    maxAutonomousRisk: "medium"
+    maxAutonomousRisk: "medium",
+    idempotencyKey: actionPlan.fingerprint
   });
   steps.push({
     step: 7,
@@ -144,13 +155,24 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
     excerpt: compact(item?.text ?? "")
   }));
 
+  const verifiedReflections = actionRun.reflections.filter((reflection) => reflection.status === "verified").length;
+  const writebackVerified = actionRun.status === "verified" && actionRun.writes.length > 0 && verifiedReflections === actionRun.writes.length;
   const deterministicAnswer = [
-    "Yes. The agent can autonomously answer this governed discovery and business-action question because the capability manifest allows semantic search, entity lookup, bounded graph traversal, context expansion, evidence opening, business action planning, and policy-governed writeback.",
+    writebackVerified
+      ? "Yes. This run found authorized evidence and completed the configured business action with verified source reflection."
+      : `No completed writeback can be claimed for this run. The product returned action status ${actionRun.status} with ${verifiedReflections}/${actionRun.reflections.length} verified reflections.`,
     "For failed payment analysis, the governed finance context is the Finance Semantic Contract plus the Billing Pipeline and Revenue Mart lineage. The local catalog also defines Failed Payment Rate as a governed metric with dimensions such as payment provider, plan, and retry policy.",
     "The agent may discover and cite metadata, graph relationships, metric definitions, policies, and source spans. It may also execute configured low/medium-risk business writebacks through the source writeback gateway, but completion is only valid after source reflection verifies the changed records and the semantic read model is refreshed. It may not execute generated SQL, expose secrets, bypass masking, mutate restricted production data, or perform destructive changes without approval."
   ].join(" ");
 
-  const modelResult = maybeGenerateWithLocalModel(options.provider, options.allowModelFallback ?? true, citations);
+  const modelResult = await maybeGenerateWithLocalModel(options.provider, options.allowModelFallback ?? true, citations);
+  const baseStatus: PocAgentReport["overallStatus"] =
+    actionPlan.status === "blocked" || actionRun.status === "blocked" || actionRun.status === "approval_required"
+      ? "blocked"
+      : writebackVerified
+        ? "completed"
+        : "failed";
+  const overallStatus = baseStatus === "completed" && modelResult.degraded ? "degraded" : baseStatus;
   const finalAnswer =
     modelResult.provider === "local-huggingface-mlx" && modelResult.text
       ? `${deterministicAnswer} Local Hugging Face model summary: ${modelResult.text}`
@@ -161,19 +183,28 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
     question: useCaseQuestion,
     provider: modelResult.provider,
     model: modelResult.model,
+    orchestrationProvider: "deterministic-policy-harness",
+    modelRole: modelResult.provider === "local-huggingface-mlx" ? "trace-summarizer" : "deterministic-summary",
+    overallStatus,
     autonomyDecision: permissionCheck.decision,
     steps,
     businessAction: {
       intent: businessIntent,
       status: actionRun.status,
       writes: actionRun.writes.length,
-      verifiedReflections: actionRun.reflections.filter((reflection) => reflection.status === "verified").length,
+      verifiedReflections,
       semanticChunksRefreshed: actionRun.semanticUpdates.reduce((total, update) => total + update.chunkIds.length, 0)
     },
     finalAnswer,
     modelReasoningSummary: modelResult.text,
     citations,
-    stopConditionsChecked: permissionCheck.manifest.stopConditions
+    stopConditionsChecked: permissionCheck.manifest.stopConditions,
+    stopConditionEvaluations: evaluateStopConditions(permissionCheck.manifest.stopConditions, {
+      evidenceCount: contextPack.evidence.length,
+      actionPlan,
+      actionRun,
+      writebackVerified
+    })
   };
 
   if (options.writeReport ?? false) {
@@ -185,23 +216,24 @@ export async function runLocalAgentUseCase(options: RunPocOptions = {}): Promise
   return report;
 }
 
-function maybeGenerateWithLocalModel(
+async function maybeGenerateWithLocalModel(
   provider: RunPocOptions["provider"],
   allowFallback: boolean,
   citations: PocAgentReport["citations"]
-): { provider: string; model: string; text: string } {
+): Promise<{ provider: string; model: string; text: string; degraded: boolean }> {
   if (provider !== "local-huggingface") {
     return {
       provider: "deterministic-local-agent-loop",
       model: "deterministic-rules",
-      text: "Deterministic planner selected evidence-backed discovery tools, policy-governed writeback, and source reflection."
+      text: "Deterministic planner selected evidence-backed discovery tools, policy-governed writeback, and source reflection.",
+      degraded: false
     };
   }
 
   const model = pickDefaultLocalModel();
   try {
     const evidence = citations.map((citation) => `- ${citation.sourceName}: ${citation.excerpt}`).join("\n");
-    const generated = generateWithLocalHuggingFace(
+    const generated = await generateWithLocalHuggingFace(
       [
         "You are an agent audit summarizer. Do not reveal chain-of-thought.",
         "Return a concise operational reasoning summary in two bullet points.",
@@ -216,16 +248,76 @@ function maybeGenerateWithLocalModel(
     return {
       provider: generated.provider,
       model: generated.model.id,
-      text: generated.text
+      text: generated.text,
+      degraded: false
     };
   } catch (error) {
     if (!allowFallback) throw error;
     return {
       provider: "local-huggingface-mlx-unavailable-fallback",
       model: model?.id ?? "none",
-      text: `Local Hugging Face generation failed, so deterministic fallback was used. Error: ${error instanceof Error ? error.message : String(error)}`
+      text: `Local Hugging Face generation was unavailable, so the deterministic summary was used. Error code: ${localModelErrorCode(error)}.`,
+      degraded: true
     };
   }
+}
+
+function evaluateStopConditions(
+  conditions: string[],
+  state: {
+    evidenceCount: number;
+    actionPlan: ReturnType<ReturnType<typeof createApp>["engine"]["planBusinessAction"]>;
+    actionRun: ReturnType<ReturnType<typeof createApp>["engine"]["executeBusinessAction"]>;
+    writebackVerified: boolean;
+  }
+): PocAgentReport["stopConditionEvaluations"] {
+  return conditions.map((condition) => {
+    const normalized = condition.toLowerCase();
+    if (normalized.includes("authorized evidence")) {
+      return state.evidenceCount > 0
+        ? { condition, status: "passed", detail: `${state.evidenceCount} authorized evidence spans were available.` }
+        : { condition, status: "triggered", detail: "No authorized evidence span was available." };
+    }
+    if (normalized.includes("freshness") || normalized.includes("quality")) {
+      const policyWarnings = state.actionPlan.warnings.filter((warning) => /asset .* (requires human review|not authorized)/i.test(warning));
+      return policyWarnings.length === 0
+        ? { condition, status: "passed", detail: "Mapped action assets passed freshness, quality, and sensitivity gates." }
+        : { condition, status: "triggered", detail: policyWarnings.join(" ") };
+    }
+    if (normalized.includes("source reflection") || normalized.includes("verify")) {
+      return state.actionRun.writes.length === 0
+        ? { condition, status: "not_evaluated", detail: `No write was attempted because the action status was ${state.actionRun.status}.` }
+        : state.writebackVerified
+          ? { condition, status: "passed", detail: "Every source write was reread and its expected hash was verified." }
+          : { condition, status: "triggered", detail: "One or more source writes lacked verified reflection." };
+    }
+    if (normalized.includes("autonomy") || normalized.includes("human approval") || normalized.includes("policy")) {
+      const paused = state.actionPlan.status === "approval_required" || state.actionPlan.status === "blocked";
+      return {
+        condition,
+        status: paused ? "triggered" : "passed",
+        detail: paused ? `Execution boundary triggered with plan status ${state.actionPlan.status}.` : "The exact fingerprinted plan stayed inside the configured autonomy ceiling."
+      };
+    }
+    if (normalized.includes("direct source mutation") || normalized.includes("outside configured capabilities") || normalized.includes("privileged access")) {
+      const prohibited = state.actionPlan.status === "blocked";
+      return prohibited
+        ? { condition, status: "triggered", detail: state.actionPlan.warnings.join(" ") || "The product blocked an unsupported or privileged action." }
+        : {
+            condition,
+            status: "passed",
+            detail: "Every write target resolved to a configured capability and executed through the governed writeback gateway."
+          };
+    }
+    if (normalized.includes("contradict") || normalized.includes("confidence")) {
+      return { condition, status: "not_evaluated", detail: "This deterministic use case does not run a contradiction adjudicator." };
+    }
+    return { condition, status: "not_evaluated", detail: "This condition was declared but has no dedicated evaluator in the bundled use case." };
+  });
+}
+
+function localModelErrorCode(error: unknown): string {
+  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : "LOCAL_MODEL_FAILED";
 }
 
 function defaultReportPath(): string {

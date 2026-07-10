@@ -89,7 +89,7 @@ export const EntitySchema = z.object({
   canonicalName: z.string(),
   type: z.string(),
   aliases: z.array(z.string()).default([]),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   evidenceChunkIds: z.array(z.string()).default([]),
   metadata: z.record(z.string(), z.unknown()).default({})
 });
@@ -101,7 +101,7 @@ export const RelationSchema = z.object({
   sourceEntityId: z.string(),
   targetEntityId: z.string(),
   type: z.string(),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   evidenceChunkId: z.string(),
   metadata: z.record(z.string(), z.unknown()).default({})
 });
@@ -111,7 +111,7 @@ export type Relation = z.infer<typeof RelationSchema>;
 export const ClaimSchema = z.object({
   id: z.string(),
   text: z.string(),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   evidenceChunkId: z.string(),
   entityIds: z.array(z.string()).default([]),
   metadata: z.record(z.string(), z.unknown()).default({})
@@ -148,12 +148,65 @@ export const GraphSnapshotSchema = z.object({
 export type GraphSnapshot = z.infer<typeof GraphSnapshotSchema>;
 
 export const SearchRequestSchema = z.object({
-  query: z.string().min(1),
+  query: z.string().trim().min(1).max(4_000),
   topK: z.number().int().positive().max(25).default(8),
   mode: z.enum(["hybrid", "lexical", "vector", "graph"]).default("hybrid")
-});
+}).strict();
 
 export type SearchRequest = z.infer<typeof SearchRequestSchema>;
+
+export const EntityLookupRequestSchema = z
+  .object({
+    name: z.string().trim().min(1).max(255).optional(),
+    entityId: z.string().trim().min(1).max(255).optional(),
+    topK: z.number().int().positive().max(25).default(10)
+  })
+  .strict()
+  .refine((value) => Boolean(value.name) !== Boolean(value.entityId), {
+    message: "Provide exactly one of name or entityId."
+  });
+
+export type EntityLookupRequest = z.infer<typeof EntityLookupRequestSchema>;
+
+export const GraphNeighborsRequestSchema = z
+  .object({
+    entityId: z.string().trim().min(1).max(255),
+    depth: z.number().int().positive().max(2).default(1)
+  })
+  .strict();
+
+export type GraphNeighborsRequest = z.infer<typeof GraphNeighborsRequestSchema>;
+
+export const FindPathsRequestSchema = z
+  .object({
+    fromEntityId: z.string().trim().min(1).max(255),
+    toEntityId: z.string().trim().min(1).max(255),
+    maxDepth: z.number().int().positive().max(4).default(4)
+  })
+  .strict();
+
+export type FindPathsRequest = z.infer<typeof FindPathsRequestSchema>;
+
+export const ExpandContextRequestSchema = z
+  .object({
+    query: z.string().trim().min(1).max(4_000).optional(),
+    chunkIds: z.array(z.string().trim().min(1).max(255)).max(25).optional(),
+    entityIds: z.array(z.string().trim().min(1).max(255)).max(25).optional()
+  })
+  .strict()
+  .refine((value) => Boolean(value.query) || Boolean(value.chunkIds?.length) || Boolean(value.entityIds?.length), {
+    message: "Provide a query, chunkIds, or entityIds."
+  });
+
+export type ExpandContextRequest = z.infer<typeof ExpandContextRequestSchema>;
+
+export const ExplainPermissionsRequestSchema = z
+  .object({ intent: z.string().trim().min(1).max(4_000) })
+  .strict();
+
+export const DiscoveryRequestSchema = z
+  .object({ objective: z.string().trim().min(1).max(2_000).optional() })
+  .strict();
 
 export const SearchResultSchema = z.object({
   chunkId: z.string(),
@@ -195,13 +248,13 @@ export const DiscoveryRunSchema = z.object({
 export type DiscoveryRun = z.infer<typeof DiscoveryRunSchema>;
 
 export const IngestRequestSchema = z.object({
-  name: z.string().min(1),
-  text: z.string().min(1),
-  uri: z.string().optional(),
-  mimeType: z.string().default("text/plain"),
+  name: z.string().trim().min(1).max(255),
+  text: z.string().min(1).max(5_000_000),
+  uri: z.string().trim().min(1).max(2_048).optional(),
+  mimeType: z.string().trim().min(1).max(255).default("text/plain"),
   ingestionMode: z.enum(["full_data", "metadata_only", "external_reference"]).default("full_data"),
   metadata: z.record(z.string(), z.unknown()).default({})
-});
+}).strict();
 
 export type IngestRequest = z.infer<typeof IngestRequestSchema>;
 
@@ -231,27 +284,27 @@ export const IngestPreviewResponseSchema = IngestResponseSchema.extend({
 export type IngestPreviewResponse = z.infer<typeof IngestPreviewResponseSchema>;
 
 export const CuratedEntityRequestSchema = z.object({
-  canonicalName: z.string().min(1),
-  type: z.string().min(1).default("Concept"),
-  aliases: z.array(z.string()).default([]),
+  canonicalName: z.string().trim().min(1).max(255),
+  type: z.string().trim().min(1).max(100).default("Concept"),
+  aliases: z.array(z.string().trim().min(1).max(255)).max(100).default([]),
   confidence: z.number().min(0).max(1).default(1),
-  evidenceChunkIds: z.array(z.string()).default([]),
+  evidenceChunkIds: z.array(z.string().min(1).max(255)).max(100).default([]),
   metadata: z.record(z.string(), z.unknown()).default({})
-});
+}).strict();
 
 export type CuratedEntityRequest = z.infer<typeof CuratedEntityRequestSchema>;
 
 export const CuratedRelationRequestSchema = z.object({
-  sourceName: z.string().min(1),
-  sourceType: z.string().min(1).default("Concept"),
-  targetName: z.string().min(1),
-  targetType: z.string().min(1).default("Concept"),
-  relationType: z.string().min(1).default("DEPENDS_ON"),
+  sourceName: z.string().trim().min(1).max(255),
+  sourceType: z.string().trim().min(1).max(100).default("Concept"),
+  targetName: z.string().trim().min(1).max(255),
+  targetType: z.string().trim().min(1).max(100).default("Concept"),
+  relationType: z.string().trim().min(1).max(100).default("DEPENDS_ON"),
   confidence: z.number().min(0).max(1).default(1),
-  evidenceChunkId: z.string().optional(),
-  rationale: z.string().optional(),
+  evidenceChunkId: z.string().min(1).max(255).optional(),
+  rationale: z.string().trim().max(2_000).optional(),
   metadata: z.record(z.string(), z.unknown()).default({})
-});
+}).strict();
 
 export type CuratedRelationRequest = z.infer<typeof CuratedRelationRequestSchema>;
 
@@ -338,13 +391,11 @@ export const SourceSystemRecordSchema = z.object({
 export type SourceSystemRecord = z.infer<typeof SourceSystemRecordSchema>;
 
 export const BusinessActionRequestSchema = z.object({
-  intent: z.string().min(1),
+  intent: z.string().trim().min(1).max(4_000),
   mode: BusinessActionModeSchema,
-  approved: z.boolean().default(false),
-  actor: z.string().default("business-user"),
   maxAutonomousRisk: z.enum(["low", "medium", "high"]).default("medium"),
   context: z.record(z.string(), z.unknown()).default({})
-});
+}).strict();
 
 export type BusinessActionRequest = z.infer<typeof BusinessActionRequestSchema>;
 
@@ -376,11 +427,13 @@ export type BusinessActionTarget = z.infer<typeof BusinessActionTargetSchema>;
 
 export const BusinessActionPlanSchema = z.object({
   id: z.string(),
+  fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   intent: z.string(),
   actionType: z.string(),
   title: z.string(),
   summary: z.string(),
   mode: BusinessActionModeSchema,
+  maxAutonomousRisk: z.enum(["low", "medium", "high"]),
   risk: BusinessActionRiskSchema,
   status: BusinessActionStatusSchema,
   targets: z.array(BusinessActionTargetSchema),
@@ -389,6 +442,48 @@ export const BusinessActionPlanSchema = z.object({
 });
 
 export type BusinessActionPlan = z.infer<typeof BusinessActionPlanSchema>;
+
+export const BusinessActionExecutionRequestSchema = z
+  .object({
+    planId: z.string().trim().min(1).max(255),
+    planFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    intent: z.string().trim().min(1).max(4_000),
+    mode: BusinessActionModeSchema,
+    maxAutonomousRisk: z.enum(["low", "medium", "high"]).default("medium"),
+    approvalId: z.string().trim().min(1).max(255).optional(),
+    idempotencyKey: z.string().trim().min(8).max(128),
+    context: z.record(z.string(), z.unknown()).default({})
+  })
+  .strict();
+
+export type BusinessActionExecutionRequest = z.infer<typeof BusinessActionExecutionRequestSchema>;
+
+export const BusinessActionApprovalRequestSchema = z
+  .object({
+    planId: z.string().trim().min(1).max(255),
+    planFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+    intent: z.string().trim().min(1).max(4_000),
+    mode: BusinessActionModeSchema,
+    maxAutonomousRisk: z.enum(["low", "medium", "high"]).default("medium"),
+    rationale: z.string().trim().min(1).max(2_000),
+    context: z.record(z.string(), z.unknown()).default({})
+  })
+  .strict();
+
+export type BusinessActionApprovalRequest = z.infer<typeof BusinessActionApprovalRequestSchema>;
+
+export const BusinessActionApprovalSchema = z.object({
+  id: z.string(),
+  planId: z.string(),
+  planFingerprint: z.string(),
+  approvedBy: z.string(),
+  rationale: z.string(),
+  status: z.enum(["active", "consumed", "revoked"]),
+  createdAt: z.string(),
+  consumedAt: z.string().nullable()
+});
+
+export type BusinessActionApproval = z.infer<typeof BusinessActionApprovalSchema>;
 
 export const SourceWriteSchema = z.object({
   id: z.string(),
@@ -431,6 +526,7 @@ export type SemanticUpdate = z.infer<typeof SemanticUpdateSchema>;
 
 export const BusinessActionRunSchema = z.object({
   id: z.string(),
+  idempotencyKey: z.string(),
   intent: z.string(),
   actionType: z.string(),
   status: BusinessActionStatusSchema,
@@ -445,6 +541,18 @@ export const BusinessActionRunSchema = z.object({
 });
 
 export type BusinessActionRun = z.infer<typeof BusinessActionRunSchema>;
+
+export const AuditEventSchema = z.object({
+  id: z.string(),
+  actor: z.string(),
+  action: z.string(),
+  target: z.string(),
+  decision: z.string(),
+  metadata: z.record(z.string(), z.unknown()),
+  createdAt: z.string()
+});
+
+export type AuditEvent = z.infer<typeof AuditEventSchema>;
 
 export const SemanticAssetSchema = z.object({
   id: z.string(),
@@ -494,7 +602,7 @@ export const LineageEdgeSchema = z.object({
   fromAssetId: z.string(),
   toAssetId: z.string(),
   type: z.enum(["READS", "WRITES", "DERIVES", "FEEDS", "DOCUMENTS", "GOVERNS"]),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   metadata: z.record(z.string(), z.unknown()).default({})
 });
 
@@ -525,14 +633,27 @@ export const SemanticContractSchema = z.object({
 
 export type SemanticContract = z.infer<typeof SemanticContractSchema>;
 
-export const CatalogSnapshotSchema = z.object({
-  assets: z.array(SemanticAssetSchema),
-  metrics: z.array(MetricDefinitionSchema),
-  policies: z.array(PolicyRuleSchema),
-  lineage: z.array(LineageEdgeSchema),
-  contracts: z.array(SemanticContractSchema),
-  ontologyClasses: z.array(OntologyClassSchema)
-});
+export const CatalogSnapshotSchema = z
+  .object({
+    assets: z.array(SemanticAssetSchema).max(100_000),
+    metrics: z.array(MetricDefinitionSchema).max(100_000),
+    policies: z.array(PolicyRuleSchema).max(10_000),
+    lineage: z.array(LineageEdgeSchema).max(500_000),
+    contracts: z.array(SemanticContractSchema).max(10_000),
+    ontologyClasses: z.array(OntologyClassSchema).max(100_000)
+  })
+  .strict()
+  .superRefine((snapshot, context) => {
+    const assetIds = new Set(snapshot.assets.map((asset) => asset.id));
+    snapshot.lineage.forEach((edge, index) => {
+      if (!assetIds.has(edge.fromAssetId)) {
+        context.addIssue({ code: "custom", path: ["lineage", index, "fromAssetId"], message: "Lineage source asset does not exist." });
+      }
+      if (!assetIds.has(edge.toAssetId)) {
+        context.addIssue({ code: "custom", path: ["lineage", index, "toAssetId"], message: "Lineage target asset does not exist." });
+      }
+    });
+  });
 
 export type CatalogSnapshot = z.infer<typeof CatalogSnapshotSchema>;
 
@@ -542,7 +663,65 @@ export const ProviderConfigSchema = z.object({
   baseUrl: z.string().optional(),
   model: z.string(),
   embeddingModel: z.string().optional(),
-  enabled: z.boolean()
+  enabled: z.boolean(),
+  runtimeUsage: z.enum(["semantic-runtime", "configuration-only"])
 });
 
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
+
+export interface ApiErrorPayload {
+  error: string;
+  code?: string;
+  requestId?: string;
+  details?: unknown;
+}
+
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly code?: string,
+    public readonly requestId?: string,
+    public readonly details?: unknown
+  ) {
+    super(message);
+  }
+}
+
+export function resolveApiUrl(baseUrl: string, path: string): string {
+  return `${baseUrl.replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+export function createJsonRequester(baseUrl = "", timeoutMs = 15_000) {
+  return async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const controller = new AbortController();
+    const timeout = globalThis.setTimeout(() => controller.abort(new Error(`Request timed out after ${timeoutMs}ms.`)), timeoutMs);
+    const abortFromCaller = () => controller.abort(init.signal?.reason);
+    init.signal?.addEventListener("abort", abortFromCaller, { once: true });
+
+    try {
+      const response = await fetch(resolveApiUrl(baseUrl, path), {
+        ...init,
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json",
+          ...(init.body ? { "Content-Type": "application/json" } : {}),
+          ...(init.headers ?? {})
+        }
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({ error: response.statusText }))) as Partial<ApiErrorPayload>;
+        throw new ApiRequestError(payload.error ?? response.statusText, response.status, payload.code, payload.requestId, payload.details);
+      }
+      return (await response.json()) as T;
+    } catch (error) {
+      if (controller.signal.aborted && !(error instanceof ApiRequestError)) {
+        throw new ApiRequestError("The API request was cancelled or timed out.", 0, "REQUEST_ABORTED");
+      }
+      throw error;
+    } finally {
+      globalThis.clearTimeout(timeout);
+      init.signal?.removeEventListener("abort", abortFromCaller);
+    }
+  };
+}

@@ -73,7 +73,7 @@ export class DeterministicSemanticExtractor {
 
       for (const pattern of this.schema.relationPatterns) {
         for (const verb of pattern.verbs) {
-          const regex = new RegExp(`([A-Z][A-Za-z0-9+_.-]*(?:\\s+[A-Z][A-Za-z0-9+_.-]*){0,4})\\s+${escapeRegExp(verb)}\\s+([A-Z][A-Za-z0-9+_.-]*(?:\\s+[A-Z][A-Za-z0-9+_.-]*){0,4})`, "g");
+          const regex = new RegExp(`([A-Z][A-Za-z0-9+_.-]*(?:[ \\t]+[A-Z][A-Za-z0-9+_.-]*){0,4})[ \\t]+${escapeRegExp(verb)}[ \\t]+([A-Z][A-Za-z0-9+_.-]*(?:[ \\t]+[A-Z][A-Za-z0-9+_.-]*){0,4})`, "g");
           for (const match of chunk.text.matchAll(regex)) {
             const left = entityByName.get(match[1].trim().toLowerCase());
             const right = entityByName.get(match[2].trim().toLowerCase());
@@ -122,7 +122,7 @@ export class DeterministicSemanticExtractor {
 
   private findEntityCandidates(text: string): Array<{ name: string; type: string; confidence: number }> {
     const candidates: Array<{ name: string; type: string; confidence: number }> = [];
-    const properNouns = text.match(/\b[A-Z][A-Za-z0-9+_.-]*(?:\s+[A-Z][A-Za-z0-9+_.-]*){0,4}\b/g) ?? [];
+    const properNouns = text.match(/\b[A-Z][A-Za-z0-9+_.-]*(?:[ \t]+[A-Z][A-Za-z0-9+_.-]*){0,4}\b/g) ?? [];
     for (const rawName of properNouns) {
       const name = rawName.trim().replace(/[.,;:!?)]$/, "");
       if (name.length < 3 || /^[A-Z]$/.test(name)) continue;
@@ -166,4 +166,3 @@ function uniqueById<T extends { id: string }>(items: T[]): T[] {
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-
