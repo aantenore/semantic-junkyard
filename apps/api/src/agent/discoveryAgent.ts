@@ -72,7 +72,7 @@ export class DiscoveryAgent {
       version: "0.1.0",
       modelAgnostic: true,
       autonomyBoundary:
-        "Agents may autonomously read metadata, search indexed content, traverse approved graph neighborhoods, assemble evidence, and plan business actions. Configured low/medium-risk source writes may execute through the policy-governed writeback gateway and must be verified by source reflection. Privileged, destructive, access-policy, secret, or production-data mutations require approval or are blocked.",
+        "Agents may autonomously read policy-filtered metadata, search indexed content, traverse bounded graph neighborhoods, assemble evidence, and plan business actions. Configured writes may execute only against the exact reviewed plan fingerprint and server-side risk ceiling, and completion requires verified source reflection. Privileged, destructive, access-policy, secret, unsupported, or evidence-free actions are blocked.",
       capabilities: [
         {
           name: "semantic_search",
@@ -125,8 +125,16 @@ export class DiscoveryAgent {
         },
         {
           name: "business_action_execute",
-          description: "Execute a policy-governed business action through source writeback, reread source systems, and reflect verified updates into the semantic layer.",
-          inputSchema: { intent: "string", mode: "autonomous|approval_required|dry_run", approved: "boolean", maxAutonomousRisk: "low|medium|high" },
+          description: "Execute an exact, fingerprinted business action plan through governed source writeback. Approval IDs must come from a separate human-facing approval channel.",
+          inputSchema: {
+            planId: "string",
+            planFingerprint: "sha256",
+            intent: "string",
+            mode: "autonomous|approval_required|dry_run",
+            maxAutonomousRisk: "low|medium|high",
+            approvalId: "string optional",
+            idempotencyKey: "string"
+          },
           risk: "review-required",
           evidenceRequired: true
         }
@@ -137,7 +145,7 @@ export class DiscoveryAgent {
         "Never answer from a chunk, entity, relation, metric, or claim without evidence.",
         "Check policy, quality, freshness, owner, and sensitivity before recommending an action.",
         "For undefined problems, first run discovery, then select the smallest safe tool set, then assemble evidence.",
-        "Generated SQL, policy updates, direct source writes, and destructive actions are outside autonomous scope.",
+        "Generated SQL, policy updates, direct connector writes, unsupported capabilities, and destructive actions are outside autonomous scope.",
         "Never claim an action is complete until source reflection verifies the updated source record and the semantic read model is refreshed."
       ],
       stopConditions: [

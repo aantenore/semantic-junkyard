@@ -1,4 +1,7 @@
 import type {
+  BusinessActionApproval,
+  BusinessActionApprovalRequest,
+  BusinessActionExecutionRequest,
   BusinessActionPlan,
   BusinessActionRequest,
   BusinessActionRun,
@@ -15,11 +18,24 @@ import type {
   SearchRequest,
   SearchResult,
   SemanticUpdate,
+  SourceArtifact,
   SourceSystem,
   SourceSystemRecord,
   SourceWrite
 } from "@semantic-junkyard/shared";
-import { BusinessActionRequestSchema, CuratedRelationRequestSchema, IngestRequestSchema, SearchRequestSchema } from "@semantic-junkyard/shared";
+import {
+  BusinessActionApprovalRequestSchema,
+  BusinessActionExecutionRequestSchema,
+  BusinessActionRequestSchema,
+  CatalogSnapshotSchema,
+  CuratedRelationRequestSchema,
+  EntityLookupRequestSchema,
+  ExpandContextRequestSchema,
+  FindPathsRequestSchema,
+  GraphNeighborsRequestSchema,
+  IngestRequestSchema,
+  SearchRequestSchema
+} from "@semantic-junkyard/shared";
 import { DiscoveryAgent } from "../agent/discoveryAgent.js";
 import { InlineTextConnector } from "../connectors/inlineTextConnector.js";
 import { DeterministicSemanticExtractor } from "../extractors/deterministicExtractor.js";
@@ -28,12 +44,31 @@ import { SemanticWindowChunker } from "../indexing/chunker.js";
 import { HybridQueryPlanner } from "../indexing/queryPlanner.js";
 import { LocalTextParser } from "../parsers/localParser.js";
 import { nowIso, sha256, stableId } from "./hash.js";
+import { DomainError } from "./errors.js";
 import { summarize, tokenize } from "./text.js";
 import { PolicyEngine } from "../storage/policy.js";
+import type { ActorContext } from "../storage/policy.js";
 import type { SemanticRepository } from "../storage/repository.js";
+import { loadSourceSystems } from "../config/sourceSystems.js";
 
 type IngestionPlan = IngestPreviewResponse;
 type RiskLevel = "low" | "medium" | "high" | "blocked";
+
+export interface SemanticEngineOptions {
+  maxAutonomousRisk?: Exclude<RiskLevel, "blocked">;
+  sourceSystems?: SourceSystem[];
+}
+
+class BusinessActionExecutionFailure extends Error {
+  constructor(
+    readonly plan: BusinessActionPlan,
+    readonly createdAt: string,
+    readonly originalError: unknown
+  ) {
+    super("Business action execution failed after the write transaction started.");
+    this.name = "BusinessActionExecutionFailure";
+  }
+}
 
 const riskRank: Record<RiskLevel, number> = {
   low: 1,
@@ -42,100 +77,15 @@ const riskRank: Record<RiskLevel, number> = {
   blocked: 4
 };
 
-const sourceSystems: SourceSystem[] = [
-  {
-    id: "source.data-catalog",
-    name: "Data Catalog",
-    kind: "catalog",
-    description: "Governed catalog adapter for business descriptions, metric definitions, tags, and ownership metadata.",
-    capabilities: [
-      {
-        id: "catalog.update_metric_definition",
-        systemId: "source.data-catalog",
-        label: "Update metric definition",
-        businessCapability: "metric.align_definition",
-        technicalOperation: "catalog.metric.upsert_description",
-        risk: "low",
-        autonomous: true,
-        requiresApproval: false,
-        reversible: true,
-        description: "Writes a governed metric description and supporting semantic evidence into the catalog source."
-      },
-      {
-        id: "catalog.update_asset_description",
-        systemId: "source.data-catalog",
-        label: "Update asset context",
-        businessCapability: "asset.annotate_context",
-        technicalOperation: "catalog.asset.upsert_description",
-        risk: "low",
-        autonomous: true,
-        requiresApproval: false,
-        reversible: true,
-        description: "Writes business context on a catalog asset without changing source data."
-      }
-    ]
-  },
-  {
-    id: "source.openmetadata",
-    name: "OpenMetadata Mirror",
-    kind: "metadata-api",
-    description: "Metadata API adapter shape for lineage and semantic relationship publication.",
-    capabilities: [
-      {
-        id: "openmetadata.publish_lineage",
-        systemId: "source.openmetadata",
-        label: "Publish lineage edge",
-        businessCapability: "lineage.publish_dependency",
-        technicalOperation: "openmetadata.lineage.upsert_edge",
-        risk: "medium",
-        autonomous: true,
-        requiresApproval: false,
-        reversible: true,
-        description: "Publishes a reversible metadata lineage edge that can be reread as source truth."
-      }
-    ]
-  },
-  {
-    id: "source.dbt-repo",
-    name: "dbt Semantic Repository",
-    kind: "git",
-    description: "Git-backed semantic model adapter that creates reviewable contract and test proposals.",
-    capabilities: [
-      {
-        id: "dbt.create_contract_pr",
-        systemId: "source.dbt-repo",
-        label: "Create dbt contract PR",
-        businessCapability: "contract.propose_change",
-        technicalOperation: "git.pull_request.create",
-        risk: "medium",
-        autonomous: true,
-        requiresApproval: false,
-        reversible: true,
-        description: "Creates a source-side pull request proposal instead of silently changing production models."
-      }
-    ]
-  },
-  {
-    id: "source.ticketing",
-    name: "Governance Ticketing",
-    kind: "ticketing",
-    description: "Ticketing adapter for owner review, approval, and business accountability.",
-    capabilities: [
-      {
-        id: "ticketing.create_owner_review",
-        systemId: "source.ticketing",
-        label: "Create owner review task",
-        businessCapability: "governance.request_owner_review",
-        technicalOperation: "ticket.create",
-        risk: "low",
-        autonomous: true,
-        requiresApproval: false,
-        reversible: true,
-        description: "Creates an owner review task with evidence, target systems, and verification state."
-      }
-    ]
-  }
-];
+const MAX_GRAPH_NEIGHBOR_NODES = 250;
+const MAX_GRAPH_NEIGHBOR_EDGES = 500;
+const MAX_PATH_EXPANSIONS = 10_000;
+
+const automationActor: ActorContext = {
+  actor: "semantic-junkyard-agent",
+  roles: ["semantic-reader", "business-action-planner"],
+  clearance: "confidential"
+};
 
 export class SemanticEngine {
   private readonly connector = new InlineTextConnector();
@@ -146,7 +96,12 @@ export class SemanticEngine {
   private readonly policy = new PolicyEngine();
   private readonly discoveryAgent: DiscoveryAgent;
 
-  constructor(private readonly repository: SemanticRepository) {
+  private readonly maxAutonomousRisk: Exclude<RiskLevel, "blocked">;
+  private readonly configuredSourceSystems: SourceSystem[];
+
+  constructor(private readonly repository: SemanticRepository, options: SemanticEngineOptions = {}) {
+    this.maxAutonomousRisk = options.maxAutonomousRisk ?? "medium";
+    this.configuredSourceSystems = structuredClone(options.sourceSystems ?? loadSourceSystems());
     this.planner = new HybridQueryPlanner(repository);
     this.discoveryAgent = new DiscoveryAgent(repository);
   }
@@ -158,16 +113,18 @@ export class SemanticEngine {
   ingest(rawRequest: unknown): IngestResponse {
     const plan = this.planIngestion(rawRequest);
     const vectors = new Map(plan.chunks.map((chunk) => [chunk.id, embedText(chunk.text)]));
-    this.repository.saveSource(plan.source);
-    this.repository.saveElements(plan.elements);
-    this.repository.saveChunks(plan.chunks, vectors);
-    this.repository.saveEntities(plan.entities);
-    this.repository.saveRelations(plan.relations);
-    this.repository.saveClaims(plan.claims);
-    this.repository.audit("system", "ingest", plan.source.id, "allow", {
-      chunks: plan.chunks.length,
-      entities: plan.entities.length,
-      relations: plan.relations.length
+    this.repository.transaction(() => {
+      this.repository.saveSource(plan.source);
+      this.repository.saveElements(plan.elements);
+      this.repository.saveChunks(plan.chunks, vectors);
+      this.repository.saveEntities(plan.entities);
+      this.repository.saveRelations(plan.relations);
+      this.repository.saveClaims(plan.claims);
+      this.repository.audit("system", "ingest", plan.source.id, "allow", {
+        chunks: plan.chunks.length,
+        entities: plan.entities.length,
+        relations: plan.relations.length
+      });
     });
 
     return {
@@ -181,37 +138,39 @@ export class SemanticEngine {
 
   curateRelation(rawRequest: unknown): CuratedRelationResponse {
     const request = CuratedRelationRequestSchema.parse(rawRequest);
-    const evidence = request.evidenceChunkId ? this.repository.evidence(request.evidenceChunkId) : this.createCurationEvidence(request);
-    if (!evidence) {
-      throw new Error(`Evidence chunk not found: ${request.evidenceChunkId}`);
-    }
-    const sourceEntity = this.upsertCuratedEntity(request.sourceName, request.sourceType, evidence.chunkId, request.confidence, request.metadata);
-    const targetEntity = this.upsertCuratedEntity(request.targetName, request.targetType, evidence.chunkId, request.confidence, request.metadata);
-    const relation = {
-      id: stableId("rel", `${sourceEntity.id}:${request.relationType}:${targetEntity.id}:${evidence.chunkId}`),
-      sourceEntityId: sourceEntity.id,
-      targetEntityId: targetEntity.id,
-      type: request.relationType.toUpperCase().replace(/\s+/g, "_"),
-      confidence: request.confidence,
-      evidenceChunkId: evidence.chunkId,
-      metadata: {
-        ...request.metadata,
-        origin: typeof request.metadata.origin === "string" ? request.metadata.origin : "manual-curation",
-        rationale: request.rationale ?? null,
-        curatedAt: nowIso()
+    return this.repository.transaction(() => {
+      const evidence = request.evidenceChunkId ? this.getEvidence(request.evidenceChunkId) : this.createCurationEvidence(request);
+      if (!evidence) {
+        throw new DomainError("EVIDENCE_NOT_FOUND", `Evidence chunk not found: ${request.evidenceChunkId}`, 404);
       }
-    };
-    this.repository.saveRelations([relation]);
-    this.repository.audit("human", "semantic.curate_relation", relation.id, "allow", {
-      sourceEntity: sourceEntity.canonicalName,
-      targetEntity: targetEntity.canonicalName,
-      type: relation.type
+      const sourceEntity = this.upsertCuratedEntity(request.sourceName, request.sourceType, evidence.chunkId, request.confidence, request.metadata);
+      const targetEntity = this.upsertCuratedEntity(request.targetName, request.targetType, evidence.chunkId, request.confidence, request.metadata);
+      const relation = {
+        id: stableId("rel", `${sourceEntity.id}:${request.relationType}:${targetEntity.id}:${evidence.chunkId}`),
+        sourceEntityId: sourceEntity.id,
+        targetEntityId: targetEntity.id,
+        type: request.relationType.toUpperCase().replace(/\s+/g, "_"),
+        confidence: request.confidence,
+        evidenceChunkId: evidence.chunkId,
+        metadata: {
+          ...request.metadata,
+          origin: typeof request.metadata.origin === "string" ? request.metadata.origin : "manual-curation",
+          rationale: request.rationale ?? null,
+          curatedAt: nowIso()
+        }
+      };
+      this.repository.saveRelations([relation]);
+      this.repository.audit("human", "semantic.curate_relation", relation.id, "allow", {
+        sourceEntity: sourceEntity.canonicalName,
+        targetEntity: targetEntity.canonicalName,
+        type: relation.type
+      });
+      return { sourceEntity, targetEntity, relation, evidence };
     });
-    return { sourceEntity, targetEntity, relation, evidence };
   }
 
   sourceSystems(): SourceSystem[] {
-    return sourceSystems;
+    return structuredClone(this.configuredSourceSystems);
   }
 
   planBusinessAction(rawRequest: unknown): BusinessActionPlan {
@@ -219,79 +178,172 @@ export class SemanticEngine {
     return this.buildBusinessActionPlan(request);
   }
 
-  executeBusinessAction(rawRequest: unknown): BusinessActionRun {
-    const request = BusinessActionRequestSchema.parse(rawRequest);
-    const plan = this.buildBusinessActionPlan(request);
-    const blockedTargets = plan.targets.filter((target) => target.autonomy !== "autonomous");
-    const isDryRun = request.mode === "dry_run";
-    const createdAt = nowIso();
+  approveBusinessAction(rawRequest: unknown, actor = "local-user"): BusinessActionApproval {
+    const request = BusinessActionApprovalRequestSchema.parse(rawRequest);
+    const plan = this.buildBusinessActionPlan(this.planRequestFromApproval(request));
+    this.assertPlanIdentity(plan, request.planId, request.planFingerprint);
+    if (plan.status !== "approval_required") {
+      throw new DomainError("APPROVAL_NOT_REQUIRED", "This plan does not require approval.", 409);
+    }
 
-    if (isDryRun || blockedTargets.length > 0) {
-      const run: BusinessActionRun = {
-        id: stableId("action_run", `${plan.id}:${createdAt}`),
+    const createdAt = nowIso();
+    const approval: BusinessActionApproval = {
+      id: stableId("approval", `${plan.id}:${plan.fingerprint}:${actor}:${createdAt}`),
+      planId: plan.id,
+      planFingerprint: plan.fingerprint,
+      approvedBy: actor,
+      rationale: request.rationale,
+      status: "active",
+      createdAt,
+      consumedAt: null
+    };
+    this.repository.transaction(() => {
+      this.repository.saveBusinessActionApproval(approval);
+      this.repository.audit(actor, "business_action.approve", approval.id, "allow", {
+        planId: plan.id,
+        planFingerprint: plan.fingerprint
+      });
+    });
+    return approval;
+  }
+
+  executeBusinessAction(rawRequest: unknown, actor = "local-user"): BusinessActionRun {
+    const request = BusinessActionExecutionRequestSchema.parse(rawRequest);
+    const replay = this.repository.getBusinessActionRunByIdempotencyKey(request.idempotencyKey);
+    if (replay) this.assertIdempotencyMatch(replay, request);
+    if (replay && replay.status !== "approval_required") return replay;
+    try {
+      return this.repository.immediateTransaction(() => {
+        const concurrentReplay = this.repository.getBusinessActionRunByIdempotencyKey(request.idempotencyKey);
+        if (concurrentReplay) {
+          this.assertIdempotencyMatch(concurrentReplay, request);
+          if (concurrentReplay.status !== "approval_required") return concurrentReplay;
+        }
+
+        const planRequest = this.planRequestFromExecution(request);
+        const plan = this.buildBusinessActionPlan(planRequest);
+        this.assertPlanIdentity(plan, request.planId, request.planFingerprint);
+
+        if (plan.status === "blocked") {
+          const run = this.buildNonExecutingRun(plan, request, "blocked");
+          this.repository.saveBusinessActionRun(run);
+          this.repository.audit(actor, "business_action.execute", run.id, "deny", { reason: "plan_blocked", intent: request.intent });
+          return run;
+        }
+
+        if (request.mode === "dry_run") {
+          const run = this.buildNonExecutingRun(plan, request, "planned");
+          this.repository.saveBusinessActionRun(run);
+          this.repository.audit(actor, "business_action.dry_run", run.id, "allow", { intent: request.intent });
+          return run;
+        }
+
+        const approvalTargets = plan.targets.filter((target) => target.autonomy === "approval_required");
+        if (approvalTargets.length > 0 && !request.approvalId) {
+          const run = this.buildNonExecutingRun(plan, request, "approval_required");
+          this.repository.saveBusinessActionRun(run);
+          this.repository.audit(actor, "business_action.execute", run.id, "review", {
+            intent: request.intent,
+            approvalTargets: approvalTargets.map((target) => target.stepId)
+          });
+          return run;
+        }
+
+        const approval = approvalTargets.length > 0 ? this.validApproval(request.approvalId, plan) : null;
+        const createdAt = nowIso();
+        if (approval && !this.repository.consumeBusinessActionApproval(approval.id, createdAt)) {
+          throw new DomainError("INVALID_APPROVAL", "Approval was already consumed by another execution.", 403);
+        }
+        try {
+          const writes = plan.targets.map((target) => this.executeSourceWrite(plan, target, planRequest, actor));
+          const reflectionPackage = this.reflectSourceWrites(plan, writes, planRequest);
+          const fullyVerified = writes.length > 0 && reflectionPackage.reflections.length === writes.length && reflectionPackage.reflections.every((reflection) => reflection.status === "verified");
+          const runStatus: BusinessActionRun["status"] = fullyVerified ? "verified" : "reflected";
+          const run: BusinessActionRun = {
+            id: stableId("action_run", request.idempotencyKey),
+            idempotencyKey: request.idempotencyKey,
+            intent: request.intent,
+            actionType: plan.actionType,
+            status: runStatus,
+            mode: request.mode,
+            risk: plan.risk,
+            plan: {
+              ...plan,
+              status: runStatus,
+              targets: plan.targets.map((target) => {
+                const write = writes.find((item) => item.stepId === target.stepId);
+                const reflection = write ? reflectionPackage.reflections.find((item) => item.writeId === write.id) : null;
+                return { ...target, status: reflection?.status === "verified" ? "verified" : "failed" };
+              })
+            },
+            writes,
+            reflections: reflectionPackage.reflections,
+            semanticUpdates: reflectionPackage.semanticUpdates,
+            createdAt,
+            completedAt: nowIso()
+          };
+          this.repository.saveBusinessActionRun(run);
+          this.repository.audit(actor, "business_action.execute", run.id, fullyVerified ? "allow" : "review", {
+            intent: request.intent,
+            writes: writes.length,
+            verifiedReflections: reflectionPackage.reflections.filter((reflection) => reflection.status === "verified").length,
+            semanticUpdates: reflectionPackage.semanticUpdates.length,
+            approvalId: approval?.id ?? null
+          });
+          return run;
+        } catch (error) {
+          if (error instanceof DomainError) throw error;
+          throw new BusinessActionExecutionFailure(plan, createdAt, error);
+        }
+      });
+    } catch (error) {
+      if (!(error instanceof BusinessActionExecutionFailure)) throw error;
+      const plan = error.plan;
+      const failedRun: BusinessActionRun = {
+        id: stableId("action_run", request.idempotencyKey),
+        idempotencyKey: request.idempotencyKey,
         intent: request.intent,
         actionType: plan.actionType,
-        status: isDryRun ? "planned" : "approval_required",
+        status: "failed",
         mode: request.mode,
         risk: plan.risk,
         plan: {
           ...plan,
-          status: isDryRun ? "planned" : "approval_required",
-          targets: plan.targets.map((target) => ({
-            ...target,
-            status: target.autonomy === "autonomous" && !isDryRun ? "planned" : target.status
-          }))
+          status: "failed",
+          warnings: [...plan.warnings, "Execution rolled back before completion."],
+          targets: plan.targets.map((target) => ({ ...target, status: "failed" }))
         },
         writes: [],
         reflections: [],
         semanticUpdates: [],
-        createdAt,
-        completedAt: isDryRun ? createdAt : null
+        createdAt: error.createdAt,
+        completedAt: nowIso()
       };
-      this.repository.saveBusinessActionRun(run);
-      this.repository.audit(request.actor, "business_action.plan", run.id, isDryRun ? "allow" : "review", {
-        intent: request.intent,
-        blockedTargets: blockedTargets.map((target) => target.stepId)
+      return this.repository.immediateTransaction(() => {
+        const concurrentReplay = this.repository.getBusinessActionRunByIdempotencyKey(request.idempotencyKey);
+        if (concurrentReplay) {
+          this.assertIdempotencyMatch(concurrentReplay, request);
+          if (concurrentReplay.status !== "approval_required") return concurrentReplay;
+        }
+        this.repository.saveBusinessActionRun(failedRun);
+        this.repository.audit(actor, "business_action.execute", failedRun.id, "deny", {
+          intent: request.intent,
+          errorType: error.originalError instanceof Error ? error.originalError.name : "unknown"
+        });
+        return failedRun;
       });
-      return run;
     }
-
-    const writes = plan.targets.map((target) => this.executeSourceWrite(plan, target, request));
-    const reflectionPackage = this.reflectSourceWrites(plan, writes, request);
-    const run: BusinessActionRun = {
-      id: stableId("action_run", `${plan.id}:${createdAt}`),
-      intent: request.intent,
-      actionType: plan.actionType,
-      status: reflectionPackage.reflections.every((reflection) => reflection.status === "verified") ? "verified" : "reflected",
-      mode: request.mode,
-      risk: plan.risk,
-      plan: {
-        ...plan,
-        status: "verified",
-        targets: plan.targets.map((target) => ({ ...target, status: "verified" }))
-      },
-      writes,
-      reflections: reflectionPackage.reflections,
-      semanticUpdates: reflectionPackage.semanticUpdates,
-      createdAt,
-      completedAt: nowIso()
-    };
-    this.repository.saveBusinessActionRun(run);
-    this.repository.audit(request.actor, "business_action.execute", run.id, "allow", {
-      intent: request.intent,
-      writes: writes.length,
-      reflections: reflectionPackage.reflections.length,
-      semanticUpdates: reflectionPackage.semanticUpdates.length
-    });
-    return run;
   }
 
-  importCatalog(snapshot: CatalogSnapshot): CatalogSnapshot {
-    this.repository.upsertCatalog(snapshot);
-    this.repository.audit("system", "catalog.import", "catalog", "allow", {
-      assets: snapshot.assets.length,
-      metrics: snapshot.metrics.length,
-      policies: snapshot.policies.length
+  importCatalog(rawSnapshot: unknown): CatalogSnapshot {
+    const snapshot = CatalogSnapshotSchema.parse(rawSnapshot);
+    this.repository.transaction(() => {
+      this.repository.upsertCatalog(snapshot);
+      this.repository.audit("system", "catalog.import", "catalog", "allow", {
+        assets: snapshot.assets.length,
+        metrics: snapshot.metrics.length,
+        policies: snapshot.policies.length
+      });
     });
     return this.repository.catalog();
   }
@@ -316,31 +368,49 @@ export class SemanticEngine {
     return this.discoveryAgent.manifest();
   }
 
-  entityLookup(name: string) {
-    const normalized = name.toLowerCase();
+  entityLookup(rawRequest: unknown) {
+    const request = EntityLookupRequestSchema.parse(typeof rawRequest === "string" ? { name: rawRequest } : rawRequest);
+    const normalized = request.name?.toLowerCase();
     const graph = this.repository.graphSnapshot();
-    return this.repository
+    const entities = this.repository
       .getEntities()
-      .filter((entity) => entity.canonicalName.toLowerCase().includes(normalized) || entity.aliases.some((alias) => alias.toLowerCase().includes(normalized)))
+      .filter((entity) =>
+        request.entityId
+          ? entity.id === request.entityId
+          : Boolean(normalized) && (entity.canonicalName.toLowerCase().includes(normalized!) || entity.aliases.some((alias) => alias.toLowerCase().includes(normalized!)))
+      )
+      .slice(0, request.topK)
       .map((entity) => ({
         ...entity,
         degree: graph.edges.filter((edge) => edge.source === entity.id || edge.target === entity.id).length,
-        evidence: entity.evidenceChunkIds.map((chunkId) => this.repository.evidence(chunkId)).filter(Boolean)
+        evidence: entity.evidenceChunkIds.map((chunkId) => this.getEvidence(chunkId)).filter((item) => item !== null)
       }));
+    this.repository.audit("agent", "entity_lookup", request.entityId ?? request.name ?? "unknown", "allow", { returned: entities.length });
+    return entities;
   }
 
-  graphNeighbors(entityId: string, depth = 1) {
-    const maxDepth = Math.min(Math.max(depth, 1), 2);
+  graphNeighbors(rawRequest: unknown, legacyDepth?: number) {
+    const request = GraphNeighborsRequestSchema.parse(typeof rawRequest === "string" ? { entityId: rawRequest, depth: legacyDepth } : rawRequest);
+    const { entityId, depth: maxDepth } = request;
     const graph = this.repository.graphSnapshot();
     const visited = new Set([entityId]);
     const frontier = new Set([entityId]);
     const selectedEdges = new Map<string, (typeof graph.edges)[number]>();
+    let budgetExceeded = false;
     for (let level = 0; level < maxDepth; level += 1) {
       const next = new Set<string>();
       for (const edge of graph.edges) {
         if (frontier.has(edge.source) || frontier.has(edge.target)) {
-          selectedEdges.set(edge.id, edge);
           const other = frontier.has(edge.source) ? edge.target : edge.source;
+          if (!visited.has(other) && visited.size >= MAX_GRAPH_NEIGHBOR_NODES) {
+            budgetExceeded = true;
+            continue;
+          }
+          if (!selectedEdges.has(edge.id) && selectedEdges.size >= MAX_GRAPH_NEIGHBOR_EDGES) {
+            budgetExceeded = true;
+            break;
+          }
+          selectedEdges.set(edge.id, edge);
           if (!visited.has(other)) {
             visited.add(other);
             next.add(other);
@@ -349,35 +419,58 @@ export class SemanticEngine {
       }
       frontier.clear();
       for (const item of next) frontier.add(item);
+      if (selectedEdges.size >= MAX_GRAPH_NEIGHBOR_EDGES) break;
     }
-    return {
+    const result = {
       nodes: graph.nodes.filter((node) => visited.has(node.id)),
       edges: [...selectedEdges.values()]
     };
+    this.repository.audit("agent", "graph_neighbors", entityId, "allow", {
+      depth: maxDepth,
+      nodes: result.nodes.length,
+      edges: result.edges.length,
+      budgetExceeded
+    });
+    return result;
   }
 
-  findPaths(fromEntityId: string, toEntityId: string, maxDepth = 4) {
+  findPaths(rawRequest: unknown, legacyToEntityId?: string, legacyMaxDepth?: number) {
+    const request = FindPathsRequestSchema.parse(
+      typeof rawRequest === "string" ? { fromEntityId: rawRequest, toEntityId: legacyToEntityId, maxDepth: legacyMaxDepth } : rawRequest
+    );
+    const { fromEntityId, toEntityId, maxDepth: boundedDepth } = request;
     const graph = this.repository.graphSnapshot();
-    const boundedDepth = Math.min(Math.max(maxDepth, 1), 4);
     const queue: Array<{ nodeId: string; path: string[] }> = [{ nodeId: fromEntityId, path: [] }];
-    const visited = new Set<string>();
-    while (queue.length > 0) {
+    const visited = new Set<string>([fromEntityId]);
+    let expansions = 0;
+    while (queue.length > 0 && expansions < MAX_PATH_EXPANSIONS) {
       const current = queue.shift();
       if (!current) break;
+      expansions += 1;
       if (current.nodeId === toEntityId) {
-        return current.path.map((edgeId) => graph.edges.find((edge) => edge.id === edgeId)).filter(Boolean);
+        const path = current.path.map((edgeId) => graph.edges.find((edge) => edge.id === edgeId)).filter((edge) => edge !== undefined);
+        this.repository.audit("agent", "find_paths", `${fromEntityId}->${toEntityId}`, "allow", { maxDepth: boundedDepth, edges: path.length });
+        return path;
       }
-      if (current.path.length >= boundedDepth || visited.has(current.nodeId)) continue;
-      visited.add(current.nodeId);
+      if (current.path.length >= boundedDepth) continue;
       for (const edge of graph.edges.filter((candidate) => candidate.source === current.nodeId || candidate.target === current.nodeId)) {
         const nextNode = edge.source === current.nodeId ? edge.target : edge.source;
+        if (visited.has(nextNode)) continue;
+        visited.add(nextNode);
         queue.push({ nodeId: nextNode, path: [...current.path, edge.id] });
       }
     }
+    this.repository.audit("agent", "find_paths", `${fromEntityId}->${toEntityId}`, "allow", {
+      maxDepth: boundedDepth,
+      edges: 0,
+      expansions,
+      budgetExceeded: queue.length > 0
+    });
     return [];
   }
 
-  expandContext(input: { query?: string; chunkIds?: string[]; entityIds?: string[] }) {
+  expandContext(rawInput: unknown) {
+    const input = ExpandContextRequestSchema.parse(rawInput);
     const searchResults = input.query ? this.search({ query: input.query, topK: 5, mode: "hybrid" }) : [];
     const chunkIds = new Set([...(input.chunkIds ?? []), ...searchResults.map((result) => result.chunkId)]);
     for (const entityId of input.entityIds ?? []) {
@@ -385,13 +478,39 @@ export class SemanticEngine {
         for (const chunkId of entity.evidenceChunkIds) chunkIds.add(chunkId);
       }
     }
-    const evidence = [...chunkIds].map((chunkId) => this.repository.evidence(chunkId)).filter(Boolean);
-    return {
+    const evidence = [...chunkIds].slice(0, 25).map((chunkId) => this.getEvidence(chunkId)).filter((item) => item !== null);
+    const result = {
       query: input.query ?? null,
       evidence,
-      entities: this.repository.getEntities().filter((entity) => evidence.some((item) => item?.chunkId && entity.evidenceChunkIds.includes(item.chunkId))),
+      entities: this.repository.getEntities().filter((entity) => evidence.some((item) => entity.evidenceChunkIds.includes(item.chunkId))).slice(0, 25),
       guidance: "Use these evidence spans as citations. If evidence is insufficient, stop instead of guessing."
     };
+    this.repository.audit("agent", "expand_context", input.query ?? "explicit_ids", "allow", { evidence: result.evidence.length, entities: result.entities.length });
+    return result;
+  }
+
+  getEvidence(chunkId: string) {
+    const evidence = this.repository.evidence(chunkId);
+    if (!evidence) return null;
+    const text = this.policy.applyTextPolicies(evidence.text, this.repository.catalog().policies);
+    if (text === null) return null;
+    return { ...evidence, text };
+  }
+
+  getSources(): SourceArtifact[] {
+    const policies = this.repository.catalog().policies;
+    return this.repository
+      .getSources()
+      .map((source) => {
+        if (source.ingestionMode !== "full_data") return { ...source, text: "" };
+        const text = this.policy.applyTextPolicies(source.text, policies);
+        return text === null ? null : { ...source, text };
+      })
+      .filter((source): source is SourceArtifact => source !== null);
+  }
+
+  redactOperationalData<T>(value: T): T {
+    return this.policy.applyDataPolicies(value, this.repository.catalog().policies);
   }
 
   explainPermissions(intent: string) {
@@ -413,38 +532,67 @@ export class SemanticEngine {
     const catalog = this.repository.catalog();
     const evidence = this.search({ query: request.intent, topK: 5, mode: "hybrid" }).slice(0, 4);
     const actionType = this.resolveBusinessActionType(request.intent);
+    const actionBlocked = actionType === "blocked" || actionType === "unsupported";
+    const evidenceMissing = evidence.length === 0;
     const primaryMetric = this.findMetricForIntent(request.intent, catalog);
     const [fromAsset, toAsset] = this.findAssetPairForIntent(request.intent, catalog);
+    const governedAssets = [...new Map([fromAsset, toAsset].filter((asset) => asset !== null).map((asset) => [asset.id, asset])).values()];
+    const assetDecisions = governedAssets.map((asset) => ({ asset, decision: this.policy.evaluateAsset(asset, automationActor) }));
+    const deniedAssets = assetDecisions.filter((item) => item.decision.decision === "deny");
+    const reviewAssets = assetDecisions.filter((item) => item.decision.decision === "review");
+    const policyBlocked = deniedAssets.length > 0;
     const title = this.businessActionTitle(actionType, primaryMetric?.label ?? fromAsset?.name ?? "Business semantic update");
-    const targets = this.buildBusinessActionTargets({
-      request,
-      actionType,
-      evidenceChunkIds: evidence.map((item) => item.chunkId),
-      metricName: primaryMetric?.name ?? "business_metric",
-      metricLabel: primaryMetric?.label ?? "Business metric",
-      metricDescription: primaryMetric?.description ?? null,
-      fromAssetName: fromAsset?.name ?? "Source business asset",
-      fromAssetId: fromAsset?.id ?? "source_asset",
-      toAssetName: toAsset?.name ?? "Target business asset",
-      toAssetId: toAsset?.id ?? "target_asset"
-    });
-    const risk = this.highestRisk(targets.map((target) => target.risk));
+    const plannedTargets = actionBlocked || policyBlocked
+      ? []
+      : this.buildBusinessActionTargets({
+          request,
+          actionType,
+          evidenceChunkIds: evidence.map((item) => item.chunkId),
+          metricName: primaryMetric?.name ?? "business_metric",
+          metricLabel: primaryMetric?.label ?? "Business metric",
+          metricDescription: primaryMetric?.description ?? null,
+          fromAssetName: fromAsset?.name ?? "Source business asset",
+          fromAssetId: fromAsset?.id ?? "source_asset",
+          toAssetName: toAsset?.name ?? "Target business asset",
+          toAssetId: toAsset?.id ?? "target_asset"
+        });
+    const targets = evidenceMissing
+      ? plannedTargets.map((target) => ({ ...target, autonomy: "blocked" as const, status: "blocked" as const }))
+      : reviewAssets.length > 0
+        ? plannedTargets.map((target) => ({ ...target, autonomy: "approval_required" as const, status: "approval_required" as const }))
+        : plannedTargets;
+    const risk = actionBlocked || policyBlocked || evidenceMissing ? "blocked" : this.highestRisk(targets.map((target) => target.risk));
     const approvalTargets = targets.filter((target) => target.autonomy === "approval_required");
+    const id = stableId("action_plan", `${request.intent}:${actionType}:${targets.map((target) => target.objectKey).join("|")}`);
+    const warnings = [
+      actionType === "blocked" ? "The intent requests a destructive, privileged, secret-related, or access-policy action and is blocked." : null,
+      actionType === "unsupported" ? "The requested action is not mapped to a configured business capability." : null,
+      ...deniedAssets.map(({ asset, decision }) => `Asset ${asset.name} is not authorized for automation: ${decision.reason}`),
+      ...reviewAssets.map(({ asset, decision }) => `Asset ${asset.name} requires human review: ${decision.reason}`),
+      evidenceMissing ? "No authorized evidence was found. The plan is blocked until relevant evidence is ingested." : null,
+      riskRank[request.maxAutonomousRisk] > riskRank[this.maxAutonomousRisk]
+        ? `Requested autonomy ${request.maxAutonomousRisk} exceeds the server ceiling ${this.maxAutonomousRisk}.`
+        : null,
+      approvalTargets.length > 0 ? `${approvalTargets.length} target requires approval before execution.` : null
+    ].filter((item): item is string => Boolean(item));
+    const status: BusinessActionPlan["status"] = risk === "blocked" ? "blocked" : approvalTargets.length > 0 ? "approval_required" : "planned";
+    const fingerprint = sha256(
+      JSON.stringify({ id, intent: request.intent, actionType, mode: request.mode, maxAutonomousRisk: request.maxAutonomousRisk, risk, targets, warnings })
+    );
 
     return {
-      id: stableId("action_plan", `${request.intent}:${actionType}:${targets.map((target) => target.objectKey).join("|")}`),
+      id,
+      fingerprint,
       intent: request.intent,
       actionType,
       title,
       summary: `Semantic Junkyard resolved the business intent into ${targets.length} source-system write target${targets.length === 1 ? "" : "s"} and ${evidence.length} evidence span${evidence.length === 1 ? "" : "s"}.`,
       mode: request.mode,
+      maxAutonomousRisk: request.maxAutonomousRisk,
       risk,
-      status: approvalTargets.length > 0 ? "approval_required" : "planned",
+      status,
       targets,
-      warnings: [
-        evidence.length === 0 ? "No direct evidence was found; writeback should stay in review mode until more context is ingested." : null,
-        approvalTargets.length > 0 ? `${approvalTargets.length} target requires approval before execution.` : null
-      ].filter((item): item is string => Boolean(item)),
+      warnings,
       createdAt: nowIso()
     };
   }
@@ -464,11 +612,20 @@ export class SemanticEngine {
     const sharedRationale = "Selected by the semantic action router from the intent, matching catalog concepts, lineage assets, and available source-system capabilities.";
     const targets: BusinessActionTarget[] = [];
     const addTarget = (target: Omit<BusinessActionTarget, "autonomy" | "status" | "evidenceChunkIds"> & { risk: RiskLevel }) => {
-      const autonomy = this.autonomyFor(target.risk, input.request);
+      const capability = this.configuredSourceSystems
+        .find((system) => system.id === target.systemId)
+        ?.capabilities.find((candidate) => candidate.businessCapability === target.capability && candidate.technicalOperation === target.technicalOperation);
+      const risk = capability ? this.highestRisk([target.risk, capability.risk]) : "blocked";
+      const autonomy = !capability
+        ? "blocked"
+        : capability.requiresApproval || !capability.autonomous
+          ? "approval_required"
+          : this.autonomyFor(risk, input.request);
       targets.push({
         ...target,
+        risk,
         autonomy,
-        status: autonomy === "approval_required" ? "approval_required" : "planned",
+        status: autonomy === "blocked" ? "blocked" : autonomy === "approval_required" ? "approval_required" : "planned",
         evidenceChunkIds: input.evidenceChunkIds
       });
     };
@@ -548,26 +705,38 @@ export class SemanticEngine {
     return targets;
   }
 
-  private executeSourceWrite(plan: BusinessActionPlan, target: BusinessActionTarget, request: BusinessActionRequest): SourceWrite {
+  private executeSourceWrite(plan: BusinessActionPlan, target: BusinessActionTarget, request: BusinessActionRequest, actor: string): SourceWrite {
     const createdAt = nowIso();
+    const writeId = stableId("write", `${plan.fingerprint}:${target.stepId}`);
     if (target.systemId === "source.data-catalog") {
       this.applyCatalogTarget(target, plan, request);
     }
     if (target.systemId === "source.openmetadata") {
       this.applyLineageTarget(target, plan, request);
     }
+    const expectedRecord = {
+      planFingerprint: plan.fingerprint,
+      stepId: target.stepId,
+      systemId: target.systemId,
+      objectType: target.objectType,
+      objectKey: target.objectKey,
+      operation: target.technicalOperation,
+      diff: target.diff
+    };
     const payload = {
       intent: request.intent,
       actionType: plan.actionType,
       planId: plan.id,
-      stepId: target.stepId,
+      writeId,
+      ...expectedRecord,
+      expectedHash: sha256(JSON.stringify(expectedRecord)),
       capability: target.capability,
       technicalOperation: target.technicalOperation,
       risk: target.risk,
       autonomy: target.autonomy,
       diff: target.diff,
       evidenceChunkIds: target.evidenceChunkIds,
-      actor: request.actor,
+      actor,
       appliedAt: createdAt
     };
     const record = this.repository.saveSourceSystemRecord({
@@ -580,7 +749,7 @@ export class SemanticEngine {
       updatedAt: createdAt
     });
     return {
-      id: stableId("write", `${plan.id}:${target.stepId}:${createdAt}`),
+      id: writeId,
       planId: plan.id,
       stepId: target.stepId,
       systemId: target.systemId,
@@ -603,7 +772,28 @@ export class SemanticEngine {
     const observedAt = nowIso();
     const reflections = writes.map<ReflectionResult>((write) => {
       const record = this.repository.getSourceSystemRecord(write.systemId, write.objectType, write.objectKey);
-      const reflected = record?.payload && record.payload.intent === request.intent && record.payload.planId === plan.id;
+      const observedRecord = record
+        ? {
+            planFingerprint: record.payload.planFingerprint,
+            stepId: record.payload.stepId,
+            systemId: record.systemId,
+            objectType: record.objectType,
+            objectKey: record.objectKey,
+            operation: record.payload.technicalOperation,
+            diff: record.payload.diff
+          }
+        : null;
+      const reflected = Boolean(
+        record &&
+          observedRecord &&
+          record.id === write.payload.sourceRecordId &&
+          record.version === write.payload.version &&
+          record.payload.writeId === write.id &&
+          record.payload.intent === request.intent &&
+          record.payload.planId === plan.id &&
+          record.payload.expectedHash === write.payload.expectedHash &&
+          sha256(JSON.stringify(observedRecord)) === write.payload.expectedHash
+      );
       return {
         id: stableId("reflection", `${write.id}:${observedAt}`),
         writeId: write.id,
@@ -616,7 +806,12 @@ export class SemanticEngine {
         observedAt
       };
     });
-    const reflectionText = this.buildReflectionText(plan, writes, reflections);
+    const verifiedWrites = writes.filter((write) => reflections.find((reflection) => reflection.writeId === write.id)?.status === "verified");
+    if (verifiedWrites.length === 0) {
+      return { reflections, semanticUpdates: [] };
+    }
+
+    const reflectionText = this.buildReflectionText(plan, verifiedWrites, reflections);
     const ingested = this.ingest({
       name: `business-action-reflection-${plan.id}.md`,
       mimeType: "text/markdown",
@@ -629,9 +824,12 @@ export class SemanticEngine {
       }
     });
     const evidenceChunkId = ingested.chunks[0]?.id ?? null;
-    const updatedReflections = reflections.map((reflection) => ({ ...reflection, evidenceChunkId }));
+    const updatedReflections = reflections.map((reflection) => ({
+      ...reflection,
+      evidenceChunkId: reflection.status === "verified" ? evidenceChunkId : null
+    }));
     const curatedRelations = evidenceChunkId
-      ? writes.map((write) =>
+      ? verifiedWrites.map((write) =>
           this.curateRelation({
             sourceName: plan.title,
             sourceType: "BusinessAction",
@@ -663,7 +861,7 @@ export class SemanticEngine {
       `# Business Action Reflection`,
       `Intent: ${plan.intent}`,
       `Action type: ${plan.actionType}`,
-      `Status: ${reflections.every((reflection) => reflection.status === "verified") ? "verified" : "drift_detected"}`,
+      "Status: verified",
       "",
       "Verified source writes:"
     ];
@@ -673,7 +871,7 @@ export class SemanticEngine {
     }
     lines.push("", "Business semantic result:");
     lines.push(`${plan.title} is reflected in ${writes.map((write) => write.systemName).join(", ")}.`);
-    lines.push("The semantic read model must be refreshed from these source records before agents rely on the updated state.");
+    lines.push("The semantic read model was refreshed only from source records whose expected hash, target, operation, diff, record identity, and version matched readback.");
     return lines.join("\n");
   }
 
@@ -749,16 +947,20 @@ export class SemanticEngine {
 
   private resolveBusinessActionType(intent: string): string {
     const normalized = intent.toLowerCase();
+    if (/(delete|drop|truncate|destroy|erase|purge|overwrite|secret|credential|api[_ -]?key|password|access policy|permission|grant access|revoke access|execute sql|generated sql|production customer)/i.test(normalized)) return "blocked";
     if (/(trace|tracci|lineage|end-to-end|dipend|depend|where|dove)/i.test(normalized)) return "publish_traceability";
     if (/(align|allinea|consistent|coeren|definition|definiz|metric|kpi|contratt)/i.test(normalized)) return "align_metric_definition";
     if (/(review|approv|owner|responsabil)/i.test(normalized)) return "owner_review";
-    return "operational_semantic_update";
+    if (/(annotat|update|aggiorn|document|descri|publish|pubblic)/i.test(normalized)) return "operational_semantic_update";
+    return "unsupported";
   }
 
   private businessActionTitle(actionType: string, subject: string): string {
     if (actionType === "publish_traceability") return `Make ${subject} traceable end-to-end`;
     if (actionType === "align_metric_definition") return `Align ${subject} definition`;
     if (actionType === "owner_review") return `Request owner review for ${subject}`;
+    if (actionType === "blocked") return "Blocked high-risk business action";
+    if (actionType === "unsupported") return "Unsupported business action";
     return `Execute semantic business action for ${subject}`;
   }
 
@@ -798,13 +1000,98 @@ export class SemanticEngine {
 
   private autonomyFor(risk: RiskLevel, request: BusinessActionRequest): BusinessActionTarget["autonomy"] {
     if (risk === "blocked") return "blocked";
-    if (request.approved) return "autonomous";
     if (request.mode === "approval_required") return "approval_required";
-    return riskRank[risk] <= riskRank[request.maxAutonomousRisk] ? "autonomous" : "approval_required";
+    const effectiveMaximum = riskRank[request.maxAutonomousRisk] <= riskRank[this.maxAutonomousRisk] ? request.maxAutonomousRisk : this.maxAutonomousRisk;
+    return riskRank[risk] <= riskRank[effectiveMaximum] ? "autonomous" : "approval_required";
   }
 
   private highestRisk(risks: RiskLevel[]): RiskLevel {
     return risks.reduce<RiskLevel>((highest, current) => (riskRank[current] > riskRank[highest] ? current : highest), "low");
+  }
+
+  private planRequestFromExecution(request: BusinessActionExecutionRequest): BusinessActionRequest {
+    return {
+      intent: request.intent,
+      mode: request.mode,
+      maxAutonomousRisk: request.maxAutonomousRisk,
+      context: request.context
+    };
+  }
+
+  private planRequestFromApproval(request: BusinessActionApprovalRequest): BusinessActionRequest {
+    return {
+      intent: request.intent,
+      mode: request.mode,
+      maxAutonomousRisk: request.maxAutonomousRisk,
+      context: request.context
+    };
+  }
+
+  private assertPlanIdentity(plan: BusinessActionPlan, planId: string, fingerprint: string): void {
+    if (plan.id !== planId || plan.fingerprint !== fingerprint) {
+      throw new DomainError(
+        "PLAN_CHANGED",
+        "The business action plan no longer matches current source state. Create and review a new plan before execution.",
+        409,
+        { expectedPlanId: plan.id, expectedFingerprint: plan.fingerprint }
+      );
+    }
+  }
+
+  private assertIdempotencyMatch(run: BusinessActionRun, request: BusinessActionExecutionRequest): void {
+    const matches =
+      run.plan.id === request.planId &&
+      run.plan.fingerprint === request.planFingerprint &&
+      run.intent === request.intent &&
+      run.mode === request.mode &&
+      run.plan.maxAutonomousRisk === request.maxAutonomousRisk;
+    if (!matches) {
+      throw new DomainError(
+        "IDEMPOTENCY_CONFLICT",
+        "The idempotency key is already bound to a different business action request.",
+        409,
+        { existingRunId: run.id, existingPlanId: run.plan.id, existingPlanFingerprint: run.plan.fingerprint }
+      );
+    }
+  }
+
+  private validApproval(approvalId: string | undefined, plan: BusinessActionPlan): BusinessActionApproval | null {
+    if (!approvalId) return null;
+    const approval = this.repository.getBusinessActionApproval(approvalId);
+    if (!approval || approval.status !== "active" || approval.planId !== plan.id || approval.planFingerprint !== plan.fingerprint) {
+      throw new DomainError("INVALID_APPROVAL", "Approval is missing, consumed, or does not match this exact plan.", 403);
+    }
+    return approval;
+  }
+
+  private buildNonExecutingRun(
+    plan: BusinessActionPlan,
+    request: BusinessActionExecutionRequest,
+    status: "planned" | "approval_required" | "blocked"
+  ): BusinessActionRun {
+    const createdAt = nowIso();
+    return {
+      id: stableId("action_run", request.idempotencyKey),
+      idempotencyKey: request.idempotencyKey,
+      intent: request.intent,
+      actionType: plan.actionType,
+      status,
+      mode: request.mode,
+      risk: plan.risk,
+      plan: {
+        ...plan,
+        status,
+        targets: plan.targets.map((target) => ({
+          ...target,
+          status: status === "blocked" || target.autonomy === "blocked" ? "blocked" : status === "approval_required" && target.autonomy === "approval_required" ? "approval_required" : "planned"
+        }))
+      },
+      writes: [],
+      reflections: [],
+      semanticUpdates: [],
+      createdAt,
+      completedAt: status === "approval_required" ? null : createdAt
+    };
   }
 
   private planIngestion(rawRequest: unknown): IngestionPlan {

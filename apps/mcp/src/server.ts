@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createSemanticRuntime, openDatabase, openMemoryDatabase } from "@semantic-junkyard/api";
-import fs from "node:fs";
+import { createSemanticRuntime, loadRuntimeConfig, loadSourceSystems, openDatabase, openMemoryDatabase } from "@semantic-junkyard/api";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createSemanticJunkyardMcpServer } from "./mcpServer.js";
 
 const args = new Set(process.argv.slice(2));
@@ -10,7 +10,12 @@ const args = new Set(process.argv.slice(2));
 try {
   const dbPath = readOption("--db") ?? process.env.SEMANTIC_JUNKYARD_DB ?? defaultProductDatabasePath();
   const db = args.has("--memory") ? openMemoryDatabase() : openDatabase(dbPath);
-  const runtime = createSemanticRuntime(db, { seed: !args.has("--no-seed") });
+  const runtimeConfig = loadRuntimeConfig(process.env, { validateHttpSecurity: false });
+  const runtime = createSemanticRuntime(db, {
+    seed: !args.has("--no-seed"),
+    maxAutonomousRisk: runtimeConfig.maxAutonomousRisk,
+    sourceSystems: loadSourceSystems(runtimeConfig.sourceSystemsFile)
+  });
   const server = createSemanticJunkyardMcpServer(runtime);
   await server.connect(new StdioServerTransport());
 } catch (error) {
@@ -24,18 +29,6 @@ function readOption(name: string): string | undefined {
 }
 
 function defaultProductDatabasePath(): string {
-  return path.join(findRepoRoot(), "apps/api/data/semantic-junkyard.sqlite");
-}
-
-function findRepoRoot(): string {
-  let current = process.cwd();
-  while (current !== path.dirname(current)) {
-    const packagePath = path.join(current, "package.json");
-    if (fs.existsSync(packagePath)) {
-      const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8")) as { name?: string };
-      if (packageJson.name === "semantic-junkyard") return current;
-    }
-    current = path.dirname(current);
-  }
-  return path.resolve(process.cwd(), "../..");
+  const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
+  return path.resolve(moduleDirectory, "../../api/data/semantic-junkyard.sqlite");
 }

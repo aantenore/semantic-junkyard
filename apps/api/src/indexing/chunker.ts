@@ -47,7 +47,7 @@ export class SemanticWindowChunker {
       bufferTokens = overlapCount;
     };
 
-    for (const element of elements) {
+    for (const element of elements.flatMap((item) => splitOversizedElement(item, this.config.targetTokens))) {
       const elementTokens = tokenize(element.text).length;
       if (bufferTokens > 0 && bufferTokens + elementTokens > this.config.targetTokens) {
         flush();
@@ -60,3 +60,41 @@ export class SemanticWindowChunker {
   }
 }
 
+const MAX_ELEMENT_CHARS = 4_000;
+
+function splitOversizedElement(element: DocumentElement, targetTokens: number): DocumentElement[] {
+  const words = [...element.text.matchAll(/\S+/g)];
+  if (words.length <= targetTokens && element.text.length <= MAX_ELEMENT_CHARS) return [element];
+
+  const slices: Array<{ start: number; end: number }> = [];
+  if (words.length <= 1) {
+    for (let start = 0; start < element.text.length; start += MAX_ELEMENT_CHARS) {
+      slices.push({ start, end: Math.min(start + MAX_ELEMENT_CHARS, element.text.length) });
+    }
+  } else {
+    for (let index = 0; index < words.length; index += targetTokens) {
+      const first = words[index];
+      const last = words[Math.min(index + targetTokens - 1, words.length - 1)];
+      if (!first || first.index === undefined || !last || last.index === undefined) continue;
+      const rangeStart = first.index;
+      const rangeEnd = last.index + last[0].length;
+      for (let start = rangeStart; start < rangeEnd; start += MAX_ELEMENT_CHARS) {
+        slices.push({ start, end: Math.min(start + MAX_ELEMENT_CHARS, rangeEnd) });
+      }
+    }
+  }
+
+  return slices.map(({ start, end }, index) => {
+    const text = element.text.slice(start, end).trim();
+    const leadingWhitespace = element.text.slice(start, end).indexOf(text);
+    const adjustedStart = start + Math.max(leadingWhitespace, 0);
+    return {
+      ...element,
+      id: stableId("el", `${element.id}:fragment:${index}:${adjustedStart}:${text}`),
+      text,
+      startOffset: element.startOffset + adjustedStart,
+      endOffset: element.startOffset + adjustedStart + text.length,
+      metadata: { ...element.metadata, parentElementId: element.id, fragment: index }
+    };
+  });
+}

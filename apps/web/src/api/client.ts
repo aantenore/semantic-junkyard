@@ -1,36 +1,35 @@
 import type { AppSnapshot, CuratedRelationReport, IngestPreviewReport, SearchEnvelope } from "../types/app";
-import type { BusinessActionPlan, BusinessActionRun, CatalogSnapshot, DiscoveryRun, GraphSnapshot, IngestResponse, ProviderConfig, SourceSystem, SourceSystemRecord, SystemStatus } from "@semantic-junkyard/shared";
+import { createJsonRequester, resolveApiUrl } from "@semantic-junkyard/shared";
+import type { BusinessActionApproval, BusinessActionPlan, BusinessActionRun, CatalogSnapshot, DiscoveryRun, GraphSnapshot, IngestResponse, ProviderConfig, SourceSystem, SourceSystemRecord, SystemStatus } from "@semantic-junkyard/shared";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
+const request = createJsonRequester(API_BASE);
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {})
-    }
-  });
-  if (!response.ok) {
-    const payload = (await response.json().catch(() => ({ error: response.statusText }))) as { error?: string };
-    throw new Error(payload.error ?? response.statusText);
-  }
-  return (await response.json()) as T;
+export function apiHref(path: string): string {
+  return resolveApiUrl(API_BASE, path);
 }
 
 export async function loadSnapshot(): Promise<AppSnapshot> {
-  const [status, catalog, graph, discoveryRuns, manifest, provider, mcp, actionRuns, sourceSystemsEnvelope] = await Promise.all([
+  const [status, catalog, graph] = await Promise.all([
     request<SystemStatus>("/api/status"),
     request<CatalogSnapshot>("/api/catalog"),
-    request<GraphSnapshot>("/api/graph"),
-    request<DiscoveryRun[]>("/api/discovery/runs"),
-    request<AppSnapshot["manifest"]>("/api/agent/manifest"),
-    request<ProviderConfig>("/api/providers"),
-    request<AppSnapshot["mcp"]>("/api/mcp/capabilities"),
-    request<BusinessActionRun[]>("/api/business/actions/runs"),
-    request<{ systems: SourceSystem[]; records: SourceSystemRecord[] }>("/api/source-systems")
+    request<GraphSnapshot>("/api/graph")
   ]);
-  return { status, catalog, graph, discoveryRuns, manifest, provider, mcp, actionRuns, sourceSystems: sourceSystemsEnvelope.systems, sourceRecords: sourceSystemsEnvelope.records };
+  const degraded: string[] = [];
+  const optional = <T>(label: string, promise: Promise<T>, fallback: T) =>
+    promise.catch(() => {
+      degraded.push(label);
+      return fallback;
+    });
+  const [discoveryRuns, manifest, provider, mcp, actionRuns, sourceSystemsEnvelope] = await Promise.all([
+    optional("discovery runs", request<DiscoveryRun[]>("/api/discovery/runs"), []),
+    optional<AppSnapshot["manifest"]>("agent manifest", request<NonNullable<AppSnapshot["manifest"]>>("/api/agent/manifest"), null),
+    optional<ProviderConfig | null>("provider", request<ProviderConfig>("/api/providers"), null),
+    optional<AppSnapshot["mcp"]>("MCP capabilities", request<NonNullable<AppSnapshot["mcp"]>>("/api/mcp/capabilities"), null),
+    optional("business action runs", request<BusinessActionRun[]>("/api/business/actions/runs"), []),
+    optional("source systems", request<{ systems: SourceSystem[]; records: SourceSystemRecord[] }>("/api/source-systems"), { systems: [], records: [] })
+  ]);
+  return { status, catalog, graph, discoveryRuns, manifest, provider, mcp, actionRuns, sourceSystems: sourceSystemsEnvelope.systems, sourceRecords: sourceSystemsEnvelope.records, degraded };
 }
 
 export async function ingestText(input: { name: string; text: string; mimeType: string; ingestionMode: "full_data" | "metadata_only" | "external_reference" }) {
@@ -61,10 +60,33 @@ export async function planBusinessAction(input: { intent: string; mode?: "autono
   });
 }
 
-export async function executeBusinessAction(input: { intent: string; mode?: "autonomous" | "approval_required" | "dry_run"; approved?: boolean; maxAutonomousRisk?: "low" | "medium" | "high" }) {
+export async function approveBusinessAction(plan: BusinessActionPlan, rationale: string) {
+  return request<BusinessActionApproval>("/api/business/actions/approve", {
+    method: "POST",
+    body: JSON.stringify({
+      planId: plan.id,
+      planFingerprint: plan.fingerprint,
+      intent: plan.intent,
+      mode: plan.mode,
+      maxAutonomousRisk: plan.maxAutonomousRisk,
+      rationale
+    })
+  });
+}
+
+export async function executeBusinessAction(input: { plan: BusinessActionPlan; approvalId?: string; idempotencyKey: string }) {
+  const { plan, approvalId, idempotencyKey } = input;
   return request<BusinessActionRun>("/api/business/actions/execute", {
     method: "POST",
-    body: JSON.stringify(input)
+    body: JSON.stringify({
+      planId: plan.id,
+      planFingerprint: plan.fingerprint,
+      intent: plan.intent,
+      mode: plan.mode,
+      maxAutonomousRisk: plan.maxAutonomousRisk,
+      approvalId,
+      idempotencyKey
+    })
   });
 }
 

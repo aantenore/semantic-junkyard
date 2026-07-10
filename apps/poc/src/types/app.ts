@@ -1,4 +1,5 @@
 import type {
+  AuditEvent,
   BusinessActionPlan,
   BusinessActionRun,
   DiscoveryRun,
@@ -18,6 +19,7 @@ export interface PocSnapshot {
   sourceSystems: SourceSystem[];
   sourceRecords: SourceSystemRecord[];
   actionRuns: BusinessActionRun[];
+  auditEvents: AuditEvent[];
 }
 
 export interface SearchEnvelope {
@@ -56,6 +58,9 @@ export interface PocAgentReport {
   question: string;
   provider: string;
   model: string;
+  orchestrationProvider: "deterministic-policy-harness";
+  modelRole: "trace-summarizer" | "deterministic-summary";
+  overallStatus: "completed" | "degraded" | "blocked" | "failed";
   autonomyDecision: string;
   businessAction: {
     intent: string;
@@ -78,6 +83,11 @@ export interface PocAgentReport {
     excerpt: string;
   }>;
   stopConditionsChecked: string[];
+  stopConditionEvaluations: Array<{
+    condition: string;
+    status: "passed" | "triggered" | "not_evaluated";
+    detail: string;
+  }>;
 }
 
 export type ToolProvider = "local-huggingface" | "deterministic";

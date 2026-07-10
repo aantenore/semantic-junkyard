@@ -4,3 +4,6 @@ export { mcpCapabilitySnapshot, mcpPromptDescriptors, mcpResourceDescriptors, to
 export { SemanticEngine } from "./core/semanticEngine.js";
 export { openDatabase, openMemoryDatabase } from "./storage/database.js";
 export { SemanticRepository } from "./storage/repository.js";
+export { loadRuntimeConfig } from "./config/runtime.js";
+export type { RuntimeConfig } from "./config/runtime.js";
+export { loadSourceSystems } from "./config/sourceSystems.js";

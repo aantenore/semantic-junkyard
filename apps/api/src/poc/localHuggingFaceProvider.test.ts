@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { discoverLocalHuggingFaceModels, pickDefaultLocalModel } from "./localHuggingFaceProvider.js";
+import { discoverLocalHuggingFaceModels, generateWithLocalHuggingFace, LocalModelExecutionError, pickDefaultLocalModel } from "./localHuggingFaceProvider.js";
 
 describe("local Hugging Face provider", () => {
   const tempDirs: string[] = [];
@@ -24,6 +24,28 @@ describe("local Hugging Face provider", () => {
     expect(models.map((model) => model.id)).toEqual(["mlx-community/Qwen3-1.7B-4bit", "mlx-community/Qwen3-4B-4bit"]);
     expect(models[0]?.quantization).toBe("4bit/group64");
     expect(pickDefaultLocalModel(models)?.id).toBe("mlx-community/Qwen3-1.7B-4bit");
+  });
+
+  it("does not echo prompts or model paths when the local runtime cannot start", async () => {
+    const sentinel = "PRIVATE_PROMPT_SENTINEL";
+    const modelPath = "/private/model/path/SENSITIVE_MODEL";
+    let caught: unknown;
+    try {
+      await generateWithLocalHuggingFace(sentinel, {
+          id: "test/model",
+          snapshotPath: modelPath,
+          modelType: "qwen3",
+          architecture: "Qwen3ForCausalLM",
+          quantization: "4bit"
+        }, { runtimeCommand: "semantic-junkyard-missing-runtime-for-test" });
+    } catch (error) {
+      caught = error;
+    }
+    const message = caught instanceof Error ? caught.message : String(caught);
+    expect(message).not.toContain(sentinel);
+    expect(message).not.toContain(modelPath);
+    expect(caught).toBeInstanceOf(LocalModelExecutionError);
+    expect(caught).toMatchObject({ code: "LOCAL_MODEL_RUNTIME_UNAVAILABLE" });
   });
 
   function makeCacheRoot(): string {

@@ -7,6 +7,7 @@ export function openDatabase(filePath = process.env.SEMANTIC_JUNKYARD_DB ?? "dat
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
   const db = new Database(resolved);
   db.pragma("journal_mode = WAL");
+  db.pragma("busy_timeout = 5000");
   db.pragma("foreign_keys = ON");
   migrate(db);
   return db;
@@ -14,6 +15,7 @@ export function openDatabase(filePath = process.env.SEMANTIC_JUNKYARD_DB ?? "dat
 
 export function openMemoryDatabase(): Database.Database {
   const db = new Database(":memory:");
+  db.pragma("busy_timeout = 5000");
   db.pragma("foreign_keys = ON");
   migrate(db);
   return db;
@@ -196,6 +198,7 @@ function migrate(db: Database.Database): void {
 
     CREATE TABLE IF NOT EXISTS business_action_runs (
       id TEXT PRIMARY KEY,
+      idempotency_key TEXT NOT NULL UNIQUE,
       intent TEXT NOT NULL,
       action_type TEXT NOT NULL,
       status TEXT NOT NULL,
@@ -207,6 +210,17 @@ function migrate(db: Database.Database): void {
       semantic_updates TEXT NOT NULL,
       created_at TEXT NOT NULL,
       completed_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS business_action_approvals (
+      id TEXT PRIMARY KEY,
+      plan_id TEXT NOT NULL,
+      plan_fingerprint TEXT NOT NULL,
+      approved_by TEXT NOT NULL,
+      rationale TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      consumed_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS audit_log (
@@ -228,10 +242,19 @@ function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_lineage_to ON lineage_edges(to_asset_id);
     CREATE INDEX IF NOT EXISTS idx_source_records_system ON source_system_records(system_id);
     CREATE INDEX IF NOT EXISTS idx_business_action_runs_created ON business_action_runs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_business_action_approvals_plan ON business_action_approvals(plan_id, plan_fingerprint, status);
+    CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at);
   `);
 
   const columns = db.prepare("PRAGMA table_info(sources)").all() as Array<{ name: string }>;
   if (!columns.some((column) => column.name === "ingestion_mode")) {
     db.exec("ALTER TABLE sources ADD COLUMN ingestion_mode TEXT NOT NULL DEFAULT 'full_data'");
   }
+
+  const actionColumns = db.prepare("PRAGMA table_info(business_action_runs)").all() as Array<{ name: string }>;
+  if (!actionColumns.some((column) => column.name === "idempotency_key")) {
+    db.exec("ALTER TABLE business_action_runs ADD COLUMN idempotency_key TEXT");
+    db.exec("UPDATE business_action_runs SET idempotency_key = id WHERE idempotency_key IS NULL");
+  }
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_business_action_runs_idempotency ON business_action_runs(idempotency_key)");
 }

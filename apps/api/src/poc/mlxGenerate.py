@@ -5,18 +5,22 @@ from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
 
 def main() -> int:
-    if len(sys.argv) < 3:
-        print("usage: mlxGenerate.py <model_path> <prompt>", file=sys.stderr)
+    if len(sys.argv) < 2:
+        print("usage: mlxGenerate.py <model_path> [max_tokens]", file=sys.stderr)
         return 2
 
     model_path = sys.argv[1]
-    prompt = sys.argv[2]
+    max_tokens = int(sys.argv[2]) if len(sys.argv) > 2 else 72
+    prompt = sys.stdin.read()
+    if not prompt:
+        print("prompt is required on stdin", file=sys.stderr)
+        return 2
     model, tokenizer = load(model_path)
     output = generate(
         model,
         tokenizer,
         prompt=render_chat_prompt(tokenizer, prompt),
-        max_tokens=72,
+        max_tokens=max_tokens,
         sampler=make_sampler(temp=0.0),
         logits_processors=make_logits_processors(repetition_penalty=1.12, repetition_context_size=80),
         verbose=False,

@@ -33,12 +33,13 @@ export interface AppSnapshot {
   catalog: CatalogSnapshot;
   graph: GraphSnapshot;
   discoveryRuns: DiscoveryRun[];
-  manifest: AgentManifest;
-  provider: ProviderConfig;
-  mcp: McpCapabilitySnapshot;
+  manifest: AgentManifest | null;
+  provider: ProviderConfig | null;
+  mcp: McpCapabilitySnapshot | null;
   actionRuns: BusinessActionRun[];
   sourceSystems: SourceSystem[];
   sourceRecords: SourceSystemRecord[];
+  degraded: string[];
 }
 
 export interface SearchEnvelope {

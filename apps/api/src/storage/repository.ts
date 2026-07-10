@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
 import type {
+  AuditEvent,
+  BusinessActionApproval,
   BusinessActionRun,
   CatalogSnapshot,
   Chunk,
@@ -85,6 +87,7 @@ interface SourceSystemRecordRow {
 
 interface BusinessActionRunRow {
   id: string;
+  idempotency_key: string;
   intent: string;
   action_type: string;
   status: BusinessActionRun["status"];
@@ -98,8 +101,37 @@ interface BusinessActionRunRow {
   completed_at: string | null;
 }
 
+interface BusinessActionApprovalRow {
+  id: string;
+  plan_id: string;
+  plan_fingerprint: string;
+  approved_by: string;
+  rationale: string;
+  status: BusinessActionApproval["status"];
+  created_at: string;
+  consumed_at: string | null;
+}
+
+interface AuditEventRow {
+  id: string;
+  actor: string;
+  action: string;
+  target: string;
+  decision: string;
+  metadata: string;
+  created_at: string;
+}
+
 export class SemanticRepository {
   constructor(private readonly db: Database.Database) {}
+
+  transaction<T>(work: () => T): T {
+    return this.db.transaction(work)();
+  }
+
+  immediateTransaction<T>(work: () => T): T {
+    return this.db.transaction(work).immediate();
+  }
 
   saveSource(source: SourceArtifact): void {
     this.db
@@ -141,8 +173,16 @@ export class SemanticRepository {
 
   saveChunks(chunks: Chunk[], vectors: Map<string, number[]>): void {
     const chunkStmt = this.db.prepare(
-      `INSERT OR REPLACE INTO chunks (id, source_id, text, start_offset, end_offset, token_count, summary, metadata)
-       VALUES (@id, @sourceId, @text, @startOffset, @endOffset, @tokenCount, @summary, @metadata)`
+      `INSERT INTO chunks (id, source_id, text, start_offset, end_offset, token_count, summary, metadata)
+       VALUES (@id, @sourceId, @text, @startOffset, @endOffset, @tokenCount, @summary, @metadata)
+       ON CONFLICT(id) DO UPDATE SET
+         source_id=excluded.source_id,
+         text=excluded.text,
+         start_offset=excluded.start_offset,
+         end_offset=excluded.end_offset,
+         token_count=excluded.token_count,
+         summary=excluded.summary,
+         metadata=excluded.metadata`
     );
     const deleteFts = this.db.prepare("DELETE FROM chunk_fts WHERE chunk_id = ?");
     const ftsStmt = this.db.prepare("INSERT INTO chunk_fts (chunk_id, text, summary) VALUES (?, ?, ?)");
@@ -247,6 +287,13 @@ export class SemanticRepository {
   getVectors(): Map<string, number[]> {
     const rows = this.db.prepare("SELECT chunk_id, vector FROM vectors").all() as Array<{ chunk_id: string; vector: string }>;
     return new Map(rows.map((row) => [row.chunk_id, decodeJson<number[]>(row.vector, [])]));
+  }
+
+  getEntityIdsByChunk(): Map<string, string[]> {
+    const rows = this.db.prepare("SELECT chunk_id, entity_id FROM entity_chunks").all() as Array<{ chunk_id: string; entity_id: string }>;
+    const result = new Map<string, string[]>();
+    for (const row of rows) result.set(row.chunk_id, [...(result.get(row.chunk_id) ?? []), row.entity_id]);
+    return result;
   }
 
   getEntities(): Entity[] {
@@ -616,11 +663,12 @@ export class SemanticRepository {
     this.db
       .prepare(
         `INSERT OR REPLACE INTO business_action_runs
-         (id, intent, action_type, status, mode, risk, plan, writes, reflections, semantic_updates, created_at, completed_at)
-         VALUES (@id, @intent, @actionType, @status, @mode, @risk, @plan, @writes, @reflections, @semanticUpdates, @createdAt, @completedAt)`
+         (id, idempotency_key, intent, action_type, status, mode, risk, plan, writes, reflections, semantic_updates, created_at, completed_at)
+         VALUES (@id, @idempotencyKey, @intent, @actionType, @status, @mode, @risk, @plan, @writes, @reflections, @semanticUpdates, @createdAt, @completedAt)`
       )
       .run({
         id: run.id,
+        idempotencyKey: run.idempotencyKey,
         intent: run.intent,
         actionType: run.actionType,
         status: run.status,
@@ -641,6 +689,7 @@ export class SemanticRepository {
       .all(limit) as BusinessActionRunRow[];
     return rows.map((row) => ({
       id: row.id,
+      idempotencyKey: row.idempotency_key,
       intent: row.intent,
       actionType: row.action_type,
       status: row.status,
@@ -653,6 +702,51 @@ export class SemanticRepository {
       createdAt: row.created_at,
       completedAt: row.completed_at
     }));
+  }
+
+  getBusinessActionRunByIdempotencyKey(idempotencyKey: string): BusinessActionRun | null {
+    const row = this.db.prepare("SELECT * FROM business_action_runs WHERE idempotency_key = ?").get(idempotencyKey) as BusinessActionRunRow | undefined;
+    if (!row) return null;
+    return {
+      id: row.id,
+      idempotencyKey: row.idempotency_key,
+      intent: row.intent,
+      actionType: row.action_type,
+      status: row.status,
+      mode: row.mode,
+      risk: row.risk,
+      plan: decodeJson<BusinessActionRun["plan"]>(row.plan, {} as BusinessActionRun["plan"]),
+      writes: decodeJson<BusinessActionRun["writes"]>(row.writes, []),
+      reflections: decodeJson<BusinessActionRun["reflections"]>(row.reflections, []),
+      semanticUpdates: decodeJson<BusinessActionRun["semanticUpdates"]>(row.semantic_updates, []),
+      createdAt: row.created_at,
+      completedAt: row.completed_at
+    };
+  }
+
+  saveBusinessActionApproval(approval: BusinessActionApproval): void {
+    this.db
+      .prepare(
+        `INSERT INTO business_action_approvals
+         (id, plan_id, plan_fingerprint, approved_by, rationale, status, created_at, consumed_at)
+         VALUES (@id, @planId, @planFingerprint, @approvedBy, @rationale, @status, @createdAt, @consumedAt)`
+      )
+      .run(approval);
+  }
+
+  getBusinessActionApproval(id: string): BusinessActionApproval | null {
+    const row = this.db.prepare("SELECT * FROM business_action_approvals WHERE id = ?").get(id) as BusinessActionApprovalRow | undefined;
+    return row ? this.toBusinessActionApproval(row) : null;
+  }
+
+  consumeBusinessActionApproval(id: string, consumedAt: string): boolean {
+    const result = this.db.prepare("UPDATE business_action_approvals SET status = 'consumed', consumed_at = ? WHERE id = ? AND status = 'active'").run(consumedAt, id);
+    return result.changes === 1;
+  }
+
+  listBusinessActionApprovals(limit = 20): BusinessActionApproval[] {
+    const rows = this.db.prepare("SELECT * FROM business_action_approvals ORDER BY created_at DESC LIMIT ?").all(Math.min(Math.max(limit, 1), 100)) as BusinessActionApprovalRow[];
+    return rows.map((row) => this.toBusinessActionApproval(row));
   }
 
   status(): SystemStatus {
@@ -674,7 +768,20 @@ export class SemanticRepository {
   audit(actor: string, action: string, target: string, decision: string, metadata: Record<string, unknown>): void {
     this.db
       .prepare("INSERT INTO audit_log (id, actor, action, target, decision, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(`audit_${nanoid(12)}`, actor, action, target, decision, encodeJson(metadata), nowIso());
+      .run(`audit_${nanoid(12)}`, actor.slice(0, 255), action.slice(0, 255), target.slice(0, 1_000), decision.slice(0, 100), encodeJson(metadata), nowIso());
+  }
+
+  listAuditEvents(limit = 100): AuditEvent[] {
+    const rows = this.db.prepare("SELECT * FROM audit_log ORDER BY created_at DESC LIMIT ?").all(Math.min(Math.max(limit, 1), 250)) as AuditEventRow[];
+    return rows.map((row) => ({
+      id: row.id,
+      actor: row.actor,
+      action: row.action,
+      target: row.target,
+      decision: row.decision,
+      metadata: decodeJson(row.metadata, {}),
+      createdAt: row.created_at
+    }));
   }
 
   private toSourceSystemRecord(row: SourceSystemRecordRow): SourceSystemRecord {
@@ -687,6 +794,19 @@ export class SemanticRepository {
       payload: decodeJson(row.payload, {}),
       version: row.version,
       updatedAt: row.updated_at
+    };
+  }
+
+  private toBusinessActionApproval(row: BusinessActionApprovalRow): BusinessActionApproval {
+    return {
+      id: row.id,
+      planId: row.plan_id,
+      planFingerprint: row.plan_fingerprint,
+      approvedBy: row.approved_by,
+      rationale: row.rationale,
+      status: row.status,
+      createdAt: row.created_at,
+      consumedAt: row.consumed_at
     };
   }
 }
