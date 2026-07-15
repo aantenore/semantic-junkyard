@@ -17,6 +17,58 @@ business intent
 
 The repository proves this contract against real local filesystem, SQLite, and Git sources. It is deliberately not presented as a production-ready multi-tenant platform.
 
+## Understand It In One Minute
+
+Semantic Junkyard builds a **derived map of existing data** for people and AI agents. The original files, databases, and repositories remain the systems of record.
+
+```mermaid
+flowchart LR
+  subgraph Clients["People and agents"]
+    Product["Product workbench"]
+    Poc["Conversational PoC"]
+    Agent["External MCP client"]
+  end
+
+  subgraph Plane["Semantic Junkyard control plane"]
+    Api["REST API"]
+    Mcp["MCP server"]
+    Engine["HTTP runtime"]
+    McpEngine["Independent MCP runtime\nread-only tools by default"]
+    Model["Optional local HF model\ntyped suggestions only"]
+    Control[("Control-plane SQLite\nsemantic map + audit + plans")]
+    Connectors["Typed source connectors"]
+  end
+
+  subgraph Sources["Authoritative sources"]
+    Files["Filesystem\nread only"]
+    Sqlite["SQLite\nallowlisted row updates"]
+    Git["Git\nallowlisted contract commits"]
+  end
+
+  Product --> Api
+  Poc --> Api
+  Agent --> Mcp
+  Api --> Engine
+  Mcp --> McpEngine
+  Engine <--> Control
+  McpEngine <--> Control
+  Model -. "validated typed candidates" .-> Engine
+  Model -. "when selected for enabled sync" .-> McpEngine
+  Engine --> Connectors
+  McpEngine -. "source access; mutations require flags" .-> Connectors
+  Connectors -->|"discover and reread"| Files
+  Connectors <-->|"discover, bounded update, reread"| Sqlite
+  Connectors <-->|"discover, bounded commit, reread"| Git
+```
+
+Three rules explain the system:
+
+1. **The semantic layer is a map, not the source of truth.** Every useful statement keeps its source and evidence identity.
+2. **Models may suggest; deterministic controls decide.** Model output can become a reviewable proposal or a typed intent, never an approval or an unrestricted write.
+3. **A write is complete only after authoritative readback.** A connector success response is insufficient; the expected postcondition must be observed from the source and reflected into fresh semantic evidence.
+
+Start with [How Semantic Junkyard works](docs/how-it-works.md), then use the [Hands-on guide](docs/user-guide.md) to run the real read-only, autonomous SQLite, and approval-gated Git workflows. The [documentation index](docs/README.md) provides paths for operators, agent builders, connector authors, and reviewers.
+
 ## What The Product Is
 
 Semantic Junkyard combines two responsibilities that are usually split across several systems:
@@ -53,6 +105,8 @@ Source synchronization distinguishes observation from interpretation:
 - Operators accept or reject non-authoritative proposals with a rationale in the product UI or REST API.
 - A later source sync marks assertions that are no longer emitted as `superseded` and removes them from active navigation.
 
+Acceptance never makes an inference authoritative. Pending deterministic connector relations are graph-visible, while local-model relation candidates enter the graph only after acceptance; rejected and superseded relations are excluded. Direct ingest and manual curation currently persist derived relations immediately without proposal records. See [How semantic meaning is governed](docs/how-it-works.md#5-how-semantic-meaning-is-governed).
+
 The optional Hugging Face path can suggest concepts, classifications, relations, and conflicts from a bounded list of observed resources. Strict schemas discard malformed output, invented resource IDs, self-relations, duplicates, and over-limit candidates. A model proposal never becomes an authoritative source fact.
 
 ## Product And Agent Surfaces
@@ -61,7 +115,7 @@ The optional Hugging Face path can suggest concepts, classifications, relations,
 | --- | --- | --- |
 | Product workbench (`apps/web`) | `http://localhost:5173` | Operator-facing source registry, connection test/sync, proposal review, retrieval/graph inspection, exact plan review, approval, execution, readback, and audit. |
 | External conversational PoC (`apps/poc`) | `http://localhost:5174` | Independent REST client with bounded read-only, plan-only, and autonomous workflows. It stops for missing evidence, no writable source, policy blocks, or required approval. |
-| API (`apps/api`) | `http://127.0.0.1:8787` | The complete HTTP control plane and generated OpenAPI document. |
+| API (`apps/api`) | `http://127.0.0.1:8787` | HTTP control plane and generated reference OpenAPI document. |
 | MCP server (`apps/mcp`) | stdio | External agent surface over the same engine contracts. It opens the selected control-plane SQLite database directly and intentionally cannot create approvals or decide proposals. |
 
 The two React applications do not share frontend state. The browser PoC is not an MCP client; it calls the product API through its own client module. `npm run poc:agent:mcp` is the separate real MCP client/server proof of concept.
@@ -89,7 +143,7 @@ npm ci
 npm run dev
 ```
 
-`npm run dev` builds the shared contracts and starts the API, product workbench, and conversational PoC. The persistent API start reconciles the three deterministic reference connections and retries only sources that are missing, incomplete, syncing, or degraded. Set `SEMANTIC_JUNKYARD_BOOTSTRAP_REFERENCE_SOURCES=false` to disable that bootstrap.
+`npm run dev` builds the shared contracts and starts the API, product workbench, and conversational PoC. The persistent API start reconciles the three deterministic reference connections and retries connections that are `configured`, `syncing`, `error`, missing a last sync, or missing published resources. Set `SEMANTIC_JUNKYARD_BOOTSTRAP_REFERENCE_SOURCES=false` to disable that bootstrap.
 
 Focused commands:
 
@@ -209,6 +263,9 @@ docs               product, architecture, contracts, workflow, evaluation, and m
 
 ## Documentation
 
+- [Documentation index](docs/README.md)
+- [How Semantic Junkyard works](docs/how-it-works.md)
+- [Hands-on guide](docs/user-guide.md)
 - [Product definition](docs/product-definition.md)
 - [Reference workflow](docs/reference-workflow.md)
 - [Architecture](docs/architecture.md)
