@@ -31,6 +31,18 @@ export class SourceConnectionRepository {
       .run({ ...connection, config: JSON.stringify(connection.config) });
   }
 
+  tryAcquireSyncLease(id: string, acquiredAt: string, staleBefore: string): boolean {
+    return (
+      this.db
+        .prepare(
+          `UPDATE source_connections
+           SET status = 'syncing', last_error = NULL, updated_at = ?
+           WHERE id = ? AND (status <> 'syncing' OR updated_at < ?)`
+        )
+        .run(acquiredAt, id, staleBefore).changes > 0
+    );
+  }
+
   getConnection(id: string): SourceConnection | null {
     const row = this.db.prepare("SELECT * FROM source_connections WHERE id = ?").get(id) as Record<string, unknown> | undefined;
     return row ? this.mapConnection(row) : null;

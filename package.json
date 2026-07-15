@@ -2,7 +2,7 @@
   "name": "semantic-junkyard",
   "version": "0.1.0",
   "private": true,
-  "description": "Agent-native semantic discovery platform for turning unstructured data into navigable vector and graph structures.",
+  "description": "Open-source verified semantic-action protocol for evidence-grounded discovery, governed source writeback, and authoritative readback.",
   "license": "Apache-2.0",
   "type": "module",
   "workspaces": [

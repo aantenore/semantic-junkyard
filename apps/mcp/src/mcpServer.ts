@@ -19,6 +19,8 @@ import {
   SearchRequestSchema,
   SearchResultSchema,
   SemanticProposalSchema,
+  SourceDiscoveryMissionReportSchema,
+  SourceDiscoveryMissionRequestSchema,
   SourceResourceSearchRequestSchema,
   SourceSyncRunSchema,
   SyncSourceConnectionRequestSchema
@@ -104,12 +106,12 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
     "semantic_search",
     {
       title: "Semantic Search",
-      description: "Hybrid lexical, vector, and graph-aware retrieval with source citations and policy filtering.",
+      description: "Hybrid lexical, vector, and graph-aware retrieval with policy filtering. Domain evidence is the default; request operational scope for write receipts and readback evidence.",
       inputSchema: SearchRequestSchema,
       outputSchema: z.object({ results: z.array(SearchResultSchema) }).strict(),
       annotations: readOnlyAnnotations
     },
-    ({ query, topK, mode }) => toolResult({ results: engine.search({ query, topK, mode }) })
+    ({ query, topK, mode, scope }) => toolResult({ results: engine.search({ query, topK, mode, scope }) })
   );
 
   server.registerTool(
@@ -162,11 +164,11 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
     "expand_context",
     {
       title: "Expand Context",
-      description: "Build an evidence pack around a query, entity set, or chunk set.",
+      description: "Build a scoped evidence pack around a query, entity set, or chunk set.",
       inputSchema: ExpandContextRequestSchema,
       annotations: readOnlyAnnotations
     },
-    ({ query, chunkIds, entityIds }) => toolResult(engine.expandContext({ query, chunkIds, entityIds }))
+    ({ query, chunkIds, entityIds, scope }) => toolResult(engine.expandContext({ query, chunkIds, entityIds, scope }))
   );
 
   server.registerTool(
@@ -200,6 +202,19 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
   }
 
   if (options.allowSourceSync) {
+    server.registerTool(
+      "discover_sources",
+      {
+        title: "Run Source Discovery Mission",
+        description: "Synchronize selected configured sources, generate evidence-bound semantic proposals, and profile the resulting fabric as one durable mission.",
+        inputSchema: SourceDiscoveryMissionRequestSchema,
+        outputSchema: SourceDiscoveryMissionReportSchema,
+        annotations: persistedRunAnnotations
+      },
+      async ({ objective, provider, connectionIds, continueOnError }) =>
+        operationalToolResult(await engine.runSourceDiscoveryMission({ objective, provider, connectionIds, continueOnError }, "mcp-agent"))
+    );
+
     server.registerTool(
       "sync_source",
       {
@@ -239,7 +254,8 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
       outputSchema: BusinessActionPlanSchema,
       annotations: readOnlyAnnotations
     },
-    ({ intent, mode, maxAutonomousRisk, context }) => toolResult(engine.planBusinessAction({ intent, mode, maxAutonomousRisk, context }))
+    ({ intent, mode, maxAutonomousRisk, context }) =>
+      toolResult(engine.planBusinessAction({ intent, mode, maxAutonomousRisk, context }, mcpActor))
   );
 
   if (options.allowBusinessWrites) {
@@ -253,7 +269,12 @@ function registerTools(server: McpServer, engine: SemanticEngine, repository: Se
         annotations: writebackAnnotations
       },
       ({ planId, planFingerprint, intent, mode, maxAutonomousRisk, approvalId, idempotencyKey, context }) =>
-        operationalToolResult(engine.executeBusinessAction({ planId, planFingerprint, intent, mode, maxAutonomousRisk, approvalId, idempotencyKey, context }, "mcp-agent"))
+        operationalToolResult(
+          engine.executeBusinessAction(
+            { planId, planFingerprint, intent, mode, maxAutonomousRisk, approvalId, idempotencyKey, context },
+            mcpActor
+          )
+        )
     );
   }
 }

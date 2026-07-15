@@ -1,6 +1,6 @@
 # Market Scan
 
-**Reviewed: 2026-07-10.** This scan uses official project/product documentation and repositories. It is a positioning aid, not a procurement scorecard. Capabilities, editions, and licenses should be revalidated before making an adoption decision.
+**Reviewed: 2026-07-15.** This scan uses official project/product documentation and repositories. It is a positioning aid, not a procurement scorecard. Capabilities, editions, and licenses should be revalidated before making an adoption decision.
 
 ## Product Hypothesis
 

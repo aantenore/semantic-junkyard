@@ -84,7 +84,9 @@ export class DiscoveryAgent {
       `${proposals.filter((proposal) => proposal.status === "proposed").length} proposals await review, ${proposals.filter((proposal) => proposal.status === "accepted").length} are accepted, and ${metricConflicts.length} metric definition conflicts were detected.`,
       proposals.some((proposal) => proposal.status === "proposed") || metricConflicts.length > 0 ? "warning" : "success"
     );
-    if (objectiveTerms.size > 0 && resources.length > 0 && relevantResources.length === 0) {
+    if (resources.length === 0) {
+      add("grounding.check", "Objective could not be grounded", "No observed source resources are available. Configure and synchronize an authoritative source before asking agents to navigate this objective.", "warning");
+    } else if (objectiveTerms.size > 0 && relevantResources.length === 0) {
       add("grounding.check", "Objective could not be grounded", "No observed source resource matched the requested objective. Agents must stop instead of substituting an unrelated domain.", "warning");
     } else {
       add("grounding.check", "Objective grounded", `${relevantResources.length || resources.length} source resources can support the next evidence-scoped navigation step.`, "success");
@@ -120,8 +122,8 @@ export class DiscoveryAgent {
         },
         {
           name: "semantic_search",
-          description: "Hybrid lexical, vector, and graph-aware retrieval with source citations and policy filtering.",
-          inputSchema: { query: "string", topK: "number", mode: "hybrid|lexical|vector|graph" },
+          description: "Hybrid lexical, vector, and graph-aware retrieval with policy filtering and explicit domain or operational evidence scope.",
+          inputSchema: { query: "string", topK: "number", mode: "hybrid|lexical|vector|graph", scope: "domain|operational|all optional" },
           risk: "read-only",
           evidenceRequired: true
         },
@@ -148,8 +150,8 @@ export class DiscoveryAgent {
         },
         {
           name: "expand_context",
-          description: "Build an evidence pack around a query, entity set, or chunk set.",
-          inputSchema: { query: "string", chunkIds: "string[] optional", entityIds: "string[] optional" },
+          description: "Build a domain, operational, or combined evidence pack around a query, entity set, or chunk set.",
+          inputSchema: { query: "string", chunkIds: "string[] optional", entityIds: "string[] optional", scope: "domain|operational|all optional" },
           risk: "read-only",
           evidenceRequired: true
         },
@@ -204,6 +206,7 @@ export class DiscoveryAgent {
         "Check policy, quality, freshness, owner, and sensitivity before recommending an action.",
         "For undefined problems, first run discovery, then select the smallest safe tool set, then assemble evidence.",
         "Treat source facts as authoritative observations and model-generated semantics as proposals until an operator accepts them.",
+        "Use domain evidence for business meaning and operational evidence only for write receipts, readback, and execution verification.",
         "Generated SQL, policy updates, direct connector writes, unsupported capabilities, and destructive actions are outside autonomous scope.",
         "Never claim an action is complete until source reflection verifies the updated source record and the semantic read model is refreshed."
       ],

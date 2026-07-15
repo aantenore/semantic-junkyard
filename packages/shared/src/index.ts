@@ -162,13 +162,18 @@ export const GraphSnapshotSchema = z.object({
 
 export type GraphSnapshot = z.infer<typeof GraphSnapshotSchema>;
 
+export const EvidenceScopeSchema = z.enum(["domain", "operational", "all"]);
+export type EvidenceScope = z.infer<typeof EvidenceScopeSchema>;
+
 export const SearchRequestSchema = z.object({
   query: z.string().trim().min(1).max(4_000),
   topK: z.number().int().positive().max(25).default(8),
-  mode: z.enum(["hybrid", "lexical", "vector", "graph"]).default("hybrid")
+  mode: z.enum(["hybrid", "lexical", "vector", "graph"]).default("hybrid"),
+  scope: EvidenceScopeSchema.default("domain")
 }).strict();
 
-export type SearchRequest = z.infer<typeof SearchRequestSchema>;
+export type SearchRequest = z.input<typeof SearchRequestSchema>;
+export type ParsedSearchRequest = z.output<typeof SearchRequestSchema>;
 
 export const EntityLookupRequestSchema = z
   .object({
@@ -206,7 +211,8 @@ export const ExpandContextRequestSchema = z
   .object({
     query: z.string().trim().min(1).max(4_000).optional(),
     chunkIds: z.array(z.string().trim().min(1).max(255)).max(25).optional(),
-    entityIds: z.array(z.string().trim().min(1).max(255)).max(25).optional()
+    entityIds: z.array(z.string().trim().min(1).max(255)).max(25).optional(),
+    scope: EvidenceScopeSchema.default("domain")
   })
   .strict()
   .refine((value) => Boolean(value.query) || Boolean(value.chunkIds?.length) || Boolean(value.entityIds?.length), {
@@ -256,6 +262,7 @@ export const SearchResultSchema = z.object({
   vectorScore: z.number(),
   graphBoost: z.number(),
   hybridScore: z.number(),
+  evidenceClass: z.enum(["domain", "operational"]),
   entityIds: z.array(z.string()).default([]),
   governance: z
     .object({
@@ -357,7 +364,7 @@ export const CuratedRelationRequestSchema = z.object({
   relationType: z.string().trim().min(1).max(100).default("DEPENDS_ON"),
   confidence: z.number().min(0).max(1).default(1),
   evidenceChunkId: z.string().min(1).max(255).optional(),
-  rationale: z.string().trim().max(2_000).optional(),
+  rationale: z.string().trim().min(1).max(2_000),
   metadata: z.record(z.string(), z.unknown()).default({})
 }).strict();
 
@@ -623,6 +630,48 @@ export const SyncSourceConnectionRequestSchema = z
   .strict();
 export type SyncSourceConnectionRequest = z.infer<typeof SyncSourceConnectionRequestSchema>;
 
+export const SourceDiscoveryMissionRequestSchema = z
+  .object({
+    objective: z.string().trim().min(1).max(2_000).default("Discover source structure, semantics, governance signals, and safe action capabilities."),
+    provider: z.enum(["deterministic", "local-huggingface"]).default("deterministic"),
+    connectionIds: z.array(z.string().trim().min(1).max(255)).max(100).default([]),
+    continueOnError: z.boolean().default(true)
+  })
+  .strict();
+export type SourceDiscoveryMissionRequest = z.infer<typeof SourceDiscoveryMissionRequestSchema>;
+
+export const SourceDiscoveryMissionFailureSchema = z.object({
+  connectionId: z.string(),
+  connectionName: z.string(),
+  code: z.string(),
+  message: z.string()
+});
+export type SourceDiscoveryMissionFailure = z.infer<typeof SourceDiscoveryMissionFailureSchema>;
+
+export const SourceDiscoveryMissionReportSchema = z.object({
+  id: z.string(),
+  objective: z.string(),
+  provider: z.enum(["deterministic", "local-huggingface"]),
+  status: z.enum(["completed", "partial", "failed"]),
+  requestedConnectionIds: z.array(z.string()),
+  syncRuns: z.array(SourceSyncRunSchema),
+  failures: z.array(SourceDiscoveryMissionFailureSchema),
+  discoveryRun: DiscoveryRunSchema.nullable(),
+  summary: z.object({
+    connectionsAttempted: z.number().int().nonnegative(),
+    completedSyncs: z.number().int().nonnegative(),
+    partialSyncs: z.number().int().nonnegative(),
+    failedSyncs: z.number().int().nonnegative(),
+    resourcesDiscovered: z.number().int().nonnegative(),
+    assetsPublished: z.number().int().nonnegative(),
+    proposalsCreated: z.number().int().nonnegative(),
+    proposalsAwaitingReview: z.number().int().nonnegative()
+  }),
+  startedAt: z.string(),
+  completedAt: z.string()
+});
+export type SourceDiscoveryMissionReport = z.infer<typeof SourceDiscoveryMissionReportSchema>;
+
 export const SemanticProposalSchema = z.object({
   id: z.string(),
   connectionId: z.string(),
@@ -690,6 +739,15 @@ export const BusinessActionTargetSchema = z.object({
 
 export type BusinessActionTarget = z.infer<typeof BusinessActionTargetSchema>;
 
+export const BusinessActionPrincipalSchema = z.object({
+  actor: z.string().min(1).max(255),
+  roles: z.array(z.string().min(1).max(100)).max(20),
+  clearance: z.enum(["public", "internal", "confidential", "restricted"]),
+  policyVersion: z.string().min(1).max(100)
+});
+
+export type BusinessActionPrincipal = z.infer<typeof BusinessActionPrincipalSchema>;
+
 export const BusinessActionPlanSchema = z.object({
   id: z.string(),
   fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
@@ -701,6 +759,7 @@ export const BusinessActionPlanSchema = z.object({
   maxAutonomousRisk: z.enum(["low", "medium", "high"]),
   risk: BusinessActionRiskSchema,
   status: BusinessActionStatusSchema,
+  principal: BusinessActionPrincipalSchema,
   targets: z.array(BusinessActionTargetSchema),
   warnings: z.array(z.string()).default([]),
   createdAt: z.string()

@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import type {
   CreateSourceConnectionRequest,
+  EvidenceSpan,
   SemanticProposal,
   SourceConnection,
   SourceConnectionKind,
@@ -34,6 +35,7 @@ import {
   createSourceConnection,
   decideSemanticProposal,
   deleteSourceConnection,
+  getEvidence,
   searchSourceResources,
   syncSourceConnection,
   testSourceConnection
@@ -53,6 +55,12 @@ interface SourceWorkbenchProps {
 interface OperationNotice {
   tone: NoticeTone;
   message: string;
+}
+
+interface ProposalEvidenceState {
+  status: "loading" | "ready" | "error";
+  items: EvidenceSpan[];
+  error: string | null;
 }
 
 const DEFAULT_SYNC_OBJECTIVE = "Discover supply-chain assets, metric definitions, lineage, governance signals, and safe source actions.";
@@ -90,6 +98,7 @@ export function SourceWorkbench({ snapshot, snapshotState, onRefresh }: SourceWo
   const [proposalRationales, setProposalRationales] = useState<Record<string, string>>({});
   const [proposalOperation, setProposalOperation] = useState<string | null>(null);
   const [proposalUpdates, setProposalUpdates] = useState<Record<string, SemanticProposal>>({});
+  const [proposalEvidence, setProposalEvidence] = useState<Record<string, ProposalEvidenceState>>({});
 
   const connections = snapshot?.sourceConnections ?? [];
   const initialLoading = snapshotState === "loading" && !snapshot;
@@ -298,7 +307,12 @@ export function SourceWorkbench({ snapshot, snapshotState, onRefresh }: SourceWo
 
   async function onProposalDecision(proposal: SemanticProposal, decision: "accepted" | "rejected") {
     const rationale = proposalRationales[proposal.id]?.trim() ?? "";
-    if (!rationale || proposal.status !== "proposed" || proposal.authoritative) return;
+    const evidenceState = proposalEvidence[proposal.id];
+    const evidenceReviewed =
+      evidenceState?.status === "ready" &&
+      proposal.evidenceChunkIds.length > 0 &&
+      evidenceState.items.length === proposal.evidenceChunkIds.length;
+    if (!rationale || !evidenceReviewed || proposal.status !== "proposed" || proposal.authoritative) return;
     setProposalOperation(`${proposal.id}:${decision}`);
     setOperationNotice({ tone: "info", message: `${decision === "accepted" ? "Accepting" : "Rejecting"} semantic proposal...` });
     try {
@@ -314,6 +328,32 @@ export function SourceWorkbench({ snapshot, snapshotState, onRefresh }: SourceWo
       setOperationNotice({ tone: "error", message: errorMessage(error, `Proposal could not be ${decision}.`) });
     } finally {
       setProposalOperation(null);
+    }
+  }
+
+  async function onReviewProposalEvidence(proposal: SemanticProposal) {
+    if (proposal.evidenceChunkIds.length === 0) {
+      setProposalEvidence((current) => ({
+        ...current,
+        [proposal.id]: { status: "error", items: [], error: "This proposal has no evidence chunks and cannot be reviewed." }
+      }));
+      return;
+    }
+    setProposalEvidence((current) => ({
+      ...current,
+      [proposal.id]: { status: "loading", items: [], error: null }
+    }));
+    try {
+      const items = await Promise.all(proposal.evidenceChunkIds.map((chunkId) => getEvidence(chunkId)));
+      setProposalEvidence((current) => ({
+        ...current,
+        [proposal.id]: { status: "ready", items, error: null }
+      }));
+    } catch (error) {
+      setProposalEvidence((current) => ({
+        ...current,
+        [proposal.id]: { status: "error", items: [], error: errorMessage(error, "Proposal evidence could not be opened.") }
+      }));
     }
   }
 
@@ -641,6 +681,11 @@ export function SourceWorkbench({ snapshot, snapshotState, onRefresh }: SourceWo
                 const reviewable = proposal.status === "proposed" && !proposal.authoritative;
                 const rationale = proposalRationales[proposal.id] ?? "";
                 const evidenceNames = [...new Set(proposal.evidenceResourceIds.map((id) => resourceById.get(id)?.name ?? shortId(id)))];
+                const evidenceState = proposalEvidence[proposal.id];
+                const evidenceReviewed =
+                  evidenceState?.status === "ready" &&
+                  proposal.evidenceChunkIds.length > 0 &&
+                  evidenceState.items.length === proposal.evidenceChunkIds.length;
                 return (
                   <article className={`proposal-row status-${proposal.status}`} key={proposal.id}>
                     <div className="proposal-title-row">
@@ -663,7 +708,26 @@ export function SourceWorkbench({ snapshot, snapshotState, onRefresh }: SourceWo
                     <div className="proposal-evidence" title={evidenceNames.join(", ")}>
                       <FileSearch size={13} />
                       <span>{evidenceNames.join(", ") || "No resource evidence linked"}</span>
+                      <button
+                        type="button"
+                        onClick={() => void onReviewProposalEvidence(proposal)}
+                        disabled={evidenceState?.status === "loading" || proposal.evidenceChunkIds.length === 0}
+                      >
+                        {evidenceState?.status === "loading" ? <Loader2 className="spin-icon" size={13} /> : <FileSearch size={13} />}
+                        {evidenceReviewed ? "Evidence reviewed" : evidenceState?.status === "loading" ? "Opening" : "Review evidence"}
+                      </button>
                     </div>
+                    {evidenceState?.status === "ready" ? (
+                      <div className="proposal-evidence-review" aria-label={`Evidence for proposal ${proposal.id}`}>
+                        {evidenceState.items.map((item) => (
+                          <article key={item.chunkId}>
+                            <div><strong>{item.sourceName}</strong><code>{item.chunkId}</code></div>
+                            <p>{item.text}</p>
+                          </article>
+                        ))}
+                      </div>
+                    ) : null}
+                    {evidenceState?.status === "error" ? <p className="proposal-evidence-error" role="alert">{evidenceState.error}</p> : null}
                     {reviewable ? (
                       <div className="proposal-decision">
                         <label>
@@ -678,8 +742,8 @@ export function SourceWorkbench({ snapshot, snapshotState, onRefresh }: SourceWo
                         <button
                           type="button"
                           className="decision-button accept"
-                          disabled={Boolean(proposalOperation) || !rationale.trim()}
-                          title={!rationale.trim() ? "Enter a rationale before accepting" : "Accept proposal"}
+                          disabled={Boolean(proposalOperation) || !rationale.trim() || !evidenceReviewed}
+                          title={!evidenceReviewed ? "Open every evidence chunk before accepting" : !rationale.trim() ? "Enter a rationale before accepting" : "Accept proposal"}
                           onClick={() => void onProposalDecision(proposal, "accepted")}
                         >
                           {proposalOperation === `${proposal.id}:accepted` ? <Loader2 className="spin-icon" size={14} /> : <Check size={14} />}
@@ -688,8 +752,8 @@ export function SourceWorkbench({ snapshot, snapshotState, onRefresh }: SourceWo
                         <button
                           type="button"
                           className="decision-button reject"
-                          disabled={Boolean(proposalOperation) || !rationale.trim()}
-                          title={!rationale.trim() ? "Enter a rationale before rejecting" : "Reject proposal"}
+                          disabled={Boolean(proposalOperation) || !rationale.trim() || !evidenceReviewed}
+                          title={!evidenceReviewed ? "Open every evidence chunk before rejecting" : !rationale.trim() ? "Enter a rationale before rejecting" : "Reject proposal"}
                           onClick={() => void onProposalDecision(proposal, "rejected")}
                         >
                           {proposalOperation === `${proposal.id}:rejected` ? <Loader2 className="spin-icon" size={14} /> : <XCircle size={14} />}

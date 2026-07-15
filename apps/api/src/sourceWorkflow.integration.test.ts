@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { stringify } from "yaml";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSemanticRuntime } from "./app.js";
 import { openMemoryDatabase } from "./storage/database.js";
 import type { SourceConnector } from "./sources/connector.js";
@@ -112,7 +112,11 @@ describe("real source workflow", () => {
     const readback = new Database(sourcePath, { readonly: true });
     expect(readback.prepare("SELECT status FROM orders WHERE order_id = ?").pluck().get("ORD-1")).toBe("dispatched");
     readback.close();
-    expect(runtime.engine.search({ query: "Set order ORD-1 status dispatched", mode: "hybrid", topK: 10 }).some((result) => result.text.includes("ORD-1"))).toBe(true);
+    expect(
+      runtime.engine
+        .search({ query: "Set order ORD-1 status dispatched", mode: "hybrid", topK: 10, scope: "operational" })
+        .some((result) => result.text.includes("ORD-1"))
+    ).toBe(true);
   });
 
   it("blocks a connector action when its target evidence is restricted", async () => {
@@ -150,9 +154,9 @@ describe("real source workflow", () => {
 
     expect(plan.status).toBe("blocked");
     expect(plan.risk).toBe("blocked");
-    expect(plan.targets).toHaveLength(1);
-    expect(plan.targets[0]?.autonomy).toBe("blocked");
-    expect(plan.warnings.join(" ")).toMatch(/restricted.*not authorized/i);
+    expect(plan.targets).toHaveLength(0);
+    expect(JSON.stringify(plan)).not.toContain("private-value");
+    expect(plan.warnings.join(" ")).toMatch(/outside the caller clearance/i);
   });
 
   it("publishes an exact semantic-contract change through Git after approval", async () => {
@@ -322,7 +326,7 @@ describe("real source workflow", () => {
     });
 
     expect(plan.status).toBe("blocked");
-    expect(plan.targets[0]?.evidenceChunkIds).toEqual([]);
+    expect(plan.targets).toEqual([]);
     expect(plan.warnings.join(" ")).toContain("not owned by its declared resources");
   });
 
@@ -470,14 +474,15 @@ describe("real source workflow", () => {
     expect(retained.ontologyClasses.map((item) => item.label)).toEqual(["Domain 2 class"]);
   });
 
-  it("rejects a second in-process synchronization for the same connection", async () => {
+  it("rejects a second synchronization lease across runtime instances", async () => {
     const root = temporaryDirectory();
     fs.writeFileSync(path.join(root, "dispatch-policy.md"), "# Dispatch policy\nBounded evidence.\n", "utf8");
     let releaseEnrichment!: () => void;
     let markStarted!: () => void;
     const started = new Promise<void>((resolve) => { markStarted = resolve; });
     const release = new Promise<void>((resolve) => { releaseEnrichment = resolve; });
-    const runtime = createSemanticRuntime(openMemoryDatabase(), {
+    const sharedDatabase = openMemoryDatabase();
+    const runtime = createSemanticRuntime(sharedDatabase, {
       seed: false,
       semanticEnricher: {
         async enrich() {
@@ -508,9 +513,84 @@ describe("real source workflow", () => {
     const first = runtime.engine.syncSourceConnection(connection.id, request);
     await started;
 
-    await expect(runtime.engine.syncSourceConnection(connection.id, request)).rejects.toMatchObject({ code: "SYNC_ALREADY_RUNNING" });
+    const competingRuntime = createSemanticRuntime(sharedDatabase, { seed: false, semanticEnricher: null });
+    await expect(competingRuntime.engine.syncSourceConnection(connection.id, request)).rejects.toMatchObject({ code: "SYNC_ALREADY_RUNNING" });
     releaseEnrichment();
     await expect(first).resolves.toMatchObject({ status: "completed" });
+  });
+
+  it("rolls back an entire source observation when a later document cannot be materialized", async () => {
+    const root = temporaryDirectory();
+    const connector: SourceConnector = {
+      kind: "filesystem",
+      test: () => ({ ok: true, message: "fixture available", details: {} }),
+      discover(connection) {
+        const observedAt = "2026-07-10T00:00:00.000Z";
+        const resources = ["first", "second"].map((externalId) => ({
+          id: `resource.atomic.${externalId}`,
+          connectionId: connection.id,
+          externalId,
+          parentId: null,
+          kind: "document" as const,
+          name: `${externalId}.md`,
+          qualifiedName: `${connection.name}.${externalId}`,
+          dataType: "text/markdown",
+          description: `Atomic ${externalId} document`,
+          uri: `fixture://${externalId}`,
+          sensitivity: "internal" as const,
+          writable: false,
+          profile: {},
+          evidenceChunkIds: [],
+          metadata: {},
+          observedAt
+        }));
+        return {
+          resources,
+          documents: resources.map((resource) => ({
+            resourceExternalId: resource.externalId,
+            request: {
+              name: resource.name,
+              text: `${resource.name} contains governed dispatch evidence.`,
+              mimeType: "text/markdown",
+              ingestionMode: "full_data" as const,
+              metadata: {}
+            }
+          })),
+          assets: [],
+          metrics: [],
+          lineage: [],
+          contracts: [],
+          ontologyClasses: [],
+          relations: [],
+          warnings: [],
+          checkpoint: {}
+        };
+      }
+    };
+    const runtime = createSemanticRuntime(openMemoryDatabase(), { seed: false, connectors: [connector], semanticEnricher: null });
+    const connection = runtime.engine.createSourceConnection({
+      name: "Atomic source fixture",
+      description: "Two-document transaction boundary",
+      config: { kind: "filesystem", rootPath: root, recursive: true, maxFiles: 10, maxFileBytes: 10_000, ingestionMode: "full_data" }
+    });
+    const saveEntities = runtime.repository.saveEntities.bind(runtime.repository);
+    let materializedDocuments = 0;
+    const spy = vi.spyOn(runtime.repository, "saveEntities").mockImplementation((entities) => {
+      materializedDocuments += 1;
+      if (materializedDocuments === 2) throw new Error("injected second-document failure");
+      saveEntities(entities);
+    });
+
+    await expect(
+      runtime.engine.syncSourceConnection(connection.id, { objective: "Observe atomically.", provider: "deterministic" })
+    ).rejects.toThrow(/second-document failure/);
+    spy.mockRestore();
+
+    expect(runtime.repository.getSources().filter((source) => source.metadata.connectionId === connection.id)).toHaveLength(0);
+    expect(runtime.engine.sourceResources(connection.id)).toHaveLength(0);
+    expect(runtime.repository.catalog().assets.filter((asset) => asset.metadata.connectionId === connection.id)).toHaveLength(0);
+    expect(runtime.engine.sourceSyncRuns(connection.id)[0]?.status).toBe("failed");
+    expect(runtime.engine.listSourceConnections()[0]?.status).toBe("error");
   });
 
   it("replaces stale evidence on resync and removes connection-owned observations on delete", async () => {

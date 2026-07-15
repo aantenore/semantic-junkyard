@@ -9,6 +9,17 @@ It is not a catalog replacement. Catalogs, databases, repositories, files, and f
 1. What governed, source-linked context may this agent use for the current objective?
 2. What exact source change, if any, may it make, and how can the system prove the source now reflects it?
 
+## Product Verdict
+
+The concept is coherent only with a narrow center of gravity:
+
+- **Yes:** an open connector protocol and reference control plane for evidence-bound, principal-bound business actions with authoritative readback.
+- **No:** a new general catalog, generic GraphRAG platform, or universal semantic database. Established systems already cover those categories with much greater maturity.
+- **Integration strategy:** use DataHub/OpenMetadata-class systems for catalog identity and governance context, Apache Ossie for portable semantic artifacts when viable, and Semantic Junkyard for the verified action/readback contract.
+- **Production gate:** prove the same invariants with at least one remote metadata adapter and one remote operational adapter, then add durable jobs/outbox/reconciliation and production identity before broadening write capabilities.
+
+The current repository is therefore a complete local reference product and conformance harness, not a production enterprise platform.
+
 ## Problem
 
 An agent that receives only search results or a catalog tool still has unsafe gaps:
@@ -41,6 +52,7 @@ Semantic Junkyard makes those gaps first-class product states instead of leaving
 - Resolve it to exactly one typed configured capability or fail closed.
 - Return the target identity, operation, before/after state, evidence, risk, autonomy, and source-version preconditions.
 - Fingerprint the complete resolved plan.
+- Persist the plan with actor, roles, clearance, and policy version before approval or execution.
 - Recompute the plan at approval and execution time.
 - Bind a human approval to one plan ID/fingerprint pair.
 - Bind an idempotency key to one exact execution request.
@@ -72,9 +84,9 @@ Semantic Junkyard makes those gaps first-class product states instead of leaving
 
 ## Product Surfaces
 
-The product workbench is the operator control plane. It manages source connections, synchronization, proposal decisions, evidence inspection, exact plan review, approval, execution, and reflected readback.
+The product workbench is the operator control plane. It manages source connections, source-wide discovery missions, synchronization, evidence-gated proposal decisions, authority-aware graph inspection, exact plan review, approval, execution, and reflected readback.
 
-The conversational PoC is a separate external REST application. It demonstrates how an agent client interprets a request, searches observed resources, retrieves governed evidence, stops at explicit boundaries, plans an exact action, and executes only autonomous targets. It cannot approve its own request.
+The conversational PoC is a separate external REST application. It starts in deterministic read-only mode, returns answer/claim/citation artifacts, and demonstrates how an agent client retrieves governed evidence, stops at explicit boundaries, plans an exact action, and executes only autonomous targets. It cannot approve its own request.
 
 The MCP stdio server is a second external-agent surface. It opens the selected SQLite control plane in its own process and is read-only by default. Persisted discovery, source synchronization, and business execution require independent startup flags. It cannot configure connections, decide proposals, or create approvals.
 

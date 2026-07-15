@@ -45,6 +45,9 @@ test.describe("product app", () => {
     expect(planResponse.status()).toBe(200);
     expect(plan.status).toBe("planned");
     expect(plan.targets).toHaveLength(1);
+    const proof = router.getByRole("region", { name: "Current plan identity and evidence binding" });
+    await expect(proof).toBeVisible();
+    await expect(proof.locator("code")).toHaveText(/^[a-f0-9]{64}$/);
     await expect(router.locator(".action-feedback strong")).toHaveText("Plan ready");
     await expect(router.locator(".action-target")).toHaveCount(plan.targets.length);
     await expect(router.locator(".action-target")).toContainText("Real connector / SQLite");
@@ -64,6 +67,7 @@ test.describe("product app", () => {
     expect(run.reflections.every((reflection) => reflection.status === "verified")).toBe(true);
     await expect(router.locator(".action-feedback strong")).toHaveText("Completed");
     await expect(router.locator(".action-target")).toContainText("External postcondition passed");
+    await expect(proof).toContainText("executed fingerprint matches reviewed fingerprint");
   });
 
   test("requires an explicit rationale and attestation for an approval-bound plan", async ({ page }) => {
@@ -79,9 +83,10 @@ test.describe("product app", () => {
     const plan = (await planResponse.json()) as { id: string; fingerprint: string; status: string };
     expect(plan.status).toBe("approval_required");
 
+    const proof = router.getByRole("region", { name: "Current plan identity and evidence binding" });
+    await expect(proof).toContainText(plan.id);
+    await expect(proof.locator("code")).toHaveText(plan.fingerprint);
     const approvalReview = router.getByRole("region", { name: "Plan approval review" });
-    await expect(approvalReview).toContainText(plan.id);
-    await expect(approvalReview.locator("code")).toHaveAttribute("title", plan.fingerprint);
     const approve = approvalReview.getByRole("button", { name: "Approve exact plan", exact: true });
     await expect(approve).toBeDisabled();
     await approvalReview.getByRole("textbox", { name: "Approval rationale" }).fill("Reviewed the exact contract diff, source identity, and fingerprint.");
@@ -96,5 +101,20 @@ test.describe("product app", () => {
     expect(approvalResponse.status()).toBe(201);
     await expect(approvalReview.getByRole("button", { name: "Approved", exact: true })).toBeDisabled();
     await expect(router.getByRole("button", { name: "Execute plan", exact: true })).toBeEnabled();
+  });
+
+  test("requires opening proposal evidence before a semantic decision", async ({ page }) => {
+    await expectRenderedApp(page, "Semantic Junkyard", page.locator(".sidebar .brand"));
+    await page.locator(".sidebar .nav-item").filter({ hasText: "Sources" }).click();
+
+    const proposal = page.locator(".proposal-row.status-proposed").first();
+    await expect(proposal).toBeVisible();
+    await proposal.getByRole("textbox", { name: "Decision rationale" }).fill("Reviewed against the cited source evidence.");
+    const accept = proposal.getByRole("button", { name: "Accept", exact: true });
+    await expect(accept).toBeDisabled();
+    await proposal.getByRole("button", { name: "Review evidence", exact: true }).click();
+    await expect(proposal.locator(".proposal-evidence-review article").first()).toBeVisible();
+    await expect(proposal.getByRole("button", { name: "Evidence reviewed", exact: true })).toBeVisible();
+    await expect(accept).toBeEnabled();
   });
 });

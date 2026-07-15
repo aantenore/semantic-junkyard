@@ -40,7 +40,7 @@ The control-plane SQLite database stores:
 - source artifacts, parsed elements, chunks, FTS rows, hash vectors, entities, relations, and claims;
 - semantic assets, metrics, lineage, contracts, policies, and ontology classes;
 - semantic proposals and decisions;
-- action plans embedded in runs, approvals, write observations, reflection results, and semantic updates;
+- persisted principal-bound action plans, approvals, runs, write observations, reflection results, and semantic updates;
 - audit events.
 
 Connected sources retain their own authority:
@@ -70,7 +70,9 @@ flowchart LR
   P --> V["Accept / reject / supersede lifecycle"]
 ```
 
-Every sync persists an event sequence covering connection, inspection, profiling warnings, evidence materialization, extraction/proposal work, supersession, and completion. Sync is in-process; there is no durable worker or resume token.
+Every sync persists an event sequence covering connection, inspection, profiling warnings, evidence materialization, extraction/proposal work, supersession, and completion. A source-wide discovery mission can orchestrate selected or all configured connections, continue after isolated failures, profile the resulting fabric, and persist one aggregate receipt. REST restricts this operation to operators; MCP registers it as `discover_sources` only with `--allow-sync`.
+
+A conditional SQLite lease prevents two API/MCP runtime instances from synchronizing the same connection concurrently. Deterministic evidence, resources, catalog observations, structural graph assertions, and proposals are replaced in one control-plane transaction; a failure while materializing a later document rolls back the whole observation. Sync still runs in process and has no durable worker or resume token. A crashed lease becomes reclaimable after its stale interval.
 
 ### Filesystem
 
@@ -106,7 +108,7 @@ Resources become canonical entities with source connection/resource metadata. Re
 - When a new sync no longer emits an assertion, the previous proposal is marked `superseded`; relation lifecycle metadata is updated so stale assertions leave active navigation.
 - When evidence, confidence, or explanation changes for a non-authoritative assertion, the runtime creates a new proposal identity. A prior acceptance or rejection never silently applies to changed evidence.
 
-This keeps three concepts separate: an observed source fact, a reviewable interpretation, and a graph edge available to agents.
+This keeps three concepts separate: an observed source fact, a reviewable interpretation, and an accepted graph edge available to agents. Operators can inspect proposed edges, but non-operator graph tools and graph retrieval exclude `proposed`, `rejected`, and `superseded` relations.
 
 Catalog IDs declared by a source are source-local. Before publication, assets, metrics, policies, lineage, contracts, and ontology classes receive connection-scoped stable IDs while retaining their declared ID as provenance. Contract membership is explicit, and resync/delete removes observations by connection ownership rather than by a globally assumed source ID.
 
@@ -120,6 +122,8 @@ The reference semantic runtime is deterministic:
 - 128-dimensional signed token-hash embeddings;
 - SQLite FTS5 lexical retrieval;
 - deterministic fusion of lexical, vector, graph, quality, freshness, and policy signals;
+- explicit `domain`, `operational`, or `all` evidence scope so write receipts cannot silently displace business definitions;
+- a bounded graph contribution, preventing repeated action history from inflating domain retrieval scores;
 - bounded graph neighborhoods and path finding.
 
 Policy is applied to catalog, source, search, evidence, graph, and operational responses. It is a local reference policy, not federated source authorization.
@@ -134,10 +138,11 @@ sequenceDiagram
   participant Source as Configured source
   participant ReadModel as Semantic read model
 
-  Client->>Plane: business intent + mode + autonomy ceiling
+  Client->>Plane: business intent + principal + mode + autonomy ceiling
   Plane->>Source: resolve one typed target and current version
   Source-->>Plane: exact before/after + evidence + preconditions
   Plane->>Policy: risk and autonomy decision
+  Plane->>Plane: persist principal-bound plan
   Plane-->>Client: plan ID + fingerprint + target + diff
   opt approval required
     Client->>Plane: human approval for exact ID/fingerprint
@@ -159,7 +164,7 @@ sequenceDiagram
 
 ### Plan Identity
 
-The plan fingerprint covers the stable plan ID, intent, action type, mode, requested autonomy ceiling, resolved risk, complete target including connector parameters/preconditions, and warnings. `createdAt` is excluded. Approval and execution rebuild the plan from current source state and reject a different ID or fingerprint with `PLAN_CHANGED`.
+The plan fingerprint covers the stable plan ID, normalized principal (actor, roles, clearance, policy version), intent, action type, mode, requested autonomy ceiling, resolved risk, complete target including connector parameters/preconditions, and warnings. `createdAt` is excluded. The plan is stored before approval or execution. A missing plan fails; a different caller authorization context returns `PLAN_PRINCIPAL_MISMATCH`; approval and execution rebuild against current source state and reject a different ID or fingerprint with `PLAN_CHANGED`.
 
 The request `context` is not independently trusted or fingerprinted as an opaque object. Connectors may use typed values from it to disambiguate a target; any effect on execution must appear in the resolved target and therefore in the fingerprint.
 
@@ -194,11 +199,11 @@ The reference Git connection is approval-required.
 
 An idempotency key is unique in the control-plane SQLite database and bound to the plan ID/fingerprint, intent, mode, and autonomy ceiling. A terminal exact replay returns the stored run. A paused `approval_required` run may resume with the same key after a matching approval is created. Required approval is consumed in a committed control-plane transaction before source execution; it cannot become active again after an ambiguous outcome.
 
-After connector readback, the engine also persists and rereads a versioned reflection record, checking record identity, write ID, intent, plan ID, target, operation, diff, and expected hash. Only connector and control-plane verification together produce a verified reflection and semantic update.
+After connector readback, the engine also persists and rereads a versioned reflection record, checking record identity, write ID, intent, plan ID, target, operation, diff, and expected hash. Verification additionally requires a non-empty connector readback, source version, named postcondition, and `externalPostconditionPassed: true`. Only connector and control-plane verification together produce a verified reflection and semantic update. Capability templates without a managed connector never enter this write path.
 
 ## Transaction And Failure Boundaries
 
-The control plane uses SQLite transactions for its own records. Each connector uses its source-native atomic unit: an immediate SQLite transaction or one Git commit. These are **not** one distributed transaction.
+The control plane uses SQLite transactions for its own records. Source synchronization uses a durable per-connection lease and transactionally replaces one deterministic observation. Each write connector uses its source-native atomic unit: an immediate SQLite transaction or one Git commit. These are **not** one distributed transaction.
 
 If an in-process exception occurs after source execution starts, the runtime stores `reconciliation_required`, consumes any approval, and refuses to replay that idempotency key as a new write. The current implementation still has no durable outbox or reconciliation worker. A process crash after the source commits but before the control plane records the result can leave an unrecorded source effect. Local idempotency alone cannot prove exactly-once behavior across that crash window. Production connectors need remote idempotency, durable intent/outcome records, retry state, and authoritative reconciliation.
 
@@ -209,16 +214,17 @@ If an in-process exception occurs after source execution starts, the runtime sto
 3. **Proposal boundary.** Deterministic/model inferences remain distinguishable and reviewable.
 4. **Model boundary.** A model can return bounded intent/proposal JSON or a summary; deterministic validation and connectors decide effects.
 5. **Operator boundary.** Connection configuration, proposal decisions, and approvals are operator/human API capabilities, not general agent tools.
-6. **REST boundary.** Loopback without tokens is development-only. Authenticated mode requires distinct static agent, operator, and approver tokens, which are still not production IAM.
-7. **MCP boundary.** MCP bypasses REST auth because it runs locally over stdio and directly opens files. It is read-only by default, but OS process identity and filesystem permissions remain the actual control when mutation flags are enabled.
-8. **Audit boundary.** The system records observable inputs, evidence, artifacts, decisions, diffs, tool events, and readbacks. It does not request or store hidden chain-of-thought.
+6. **Principal boundary.** A persisted plan is bound to one normalized caller authorization context and policy version. Approval may be issued by a separate approver, but execution must use the planning principal.
+7. **REST boundary.** Loopback without tokens is development-only. Authenticated mode requires distinct static agent, operator, and approver tokens, which are still not production IAM.
+8. **MCP boundary.** MCP bypasses REST auth because it runs locally over stdio and directly opens files. It is read-only by default, but OS process identity and filesystem permissions remain the actual control when mutation flags are enabled.
+9. **Audit boundary.** The system records observable inputs, evidence, artifacts, decisions, diffs, tool events, and readbacks. It does not request or store hidden chain-of-thought.
 
 ## Current Deployment Limits
 
 - One Node.js process per API or MCP runtime and one single-node SQLite control plane.
 - Local connectors only; no remote production connector credentials or network isolation.
 - No tenancy, production IAM, delegated policy decision point, source ACL synchronization, or row-level authorization.
-- No durable job queue, scheduler, outbox, dead-letter handling, or crash reconciliation.
+- A SQLite sync lease and local observation transactions exist, but there is no durable job queue, scheduler, outbox, dead-letter handling, or crash reconciliation.
 - No distributed transaction across source and control plane.
 - No arbitrary unknown-source writes by design.
 - No hidden chain-of-thought capture by design.

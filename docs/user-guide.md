@@ -41,11 +41,11 @@ The left navigation is a map of operator responsibilities:
 
 | Section | What to inspect or do |
 | --- | --- |
-| Dashboard | Runtime, provider, modules, system counts, and overall state. |
+| Dashboard | Source-wide discovery missions, Connect/Observe/Govern/Act/Verify state, verified action receipts, and operational audit. |
 | Sources | Connections, tests, synchronization, observed resources, writability, semantic proposals, and sync events. |
-| Ingest | Preview or ingest submitted unstructured text under `full_data`, `metadata_only`, or `external_reference` retention. Extracted relations are persisted immediately in the current reference path. |
+| Ingest | Preview or ingest submitted unstructured text under `full_data`, `metadata_only`, or `external_reference` retention. Extracted relations are persisted as proposed and remain inactive for agent graph reasoning. |
 | Actions | Search evidence, profile the persisted semantic fabric, create exact business action plans, approve when required, execute, and inspect readback. |
-| Graph | Navigate canonical entities and relations that are not rejected/superseded, including pending deterministic connector inferences. |
+| Graph | Filter authoritative, accepted, and proposed relations; select keyboard-accessible nodes/edges to inspect confidence, lifecycle, and evidence identity. Proposed relations are operator-visible but agent-inactive. |
 | Agents | Inspect the agent manifest and MCP capability summary. |
 | Discovery | Inspect objective-aware discovery runs and their timeline. |
 
@@ -64,16 +64,16 @@ Open **Sources** and inspect each reference connection.
 3. Confirm that only the configured `Operations Database.orders.status` capability is writable for the seeded SQLite source.
 4. Confirm that only the configured semantic-contract path is writable for the seeded Git source.
 5. Open the semantic proposal queue and compare `source_fact`, deterministic, and optional `local_model` origins.
-6. Accept or reject a non-authoritative proposal only after opening its evidence and entering a rationale.
+6. Select **Review evidence** and read every bound chunk. Accept/reject controls remain disabled until evidence opens successfully and a rationale is entered.
 
-Source facts are authoritative and locked as accepted. Accepting an inference confirms it for navigation but does not make it authoritative. Pending deterministic connector relations are graph-visible; local-model relation candidates become graph-visible only after acceptance. Rejected and superseded relations leave active navigation. See [How semantic meaning is governed](how-it-works.md#5-how-semantic-meaning-is-governed) for the exact lifecycle and the direct-ingest exception.
+Source facts are authoritative and locked as accepted. Accepting an inference confirms it for navigation but does not make it authoritative. Pending relations are visible in the operator graph but excluded from agent graph tools and retrieval boosts. Rejected and superseded relations leave active navigation. See [How semantic meaning is governed](how-it-works.md#5-how-semantic-meaning-is-governed) for the exact lifecycle and the direct-ingest exception.
 
 ## 4. Use The Conversational PoC For A Read-Only Question
 
 Open `http://localhost:5174`.
 
-1. Select **Deterministic** for a reproducible run, or **Local Hugging Face** to use a compatible cached model for intent interpretation.
-2. Select **Read only**.
+1. The PoC starts with **Deterministic rules** and **Read only** selected. Keep these safe defaults for a reproducible first run, or explicitly select **Local model** to use a compatible cached model for intent interpretation.
+2. Leave **Read only** selected.
 3. Ask:
 
 ```text
@@ -82,7 +82,7 @@ Which governed data and policy control order dispatch?
 
 The PoC should visibly interpret a typed intent, search observed resources, profile the already-persisted semantic fabric, search semantic evidence, resolve entity/graph context, expand context, open evidence, and return a human-readable answer with an audit trace. This discovery run does not synchronize sources.
 
-Expected visible artifacts include the interpreter/provider identity, source-resource matches, discovery events, ranked evidence, canonical entity candidates, graph nodes/edges, context spans, opened evidence, and a grounded final answer. A read-only turn never creates a business action plan.
+Expected visible artifacts include the interpreter/provider identity, source-resource matches, discovery events, ranked evidence, canonical entity candidates, graph nodes/edges, context spans, opened evidence, and an answer contract with supporting claims, clickable chunk citations, and an explicit evidence boundary. A read-only turn never creates a business action plan.
 
 The PoC does not display or request hidden chain-of-thought. It displays observable tool calls, typed artifacts, evidence, policy decisions, stop reasons, diffs, writes, readbacks, and final status.
 
@@ -101,14 +101,14 @@ You can use the product **Actions** section for direct control or the PoC to obs
    ```
 
 4. Select **Plan**.
-5. Before execution, inspect the exact connection, table, key, column, before/after diff, evidence, risk, row-hash precondition, plan ID, and fingerprint.
+5. Before execution, inspect the exact connection, table, key, column, before/after diff, evidence, risk, row-hash precondition, plan ID, full fingerprint, planning principal, and policy version.
 6. Select **Execute plan**.
 
 ### From the PoC
 
 1. Select **Autonomous**.
 2. Submit the same sentence.
-3. Watch the client gather evidence, ask for permissions, request the exact plan, execute only when every target is autonomous, reread source state, and search the refreshed semantic evidence.
+3. The command changes to **Plan & execute**. Watch the client gather evidence, ask for permissions, request the exact plan, execute only when every target is autonomous, reread source state, and show that the executed fingerprint matches the reviewed fingerprint.
 
 Expected successful result: the connector rechecks the source-row hash, performs one parameterized allowlisted update, closes the write connection, opens a new read-only connection, verifies `status == dispatched`, returns a `verified` run, and publishes reflected evidence.
 

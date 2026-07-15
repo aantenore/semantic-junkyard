@@ -163,7 +163,8 @@ async function executeLocalAgentUseCase(
   const reflectedSearch = engine.search({
     query: "ORD-1001 dispatched Business Action Reflection Operations Database",
     topK: 3,
-    mode: "hybrid"
+    mode: "hybrid",
+    scope: "operational"
   });
   steps.push({
     step: 8,
@@ -393,7 +394,7 @@ function compact(value: string): string {
 
 if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1]))) {
   const report = await runLocalAgentUseCase({
-    writeReport: true,
+    writeReport: process.argv.includes("--write-report"),
     provider: process.argv.includes("--local-hf") ? "local-huggingface" : "deterministic",
     allowModelFallback: !process.argv.includes("--no-fallback")
   });

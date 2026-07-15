@@ -8,6 +8,9 @@ test.describe("PoC app", () => {
     await expect(page.locator(".header-status")).toContainText("Product API connected");
     await expect(page.getByRole("heading", { name: "Product conversation" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Product read model" })).toBeVisible();
+    await expect(page.getByRole("group", { name: "Intent interpreter" }).getByRole("button", { name: "Deterministic rules" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("group", { name: "Execution boundary" }).getByRole("button", { name: "read only", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("textbox", { name: "Product request" })).toHaveValue(/Explain which governed source/);
   });
 
   test("completes a read-only conversation without planning or executing", async ({ page }, testInfo) => {
@@ -35,6 +38,12 @@ test.describe("PoC app", () => {
     const finalMessage = page.locator(".message.assistant").filter({ hasText: "Grounded read-only result" });
     await expect(finalMessage).toBeVisible();
     await expect(finalMessage).toContainText("No business-action plan was created.");
+    const answer = page.getByRole("region", { name: "Grounded answer with citations" });
+    await expect(answer).toBeVisible();
+    await expect(answer).toContainText("dispatch-policy.md");
+    await expect(answer).toContainText("Only dispatch-eligible orders belong in the denominator");
+    await expect(answer).not.toContainText("business-action-reflection");
+    await expect(answer.getByRole("link").first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Ask product", exact: true })).toBeEnabled();
 
     expect(actionRequests).toEqual([]);
@@ -64,12 +73,12 @@ test.describe("PoC app", () => {
 
     const request = "Set order ORD-1001 status to dispatched";
     await page.getByRole("textbox", { name: "Product request" }).fill(request);
-    await page.getByRole("button", { name: "Ask product", exact: true }).click();
+    await page.getByRole("button", { name: "Plan & execute", exact: true }).click();
 
     const finalMessage = page.locator(".message.write").filter({ hasText: "Verified with reflected readback" });
     await expect(finalMessage).toBeVisible();
     await expect(finalMessage).toContainText("postcondition passed");
-    await expect(page.getByRole("button", { name: "Ask product", exact: true })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Plan & execute", exact: true })).toBeEnabled();
 
     expect(actionRequests.filter((path) => path === "/api/business/actions/plan")).toHaveLength(1);
     expect(actionRequests.filter((path) => path === "/api/business/actions/execute")).toHaveLength(1);
@@ -77,6 +86,8 @@ test.describe("PoC app", () => {
 
     const actionCard = page.locator(".action-panel");
     await expect(actionCard).toContainText("verified");
+    await expect(actionCard.getByRole("group", { name: "Plan identity and evidence binding" })).toContainText("executed fingerprint matches reviewed fingerprint");
+    await expect(actionCard.locator(".plan-proof code")).toHaveText(/^[a-f0-9]{64}$/);
     expect(await actionCard.locator(".target-row").count()).toBeGreaterThan(0);
 
     const verifiedText = await actionCard.locator(".action-meter > div").filter({ hasText: "Verified" }).locator("strong").innerText();

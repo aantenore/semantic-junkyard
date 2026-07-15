@@ -87,7 +87,10 @@ export class DeterministicSemanticExtractor {
               evidenceChunkId: chunk.id,
               metadata: {
                 extractor: "extractor.deterministic",
-                matchedVerb: verb
+                matchedVerb: verb,
+                origin: "deterministic_ingest",
+                authoritative: false,
+                lifecycle: "proposed"
               }
             });
           }
@@ -107,7 +110,10 @@ export class DeterministicSemanticExtractor {
           evidenceChunkId: chunk.id,
           metadata: {
             extractor: "extractor.deterministic",
-            strategy: "chunk-cooccurrence"
+            strategy: "chunk-cooccurrence",
+            origin: "deterministic_ingest",
+            authoritative: false,
+            lifecycle: "proposed"
           }
         });
       }

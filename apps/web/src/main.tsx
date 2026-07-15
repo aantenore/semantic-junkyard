@@ -5,6 +5,7 @@ import {
   Braces,
   CheckCircle2,
   CircleDot,
+  Copy,
   Database,
   FileSearch,
   GitBranch,
@@ -26,6 +27,7 @@ import type { BusinessActionApproval, BusinessActionPlan, BusinessActionRun, Sea
 import { ActionTargetSurface } from "./components/ActionTargetSurface";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { IconButton } from "./components/IconButton";
+import { OperatorControlRoom } from "./components/OperatorControlRoom";
 import { SourceWorkbench } from "./components/SourceWorkbench";
 import { apiHref, approveBusinessAction, curateRelation, executeBusinessAction, ingestText, loadSnapshot, planBusinessAction, previewIngest, runDiscovery, semanticSearch } from "./api/client";
 import type { AppSnapshot, CuratedRelationReport, IngestPreviewReport } from "./types/app";
@@ -60,6 +62,7 @@ function App() {
   const [approvalAttested, setApprovalAttested] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [lastActionAt, setLastActionAt] = useState<string | null>(null);
+  const [fingerprintCopied, setFingerprintCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [snapshotState, setSnapshotState] = useState<"loading" | "ready" | "degraded" | "error">("loading");
@@ -181,6 +184,7 @@ function App() {
     setActionPlan(null);
     setActionRun(null);
     setActionApproval(null);
+    setFingerprintCopied(false);
     setApprovalRationale("");
     setApprovalAttested(false);
     setActionPhase("idle");
@@ -253,6 +257,7 @@ function App() {
     setError(null);
     setActionRun(null);
     setActionApproval(null);
+    setFingerprintCopied(false);
     setApprovalRationale("");
     setApprovalAttested(false);
     setActionPhase("planning");
@@ -291,6 +296,16 @@ function App() {
       setError(err instanceof Error ? err.message : "Business action approval failed");
     } finally {
       setActionBusy(false);
+    }
+  }
+
+  async function copyPlanFingerprint() {
+    if (!actionPlan) return;
+    try {
+      await navigator.clipboard.writeText(actionPlan.fingerprint);
+      setFingerprintCopied(true);
+    } catch {
+      setError("The plan fingerprint could not be copied from this browser context.");
     }
   }
 
@@ -450,7 +465,8 @@ function App() {
           ))}
         </nav>
 
-        <section className="content-grid" id="dashboard">
+        <section className="content-grid">
+          <OperatorControlRoom snapshot={snapshot} snapshotState={snapshotState} onRefresh={refresh} onNavigate={navigateTo} />
           <SourceWorkbench snapshot={snapshot} snapshotState={snapshotState} onRefresh={refresh} />
 
           <section className="ingest-panel panel" id="ingest">
@@ -535,7 +551,7 @@ function App() {
               </button>
               <button className="small-button" onClick={onDiscovery} disabled={busy}>
                 <Zap size={15} />
-                Run discovery
+                Profile fabric
               </button>
             </div>
             <div className="toolbar">
@@ -572,7 +588,7 @@ function App() {
                     ? (actionRun?.status ?? actionPlan!.status).replaceAll("_", " ")
                     : snapshotState === "loading"
                       ? "Loading sources"
-                      : `${snapshot?.sourceSystems.length ?? 0} source systems`}
+                      : `${snapshot?.sourceConnections.filter((connection) => connection.config.kind !== "filesystem" && connection.config.writeMode !== "read_only").length ?? 0} managed writable sources`}
                 </span>
               </div>
               <div className="action-feedback" aria-live="polite">
@@ -664,15 +680,29 @@ function App() {
                   {actionPhase === "executing" ? "Executing" : actionMode === "dry_run" ? "Record dry run" : "Execute plan"}
                 </button>
               </div>
+              {actionPlan ? (
+                <section className="action-plan-proof" aria-label="Current plan identity and evidence binding">
+                  <div>
+                    <span>Plan identity</span>
+                    <strong>{actionPlan.id}</strong>
+                    <small>{actionPlan.principal.actor} / {actionPlan.principal.clearance} / {actionPlan.principal.policyVersion}</small>
+                  </div>
+                  <div className="fingerprint-control">
+                    <span>Full fingerprint</span>
+                    <code>{actionPlan.fingerprint}</code>
+                    <button type="button" className="compact-icon-button" onClick={() => void copyPlanFingerprint()} aria-label="Copy full plan fingerprint" title="Copy full plan fingerprint">
+                      {fingerprintCopied ? <CheckCircle2 size={15} /> : <Copy size={15} />}
+                    </button>
+                  </div>
+                  <div>
+                    <span>Proof binding</span>
+                    <strong>{[...new Set(actionPlan.targets.flatMap((target) => target.evidenceChunkIds))].length} evidence chunks / {actionPlan.targets.length} targets</strong>
+                    <small>{actionRun ? (actionRun.plan.id === actionPlan.id && actionRun.plan.fingerprint === actionPlan.fingerprint ? `Run ${actionRun.id}: executed fingerprint matches reviewed fingerprint.` : "Run identity does not match the reviewed plan.") : "Execution has not started."}</small>
+                  </div>
+                </section>
+              ) : null}
               {actionPlan?.status === "approval_required" ? (
                 <section className="approval-review" aria-label="Plan approval review">
-                  <div className="approval-identity">
-                    <div>
-                      <span>Plan identity</span>
-                      <strong>{actionPlan.id}</strong>
-                    </div>
-                    <code title={actionPlan.fingerprint}>{actionPlan.fingerprint}</code>
-                  </div>
                   <div className="approval-preconditions">
                     {actionPlan.targets
                       .filter((target) => target.autonomy === "approval_required")
@@ -813,7 +843,7 @@ function App() {
                 <span>Rationale</span>
                 <input value={curationRationale} onChange={(event) => setCurationRationale(event.target.value)} />
               </label>
-              <button className="curation-button" onClick={onCurateRelation} disabled={busy || !curationSource.trim() || !curationTarget.trim()}>
+              <button className="curation-button" onClick={onCurateRelation} disabled={busy || !curationSource.trim() || !curationTarget.trim() || !curationRationale.trim()}>
                 <GitBranch size={15} />
                 Curate relation
               </button>

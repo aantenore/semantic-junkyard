@@ -32,7 +32,7 @@ export const defaultSourceSystems: SourceSystem[] = [
     id: "source.data-catalog",
     name: "Data Catalog",
     kind: "catalog",
-    description: "Governed catalog adapter for business descriptions, metric definitions, tags, and ownership metadata.",
+    description: "Capability template for a governed catalog adapter. It is non-executable until a managed connector is configured.",
     capabilities: [
       {
         id: "catalog.update_metric_definition",
@@ -44,7 +44,7 @@ export const defaultSourceSystems: SourceSystem[] = [
         autonomous: true,
         requiresApproval: false,
         reversible: true,
-        description: "Writes a governed metric description and supporting semantic evidence into the catalog source."
+        description: "Template operation for a governed metric description; no source write exists until an authoritative connector implements it."
       },
       {
         id: "catalog.update_asset_description",
@@ -56,7 +56,7 @@ export const defaultSourceSystems: SourceSystem[] = [
         autonomous: true,
         requiresApproval: false,
         reversible: true,
-        description: "Writes business context on a catalog asset without changing source data."
+        description: "Template operation for catalog business context; no source write exists until an authoritative connector implements it."
       }
     ]
   },
@@ -64,7 +64,7 @@ export const defaultSourceSystems: SourceSystem[] = [
     id: "source.openmetadata",
     name: "OpenMetadata Mirror",
     kind: "metadata-api",
-    description: "Metadata API adapter shape for lineage and semantic relationship publication.",
+    description: "Capability template for a metadata API adapter. It is non-executable until a managed connector is configured.",
     capabilities: [
       {
         id: "openmetadata.publish_lineage",
@@ -76,7 +76,7 @@ export const defaultSourceSystems: SourceSystem[] = [
         autonomous: true,
         requiresApproval: false,
         reversible: true,
-        description: "Publishes a reversible metadata lineage edge that can be reread as source truth."
+        description: "Template operation for lineage publication; verification is unavailable until an authoritative connector implements readback."
       }
     ]
   },
@@ -84,7 +84,7 @@ export const defaultSourceSystems: SourceSystem[] = [
     id: "source.dbt-repo",
     name: "dbt Semantic Repository",
     kind: "git",
-    description: "Git-backed semantic model adapter that creates reviewable contract and test proposals.",
+    description: "Capability template for a remote dbt repository adapter. The implemented local Git connector is registered separately.",
     capabilities: [
       {
         id: "dbt.create_contract_pr",
@@ -96,7 +96,7 @@ export const defaultSourceSystems: SourceSystem[] = [
         autonomous: true,
         requiresApproval: false,
         reversible: true,
-        description: "Creates a source-side pull request proposal instead of silently changing production models."
+        description: "Template operation for a source-side pull request; it cannot execute without a managed remote Git adapter."
       }
     ]
   },
@@ -104,7 +104,7 @@ export const defaultSourceSystems: SourceSystem[] = [
     id: "source.ticketing",
     name: "Governance Ticketing",
     kind: "ticketing",
-    description: "Ticketing adapter for owner review, approval, and business accountability.",
+    description: "Capability template for ticketing integration. It is non-executable until a managed connector is configured.",
     capabilities: [
       {
         id: "ticketing.create_owner_review",
@@ -116,7 +116,7 @@ export const defaultSourceSystems: SourceSystem[] = [
         autonomous: true,
         requiresApproval: false,
         reversible: true,
-        description: "Creates an owner review task with evidence, target systems, and verification state."
+        description: "Template operation for an owner review task; it cannot execute without an authoritative ticketing connector."
       }
     ]
   }

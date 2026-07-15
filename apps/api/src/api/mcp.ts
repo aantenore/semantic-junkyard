@@ -39,6 +39,20 @@ export function toMcpToolDescriptors(manifest: AgentManifest) {
           objective: { type: "string", description: "Optional discovery objective." }
         }
       }
+    },
+    {
+      name: "discover_sources",
+      description: "Synchronize configured source connections, generate evidence-bound semantic proposals, and profile the resulting fabric as one durable mission.",
+      inputSchema: {
+        type: "object" as const,
+        additionalProperties: false,
+        properties: {
+          objective: { type: "string", description: "Discovery objective applied to every selected source." },
+          provider: { type: "string", description: "deterministic or local-huggingface." },
+          connectionIds: { type: "array", description: "Optional configured source connection IDs; empty means all." },
+          continueOnError: { type: "boolean", description: "Continue with remaining sources after an isolated connector failure." }
+        }
+      }
     }
   ] satisfies McpToolDescriptor[];
 }

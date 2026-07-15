@@ -4,6 +4,7 @@ import type {
   BusinessActionApprovalRequest,
   BusinessActionExecutionRequest,
   BusinessActionPlan,
+  BusinessActionPrincipal,
   BusinessActionRequest,
   BusinessActionRun,
   BusinessActionTarget,
@@ -20,6 +21,7 @@ import type {
   SearchResult,
   SemanticUpdate,
   SourceArtifact,
+  SourceDiscoveryMissionReport,
   SourceResource,
   SourceSystem,
   SourceSystemRecord,
@@ -38,6 +40,8 @@ import {
   IngestRequestSchema,
   SearchRequestSchema
 } from "@semantic-junkyard/shared";
+import { SourceDiscoveryMissionRequestSchema } from "@semantic-junkyard/shared";
+import { nanoid } from "nanoid";
 import { DiscoveryAgent } from "../agent/discoveryAgent.js";
 import { InlineTextConnector } from "../connectors/inlineTextConnector.js";
 import { DeterministicSemanticExtractor } from "../extractors/deterministicExtractor.js";
@@ -54,6 +58,7 @@ import type { SemanticRepository } from "../storage/repository.js";
 import { loadSourceSystems } from "../config/sourceSystems.js";
 import type { SourceManager } from "../sources/sourceManager.js";
 import type { ConnectorActionCandidate } from "../sources/connector.js";
+import { evidenceScopeIncludes } from "./evidenceScope.js";
 
 type IngestionPlan = IngestPreviewResponse;
 type RiskLevel = "low" | "medium" | "high" | "blocked";
@@ -93,6 +98,8 @@ const automationActor: ActorContext = {
   clearance: "confidential"
 };
 
+const BUSINESS_ACTION_POLICY_VERSION = "business-action-policy-v2";
+
 export class SemanticEngine {
   private readonly connector = new InlineTextConnector();
   private readonly parser = new LocalTextParser();
@@ -101,6 +108,7 @@ export class SemanticEngine {
   private readonly planner: HybridQueryPlanner;
   private readonly policy = new PolicyEngine();
   private readonly discoveryAgent: DiscoveryAgent;
+  private sourceDiscoveryMissionActive = false;
 
   private readonly maxAutonomousRisk: Exclude<RiskLevel, "blocked">;
   private readonly configuredSourceSystems: SourceSystem[];
@@ -163,7 +171,9 @@ export class SemanticEngine {
         metadata: {
           ...request.metadata,
           origin: typeof request.metadata.origin === "string" ? request.metadata.origin : "manual-curation",
-          rationale: request.rationale ?? null,
+          authoritative: false,
+          lifecycle: "accepted",
+          rationale: request.rationale,
           curatedAt: nowIso()
         }
       };
@@ -195,6 +205,107 @@ export class SemanticEngine {
 
   async syncSourceConnection(id: string, rawRequest: unknown) {
     return this.requireSourceManager().syncConnection(id, rawRequest, this);
+  }
+
+  async runSourceDiscoveryMission(rawRequest: unknown, actor = "local-user"): Promise<SourceDiscoveryMissionReport> {
+    const request = SourceDiscoveryMissionRequestSchema.parse(rawRequest ?? {});
+    if (this.sourceDiscoveryMissionActive) {
+      throw new DomainError("DISCOVERY_MISSION_ALREADY_RUNNING", "A source discovery mission is already running.", 409);
+    }
+
+    const connections = this.listSourceConnections();
+    const byId = new Map(connections.map((connection) => [connection.id, connection]));
+    const requestedConnectionIds = request.connectionIds.length > 0 ? [...new Set(request.connectionIds)] : connections.map((connection) => connection.id);
+    const unknownConnectionIds = requestedConnectionIds.filter((connectionId) => !byId.has(connectionId));
+    if (unknownConnectionIds.length > 0) {
+      throw new DomainError("CONNECTION_NOT_FOUND", `Source connections not found: ${unknownConnectionIds.join(", ")}.`, 404, { connectionIds: unknownConnectionIds });
+    }
+    if (requestedConnectionIds.length === 0) {
+      throw new DomainError("NO_SOURCE_CONNECTIONS", "Configure at least one source connection before running a discovery mission.", 422);
+    }
+
+    this.sourceDiscoveryMissionActive = true;
+    const id = `mission_${nanoid(12)}`;
+    const startedAt = nowIso();
+    const syncRuns: SourceDiscoveryMissionReport["syncRuns"] = [];
+    const failures: SourceDiscoveryMissionReport["failures"] = [];
+    let discoveryRun: SourceDiscoveryMissionReport["discoveryRun"] = null;
+    let connectionsAttempted = 0;
+
+    try {
+      for (const connectionId of requestedConnectionIds) {
+        const connection = byId.get(connectionId)!;
+        connectionsAttempted += 1;
+        try {
+          syncRuns.push(await this.syncSourceConnection(connectionId, { objective: request.objective, provider: request.provider }));
+        } catch (error) {
+          const failedRun = this.sourceSyncRuns(connectionId).find((run) => run.objective === request.objective && run.startedAt >= startedAt);
+          if (failedRun) syncRuns.push(failedRun);
+          failures.push({
+            connectionId,
+            connectionName: connection.name,
+            code: error instanceof DomainError ? error.code : "SOURCE_SYNC_FAILED",
+            message: error instanceof Error ? error.message : "Source synchronization failed."
+          });
+          if (!request.continueOnError) break;
+        }
+      }
+
+      try {
+        discoveryRun = this.runDiscovery(request.objective);
+      } catch (error) {
+        failures.push({
+          connectionId: "semantic-fabric",
+          connectionName: "Semantic fabric",
+          code: "FABRIC_PROFILE_FAILED",
+          message: error instanceof Error ? error.message : "Semantic fabric profiling failed."
+        });
+      }
+
+      const successfulSyncs = syncRuns.filter((run) => run.status === "completed" || run.status === "partial").length;
+      const status: SourceDiscoveryMissionReport["status"] =
+        successfulSyncs === 0 ? "failed" : failures.length > 0 || syncRuns.some((run) => run.status === "partial") || connectionsAttempted < requestedConnectionIds.length ? "partial" : "completed";
+      const requestedSet = new Set(requestedConnectionIds);
+      const report: SourceDiscoveryMissionReport = {
+        id,
+        objective: request.objective,
+        provider: request.provider,
+        status,
+        requestedConnectionIds,
+        syncRuns,
+        failures,
+        discoveryRun,
+        summary: {
+          connectionsAttempted,
+          completedSyncs: syncRuns.filter((run) => run.status === "completed").length,
+          partialSyncs: syncRuns.filter((run) => run.status === "partial").length,
+          failedSyncs: failures.filter((failure) => failure.connectionId !== "semantic-fabric").length,
+          resourcesDiscovered: syncRuns.reduce((total, run) => total + run.resourcesDiscovered, 0),
+          assetsPublished: syncRuns.reduce((total, run) => total + run.assetsPublished, 0),
+          proposalsCreated: syncRuns.reduce((total, run) => total + run.proposalsCreated, 0),
+          proposalsAwaitingReview: this.semanticProposals({ status: "proposed" }).filter((proposal) => requestedSet.has(proposal.connectionId)).length
+        },
+        startedAt,
+        completedAt: nowIso()
+      };
+      this.repository.saveSourceDiscoveryMission(report);
+      this.repository.audit(actor, "source_discovery.mission", id, status, {
+        provider: request.provider,
+        requestedConnections: requestedConnectionIds.length,
+        attemptedConnections: connectionsAttempted,
+        completedSyncs: report.summary.completedSyncs,
+        partialSyncs: report.summary.partialSyncs,
+        failedSyncs: report.summary.failedSyncs,
+        proposalsAwaitingReview: report.summary.proposalsAwaitingReview
+      });
+      return report;
+    } finally {
+      this.sourceDiscoveryMissionActive = false;
+    }
+  }
+
+  sourceDiscoveryMissions() {
+    return this.repository.listSourceDiscoveryMissions();
   }
 
   deleteSourceConnection(id: string, actor = "local-user"): void {
@@ -229,14 +340,27 @@ export class SemanticEngine {
     return this.requireSourceManager().decideProposal(id, rawRequest, actor);
   }
 
-  planBusinessAction(rawRequest: unknown): BusinessActionPlan {
+  planBusinessAction(rawRequest: unknown, actor: ActorContext | string = automationActor): BusinessActionPlan {
     const request = BusinessActionRequestSchema.parse(rawRequest);
-    return this.buildBusinessActionPlan(request);
+    const actorContext = actionActorContext(actor);
+    const plan = this.buildBusinessActionPlan(request, actorContext);
+    this.repository.transaction(() => {
+      this.repository.saveBusinessActionPlan(plan);
+      this.repository.audit(actorContext.actor, "business_action.plan", plan.id, plan.status === "blocked" ? "deny" : plan.status === "approval_required" ? "review" : "allow", {
+        fingerprint: plan.fingerprint,
+        principal: plan.principal,
+        targets: plan.targets.length
+      });
+    });
+    return plan;
   }
 
-  approveBusinessAction(rawRequest: unknown, actor = "local-user"): BusinessActionApproval {
+  approveBusinessAction(rawRequest: unknown, actor: ActorContext | string = automationActor): BusinessActionApproval {
     const request = BusinessActionApprovalRequestSchema.parse(rawRequest);
-    const plan = this.buildBusinessActionPlan(this.planRequestFromApproval(request));
+    const approver = actionActorContext(actor, true);
+    const storedPlan = this.requireStoredBusinessActionPlan(request.planId);
+    this.assertPlanRequest(storedPlan, request);
+    const plan = this.buildBusinessActionPlan(this.planRequestFromApproval(request), storedPlan.principal);
     this.assertPlanIdentity(plan, request.planId, request.planFingerprint);
     if (plan.status !== "approval_required") {
       throw new DomainError("APPROVAL_NOT_REQUIRED", "This plan does not require approval.", 409);
@@ -244,10 +368,10 @@ export class SemanticEngine {
 
     const createdAt = nowIso();
     const approval: BusinessActionApproval = {
-      id: stableId("approval", `${plan.id}:${plan.fingerprint}:${actor}:${createdAt}`),
+      id: stableId("approval", `${plan.id}:${plan.fingerprint}:${approver.actor}:${createdAt}`),
       planId: plan.id,
       planFingerprint: plan.fingerprint,
-      approvedBy: actor,
+      approvedBy: approver.actor,
       rationale: request.rationale,
       status: "active",
       createdAt,
@@ -255,21 +379,26 @@ export class SemanticEngine {
     };
     this.repository.transaction(() => {
       this.repository.saveBusinessActionApproval(approval);
-      this.repository.audit(actor, "business_action.approve", approval.id, "allow", {
+      this.repository.audit(approver.actor, "business_action.approve", approval.id, "allow", {
         planId: plan.id,
-        planFingerprint: plan.fingerprint
+        planFingerprint: plan.fingerprint,
+        planPrincipal: plan.principal.actor
       });
     });
     return approval;
   }
 
-  executeBusinessAction(rawRequest: unknown, actor = "local-user"): BusinessActionRun {
+  executeBusinessAction(rawRequest: unknown, actor: ActorContext | string = automationActor): BusinessActionRun {
     const request = BusinessActionExecutionRequestSchema.parse(rawRequest);
+    const actorContext = actionActorContext(actor);
+    const storedPlan = this.requireStoredBusinessActionPlan(request.planId);
+    this.assertPlanRequest(storedPlan, request);
+    this.assertPlanPrincipal(storedPlan, actorContext);
     const replay = this.repository.getBusinessActionRunByIdempotencyKey(request.idempotencyKey);
     if (replay) this.assertIdempotencyMatch(replay, request);
     if (replay && replay.status !== "approval_required") return replay;
     const planRequest = this.planRequestFromExecution(request);
-    const preflightPlan = this.buildBusinessActionPlan(planRequest);
+    const preflightPlan = this.buildBusinessActionPlan(planRequest, storedPlan.principal);
     this.assertPlanIdentity(preflightPlan, request.planId, request.planFingerprint);
     const preflightApprovalTargets = preflightPlan.targets.filter((target) => target.autonomy === "approval_required");
     const reservedApproval =
@@ -280,7 +409,7 @@ export class SemanticEngine {
             if (!approval || !this.repository.consumeBusinessActionApproval(approval.id, consumedAt)) {
               throw new DomainError("INVALID_APPROVAL", "Approval was already consumed by another execution.", 403);
             }
-            this.repository.audit(actor, "business_action.approval_reserve", approval.id, "allow", {
+            this.repository.audit(actorContext.actor, "business_action.approval_reserve", approval.id, "allow", {
               planId: preflightPlan.id,
               planFingerprint: preflightPlan.fingerprint,
               idempotencyKey: request.idempotencyKey
@@ -296,20 +425,20 @@ export class SemanticEngine {
           if (concurrentReplay.status !== "approval_required") return concurrentReplay;
         }
 
-        const plan = this.buildBusinessActionPlan(planRequest);
+        const plan = this.buildBusinessActionPlan(planRequest, storedPlan.principal);
         this.assertPlanIdentity(plan, request.planId, request.planFingerprint);
 
         if (plan.status === "blocked") {
           const run = this.buildNonExecutingRun(plan, request, "blocked");
           this.repository.saveBusinessActionRun(run);
-          this.repository.audit(actor, "business_action.execute", run.id, "deny", { reason: "plan_blocked", intent: request.intent });
+          this.repository.audit(actorContext.actor, "business_action.execute", run.id, "deny", { reason: "plan_blocked", intent: request.intent });
           return run;
         }
 
         if (request.mode === "dry_run") {
           const run = this.buildNonExecutingRun(plan, request, "planned");
           this.repository.saveBusinessActionRun(run);
-          this.repository.audit(actor, "business_action.dry_run", run.id, "allow", { intent: request.intent });
+          this.repository.audit(actorContext.actor, "business_action.dry_run", run.id, "allow", { intent: request.intent });
           return run;
         }
 
@@ -317,7 +446,7 @@ export class SemanticEngine {
         if (approvalTargets.length > 0 && !request.approvalId) {
           const run = this.buildNonExecutingRun(plan, request, "approval_required");
           this.repository.saveBusinessActionRun(run);
-          this.repository.audit(actor, "business_action.execute", run.id, "review", {
+          this.repository.audit(actorContext.actor, "business_action.execute", run.id, "review", {
             intent: request.intent,
             approvalTargets: approvalTargets.map((target) => target.stepId)
           });
@@ -326,7 +455,7 @@ export class SemanticEngine {
 
         const createdAt = nowIso();
         try {
-          const writes = plan.targets.map((target) => this.executeSourceWrite(plan, target, planRequest, actor));
+          const writes = plan.targets.map((target) => this.executeSourceWrite(plan, target, planRequest, actorContext.actor));
           const reflectionPackage = this.reflectSourceWrites(plan, writes, planRequest);
           const fullyVerified = writes.length > 0 && reflectionPackage.reflections.length === writes.length && reflectionPackage.reflections.every((reflection) => reflection.status === "verified");
           const runStatus: BusinessActionRun["status"] = fullyVerified ? "verified" : "reflected";
@@ -354,7 +483,7 @@ export class SemanticEngine {
             completedAt: nowIso()
           };
           this.repository.saveBusinessActionRun(run);
-          this.repository.audit(actor, "business_action.execute", run.id, fullyVerified ? "allow" : "review", {
+          this.repository.audit(actorContext.actor, "business_action.execute", run.id, fullyVerified ? "allow" : "review", {
             intent: request.intent,
             writes: writes.length,
             verifiedReflections: reflectionPackage.reflections.filter((reflection) => reflection.status === "verified").length,
@@ -406,7 +535,7 @@ export class SemanticEngine {
           if (concurrentReplay.status !== "approval_required") return concurrentReplay;
         }
         this.repository.saveBusinessActionRun(failedRun);
-        this.repository.audit(actor, "business_action.execute", failedRun.id, "review", {
+        this.repository.audit(actorContext.actor, "business_action.execute", failedRun.id, "review", {
           intent: request.intent,
           errorType: executionFailure.originalError instanceof Error ? executionFailure.originalError.name : "unknown",
           reconciliationRequired: true,
@@ -475,9 +604,15 @@ export class SemanticEngine {
     const denied = new Set([...deniedAssetIds, ...deniedEntityIds]);
     const nodes = graph.nodes.filter((node) => !denied.has(node.id));
     const nodeIds = new Set(nodes.map((node) => node.id));
+    const mayInspectProposals = actor.roles.includes("semantic-operator");
     const result = {
       nodes,
-      edges: graph.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
+      edges: graph.edges.filter(
+        (edge) =>
+          nodeIds.has(edge.source) &&
+          nodeIds.has(edge.target) &&
+          (mayInspectProposals || edge.lifecycle !== "proposed")
+      )
     };
     this.repository.audit(actor.actor, "graph.read", "semantic-graph", "allow", { returnedNodes: nodes.length, filteredNodes: graph.nodes.length - nodes.length });
     return this.policy.applyDataPolicies(result, this.repository.catalog().policies);
@@ -545,6 +680,7 @@ export class SemanticEngine {
     const filtered = this.policy.applyResultPolicies(governed, catalog.policies);
     this.repository.audit(actor.actor, "semantic_search", request.query, "allow", {
       mode: request.mode,
+      scope: request.scope,
       returned: filtered.length,
       denied: results.length - governed.length
     });
@@ -669,14 +805,19 @@ export class SemanticEngine {
 
   expandContext(rawInput: unknown, actor: ActorContext = automationActor) {
     const input = ExpandContextRequestSchema.parse(rawInput);
-    const searchResults = input.query ? this.search({ query: input.query, topK: 5, mode: "hybrid" }, actor) : [];
+    const searchResults = input.query ? this.search({ query: input.query, topK: 5, mode: "hybrid", scope: input.scope }, actor) : [];
     const chunkIds = new Set([...(input.chunkIds ?? []), ...searchResults.map((result) => result.chunkId)]);
     for (const entityId of input.entityIds ?? []) {
       for (const entity of this.repository.getEntities().filter((candidate) => candidate.id === entityId)) {
         for (const chunkId of entity.evidenceChunkIds) chunkIds.add(chunkId);
       }
     }
-    const evidence = [...chunkIds].slice(0, 25).map((chunkId) => this.getEvidence(chunkId, actor)).filter((item) => item !== null);
+    const sourceById = new Map(this.repository.getSources().map((source) => [source.id, source]));
+    const chunkSourceId = new Map(this.repository.getChunks().map((chunk) => [chunk.id, chunk.sourceId]));
+    const scopedChunkIds = [...chunkIds]
+      .filter((chunkId) => evidenceScopeIncludes(input.scope, sourceById.get(chunkSourceId.get(chunkId) ?? "")?.metadata))
+      .slice(0, 25);
+    const evidence = scopedChunkIds.map((chunkId) => this.getEvidence(chunkId, actor)).filter((item) => item !== null);
     const result = {
       query: input.query ?? null,
       evidence,
@@ -727,8 +868,8 @@ export class SemanticEngine {
     return stripOperationalData(this.policy.applyDataPolicies(value, this.repository.catalog().policies)) as T;
   }
 
-  auditEventsForActor(actor: ActorContext, limit: number): AuditEvent[] {
-    const events = this.repository.listAuditEvents(limit);
+  auditEventsForActor(actor: ActorContext, limit: number, actions: string[] = []): AuditEvent[] {
+    const events = this.repository.listAuditEvents(limit, actions);
     const mayInspectApprovals = actor.roles.includes("approver") || actor.roles.includes("semantic-operator");
     const visibleEvents = mayInspectApprovals
       ? events
@@ -755,12 +896,12 @@ export class SemanticEngine {
     };
   }
 
-  private buildBusinessActionPlan(request: BusinessActionRequest): BusinessActionPlan {
+  private buildBusinessActionPlan(request: BusinessActionRequest, actor: ActorContext): BusinessActionPlan {
     const catalog = this.repository.catalog();
-    const evidence = this.search({ query: request.intent, topK: 5, mode: "hybrid" }).slice(0, 4);
+    const evidence = this.search({ query: request.intent, topK: 5, mode: "hybrid" }, actor).slice(0, 4);
     const connectorResolution = this.sourceManager?.resolveBusinessAction(request);
     if (connectorResolution?.candidate) {
-      return this.buildConnectorBusinessActionPlan(request, connectorResolution.candidate, connectorResolution.warnings);
+      return this.buildConnectorBusinessActionPlan(request, connectorResolution.candidate, connectorResolution.warnings, actor);
     }
     const actionType = this.resolveBusinessActionType(request.intent);
     const evidenceMissing = evidence.length === 0;
@@ -771,12 +912,12 @@ export class SemanticEngine {
       ((actionType === "publish_traceability" || actionType === "operational_semantic_update") && (!fromAsset || !toAsset));
     const actionBlocked = actionType === "blocked" || actionType === "unsupported" || groundingMissing;
     const governedAssets = [...new Map([fromAsset, toAsset].filter((asset) => asset !== null).map((asset) => [asset.id, asset])).values()];
-    const assetDecisions = governedAssets.map((asset) => ({ asset, decision: this.policy.evaluateAsset(asset, automationActor) }));
+    const assetDecisions = governedAssets.map((asset) => ({ asset, decision: this.policy.evaluateAsset(asset, actor) }));
     const deniedAssets = assetDecisions.filter((item) => item.decision.decision === "deny");
     const reviewAssets = assetDecisions.filter((item) => item.decision.decision === "review");
     const policyBlocked = deniedAssets.length > 0;
     const title = this.businessActionTitle(actionType, primaryMetric?.label ?? fromAsset?.name ?? "Business semantic update");
-    const plannedTargets = actionBlocked || policyBlocked
+    const candidateTargets = actionBlocked || policyBlocked
       ? []
       : this.buildBusinessActionTargets({
           request,
@@ -790,6 +931,12 @@ export class SemanticEngine {
           toAssetName: toAsset?.name ?? "Target business asset",
           toAssetId: toAsset?.id ?? "target_asset"
         });
+    const targetsWithoutAdapters = candidateTargets.filter((target) => !this.sourceManager?.isManagedSystem(target.systemId));
+    const plannedTargets = candidateTargets.map((target) =>
+      this.sourceManager?.isManagedSystem(target.systemId)
+        ? target
+        : { ...target, risk: "blocked" as const, autonomy: "blocked" as const, status: "blocked" as const }
+    );
     const targets = evidenceMissing
       ? plannedTargets.map((target) => ({ ...target, autonomy: "blocked" as const, status: "blocked" as const }))
       : reviewAssets.length > 0
@@ -797,7 +944,8 @@ export class SemanticEngine {
         : plannedTargets;
     const risk = actionBlocked || policyBlocked || evidenceMissing ? "blocked" : this.highestRisk(targets.map((target) => target.risk));
     const approvalTargets = targets.filter((target) => target.autonomy === "approval_required");
-    const id = stableId("action_plan", `${request.intent}:${actionType}:${targets.map((target) => target.objectKey).join("|")}`);
+    const principal = businessActionPrincipal(actor);
+    const id = stableId("action_plan", `${principalKey(principal)}:${request.intent}:${actionType}:${targets.map((target) => target.objectKey).join("|")}`);
     const warnings = [
       ...(connectorResolution?.warnings ?? []),
       actionType === "blocked" ? "The intent requests a destructive, privileged, secret-related, or access-policy action and is blocked." : null,
@@ -806,6 +954,9 @@ export class SemanticEngine {
       ...deniedAssets.map(({ asset, decision }) => `Asset ${asset.name} is not authorized for automation: ${decision.reason}`),
       ...reviewAssets.map(({ asset, decision }) => `Asset ${asset.name} requires human review: ${decision.reason}`),
       evidenceMissing ? "No authorized evidence was found. The plan is blocked until relevant evidence is ingested." : null,
+      targetsWithoutAdapters.length > 0
+        ? `${targetsWithoutAdapters.length} capability target has no authoritative connector implementation. Capability templates cannot execute or claim verification.`
+        : null,
       riskRank[request.maxAutonomousRisk] > riskRank[this.maxAutonomousRisk]
         ? `Requested autonomy ${request.maxAutonomousRisk} exceeds the server ceiling ${this.maxAutonomousRisk}.`
         : null,
@@ -813,7 +964,7 @@ export class SemanticEngine {
     ].filter((item): item is string => Boolean(item));
     const status: BusinessActionPlan["status"] = risk === "blocked" ? "blocked" : approvalTargets.length > 0 ? "approval_required" : "planned";
     const fingerprint = sha256(
-      JSON.stringify({ id, intent: request.intent, actionType, mode: request.mode, maxAutonomousRisk: request.maxAutonomousRisk, risk, targets, warnings })
+      JSON.stringify({ id, principal, intent: request.intent, actionType, mode: request.mode, maxAutonomousRisk: request.maxAutonomousRisk, risk, targets, warnings })
     );
 
     return {
@@ -827,6 +978,7 @@ export class SemanticEngine {
       maxAutonomousRisk: request.maxAutonomousRisk,
       risk,
       status,
+      principal,
       targets,
       warnings,
       createdAt: nowIso()
@@ -836,7 +988,8 @@ export class SemanticEngine {
   private buildConnectorBusinessActionPlan(
     request: BusinessActionRequest,
     candidate: ConnectorActionCandidate,
-    connectorWarnings: string[]
+    connectorWarnings: string[],
+    actor: ActorContext
   ): BusinessActionPlan {
     const sourceSystem = this.sourceManager?.sourceSystems().find((system) => system.id === candidate.connectionId);
     const connectionResources = this.sourceManager?.listResources(candidate.connectionId) ?? [];
@@ -849,7 +1002,7 @@ export class SemanticEngine {
     const declaredEvidenceChunkIds = new Set(declaredEvidenceResources.flatMap((resource) => resource.evidenceChunkIds));
     const unboundEvidenceChunkIds = candidate.evidenceChunkIds.filter((chunkId) => !declaredEvidenceChunkIds.has(chunkId));
     const authorizedEvidenceChunkIds = candidate.evidenceChunkIds.filter(
-      (chunkId) => declaredEvidenceChunkIds.has(chunkId) && this.getEvidence(chunkId, automationActor) !== null
+      (chunkId) => declaredEvidenceChunkIds.has(chunkId) && this.getEvidence(chunkId, actor) !== null
     );
     const configuredPolicyResourceIds = Array.isArray(candidate.parameters.policyResourceIds)
       ? candidate.parameters.policyResourceIds.filter((id): id is string => typeof id === "string")
@@ -863,7 +1016,7 @@ export class SemanticEngine {
       return resource ? [resource] : [];
     });
     const deniedResources = evidenceResources.filter(
-      (resource) => this.policy.evaluateSensitivity(resource.sensitivity, automationActor).decision === "deny"
+      (resource) => this.policy.evaluateSensitivity(resource.sensitivity, actor).decision === "deny"
     );
     const evidenceBindingInvalid =
       candidate.evidenceResourceIds.length === 0 ||
@@ -903,44 +1056,46 @@ export class SemanticEngine {
         after: JSON.stringify(candidate.after, null, 2)
       }
     };
-    const targets = [target];
+    const targets = evidenceMissing || policyBlocked ? [] : [target];
     const warnings = [
       ...connectorWarnings,
       evidenceMissing ? "The connector resolved an action but provided no source evidence; execution is blocked." : null,
       missingEvidenceResourceIds.length > 0
-        ? `The connector referenced unknown evidence resources: ${missingEvidenceResourceIds.join(", ")}.`
+        ? `The connector referenced ${missingEvidenceResourceIds.length} unknown evidence resource identifiers.`
         : null,
       missingPolicyResourceIds.length > 0
-        ? `The connector referenced unknown policy resources: ${missingPolicyResourceIds.join(", ")}.`
+        ? `The connector referenced ${missingPolicyResourceIds.length} unknown policy resource identifiers.`
         : null,
       unboundEvidenceChunkIds.length > 0
-        ? `The connector supplied evidence chunks that are not owned by its declared resources: ${unboundEvidenceChunkIds.join(", ")}.`
+        ? `The connector supplied ${unboundEvidenceChunkIds.length} evidence chunks that are not owned by its declared resources.`
         : null,
-      ...deniedResources.map(
-        (resource) => `Source resource ${resource.qualifiedName} is ${resource.sensitivity} and is not authorized for the agent write boundary.`
-      ),
+      deniedResources.length > 0 ? `${deniedResources.length} source resource is outside the caller clearance and was removed from the plan.` : null,
       riskRank[request.maxAutonomousRisk] > riskRank[this.maxAutonomousRisk]
         ? `Requested autonomy ${request.maxAutonomousRisk} exceeds the server ceiling ${this.maxAutonomousRisk}.`
         : null,
       autonomy === "approval_required" ? "The authoritative source capability requires approval before execution." : null
     ].filter((item): item is string => Boolean(item));
     const status: BusinessActionPlan["status"] = autonomy === "blocked" ? "blocked" : autonomy === "approval_required" ? "approval_required" : "planned";
-    const id = stableId("action_plan", `${request.intent}:${candidate.capability}:${candidate.connectionId}:${candidate.objectKey}`);
+    const principal = businessActionPrincipal(actor);
+    const id = stableId("action_plan", `${principalKey(principal)}:${request.intent}:${candidate.capability}:${candidate.connectionId}:${candidate.objectKey}`);
     const actionType = candidate.capability;
     const fingerprint = sha256(
-      JSON.stringify({ id, intent: request.intent, actionType, mode: request.mode, maxAutonomousRisk: request.maxAutonomousRisk, risk, targets, warnings })
+      JSON.stringify({ id, principal, intent: request.intent, actionType, mode: request.mode, maxAutonomousRisk: request.maxAutonomousRisk, risk, targets, warnings })
     );
     return {
       id,
       fingerprint,
       intent: request.intent,
       actionType,
-      title: candidate.title,
-      summary: `Resolved one authoritative ${sourceSystem?.kind ?? "source"} capability with version preconditions, an exact diff, and independent readback postconditions.`,
+      title: policyBlocked ? "Source action blocked by authorization policy" : evidenceMissing ? "Source action blocked by evidence policy" : candidate.title,
+      summary: targets.length > 0
+        ? `Resolved one authoritative ${sourceSystem?.kind ?? "source"} capability with version preconditions, an exact diff, and independent readback postconditions.`
+        : "No source target was disclosed because the current principal could not satisfy the evidence and authorization boundary.",
       mode: request.mode,
       maxAutonomousRisk: request.maxAutonomousRisk,
       risk,
       status,
+      principal,
       targets,
       warnings,
       createdAt: nowIso()
@@ -1059,15 +1214,14 @@ export class SemanticEngine {
   private executeSourceWrite(plan: BusinessActionPlan, target: BusinessActionTarget, request: BusinessActionRequest, actor: string): SourceWrite {
     const createdAt = nowIso();
     const writeId = stableId("write", `${plan.fingerprint}:${target.stepId}`);
-    const connectorResult = this.sourceManager?.isManagedSystem(target.systemId)
-      ? this.sourceManager.executeAction(target, request)
-      : null;
-    if (target.systemId === "source.data-catalog") {
-      this.applyCatalogTarget(target, plan, request);
+    if (!this.sourceManager?.isManagedSystem(target.systemId)) {
+      throw new DomainError(
+        "AUTHORITATIVE_CONNECTOR_REQUIRED",
+        `Source system ${target.systemId} has no managed connector. Semantic Junkyard cannot execute or verify this target.`,
+        409
+      );
     }
-    if (target.systemId === "source.openmetadata") {
-      this.applyLineageTarget(target, plan, request);
-    }
+    const connectorResult = this.sourceManager.executeAction(target, request);
     const expectedRecord = {
       planFingerprint: plan.fingerprint,
       stepId: target.stepId,
@@ -1090,11 +1244,11 @@ export class SemanticEngine {
       autonomy: target.autonomy,
       diff: target.diff,
       evidenceChunkIds: target.evidenceChunkIds,
-      connectorReadback: connectorResult?.readback ?? null,
-      connectorSourceVersion: connectorResult?.sourceVersion ?? null,
-      connectorPostcondition: connectorResult?.postcondition ?? null,
-      externalPostconditionPassed: connectorResult?.postconditionPassed ?? true,
-      connectorMetadata: connectorResult?.metadata ?? {},
+      connectorReadback: connectorResult.readback,
+      connectorSourceVersion: connectorResult.sourceVersion,
+      connectorPostcondition: connectorResult.postcondition,
+      externalPostconditionPassed: connectorResult.postconditionPassed,
+      connectorMetadata: connectorResult.metadata,
       actor,
       appliedAt: createdAt
     };
@@ -1117,9 +1271,9 @@ export class SemanticEngine {
       objectKey: target.objectKey,
       operation: target.technicalOperation,
       status:
-        connectorResult && !connectorResult.postconditionPassed
+        !connectorResult.postconditionPassed
           ? "failed"
-          : connectorResult && (connectorResult.metadata.noOp === true || connectorResult.metadata.sourceMutation === false)
+          : connectorResult.metadata.noOp === true || connectorResult.metadata.sourceMutation === false
             ? "skipped"
             : "executed",
       dryRun: false,
@@ -1156,7 +1310,12 @@ export class SemanticEngine {
           record.payload.intent === request.intent &&
           record.payload.planId === plan.id &&
           record.payload.expectedHash === write.payload.expectedHash &&
-          record.payload.externalPostconditionPassed !== false &&
+          record.payload.externalPostconditionPassed === true &&
+          isNonEmptyRecord(record.payload.connectorReadback) &&
+          typeof record.payload.connectorSourceVersion === "string" &&
+          record.payload.connectorSourceVersion.length > 0 &&
+          typeof record.payload.connectorPostcondition === "string" &&
+          record.payload.connectorPostcondition.length > 0 &&
           sha256(JSON.stringify(observedRecord)) === write.payload.expectedHash
       );
       return {
@@ -1185,7 +1344,8 @@ export class SemanticEngine {
       metadata: {
         connector: "connector.business-action-reflection",
         businessActionPlanId: plan.id,
-        actionType: plan.actionType
+        actionType: plan.actionType,
+        evidenceClass: "operational"
       }
     });
     const evidenceChunkId = ingested.chunks[0]?.id ?? null;
@@ -1424,6 +1584,53 @@ export class SemanticEngine {
     }
   }
 
+  private requireStoredBusinessActionPlan(id: string): BusinessActionPlan {
+    const plan = this.repository.getBusinessActionPlan(id);
+    if (!plan) {
+      throw new DomainError(
+        "PLAN_NOT_FOUND",
+        "Create a current business action plan before approval or execution.",
+        404
+      );
+    }
+    return plan;
+  }
+
+  private assertPlanRequest(
+    plan: BusinessActionPlan,
+    request: Pick<BusinessActionExecutionRequest, "planId" | "planFingerprint" | "intent" | "mode" | "maxAutonomousRisk">
+  ): void {
+    if (plan.id !== request.planId || plan.fingerprint !== request.planFingerprint) {
+      throw new DomainError(
+        "PLAN_CHANGED",
+        "The business action plan identity does not match the persisted reviewed plan.",
+        409
+      );
+    }
+    if (
+      plan.intent !== request.intent ||
+      plan.mode !== request.mode ||
+      plan.maxAutonomousRisk !== request.maxAutonomousRisk
+    ) {
+      throw new DomainError(
+        "PLAN_REQUEST_MISMATCH",
+        "The request does not match the persisted business action plan.",
+        409
+      );
+    }
+  }
+
+  private assertPlanPrincipal(plan: BusinessActionPlan, actor: ActorContext): void {
+    const currentPrincipal = businessActionPrincipal(actor);
+    if (principalKey(plan.principal) !== principalKey(currentPrincipal)) {
+      throw new DomainError(
+        "PLAN_PRINCIPAL_MISMATCH",
+        "This business action plan belongs to a different principal or authorization context. Create a new plan.",
+        403
+      );
+    }
+  }
+
   private assertIdempotencyMatch(run: BusinessActionRun, request: BusinessActionExecutionRequest): void {
     const matches =
       run.plan.id === request.planId &&
@@ -1541,10 +1748,10 @@ export class SemanticEngine {
     const relationType = request.relationType.toUpperCase().replace(/\s+/g, "_");
     const text = [
       `Manual semantic assertion: ${request.sourceName} ${relationType} ${request.targetName}.`,
-      request.rationale ? `Rationale: ${request.rationale}` : null
+      `Rationale: ${request.rationale}`
     ].filter(Boolean).join(" ");
     const chunk: Chunk = {
-      id: stableId("chunk", `${source.id}:${request.sourceName}:${relationType}:${request.targetName}:${request.rationale ?? ""}`),
+      id: stableId("chunk", `${source.id}:${request.sourceName}:${relationType}:${request.targetName}:${request.rationale}`),
       sourceId: source.id,
       text,
       startOffset: 0,
@@ -1583,6 +1790,43 @@ export class SemanticEngine {
 }
 
 const OPERATIONAL_PATH_KEYS = new Set(["databasePath", "repositoryPath", "rootPath", "modelPath", "resolvedPath"]);
+
+function actionActorContext(actor: ActorContext | string, approver = false): ActorContext {
+  if (typeof actor !== "string") {
+    return {
+      actor: actor.actor,
+      roles: [...new Set(actor.roles)].sort(),
+      clearance: actor.clearance
+    };
+  }
+  return {
+    actor,
+    roles: approver ? ["approver"] : ["semantic-reader", "business-action-planner"],
+    clearance: "confidential"
+  };
+}
+
+function businessActionPrincipal(actor: ActorContext): BusinessActionPrincipal {
+  return {
+    actor: actor.actor,
+    roles: [...new Set(actor.roles)].sort(),
+    clearance: actor.clearance,
+    policyVersion: BUSINESS_ACTION_POLICY_VERSION
+  };
+}
+
+function principalKey(principal: Pick<BusinessActionPrincipal, "actor" | "roles" | "clearance" | "policyVersion">): string {
+  return JSON.stringify({
+    actor: principal.actor,
+    roles: [...new Set(principal.roles)].sort(),
+    clearance: principal.clearance,
+    policyVersion: principal.policyVersion
+  });
+}
+
+function isNonEmptyRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length > 0);
+}
 
 function sourceResourceForActor(resource: SourceResource, actor: ActorContext): SourceResource {
   if (actor.roles.includes("semantic-operator")) return resource;
