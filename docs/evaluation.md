@@ -102,6 +102,7 @@ The manual local-HF acceptance run must use `--no-fallback` and report `modelSum
 Engine/API tests verify:
 
 - exact plan ID/fingerprint recomputation and unknown-field rejection;
+- durable plan persistence and actor/role/clearance/policy-version principal binding;
 - separate agent, operator, and approver HTTP roles;
 - approval-required pause, exact approval binding, single consumption, and mismatch rejection;
 - durable approval reservation and `reconciliation_required` handling for ambiguous in-process outcomes;
@@ -109,12 +110,14 @@ Engine/API tests verify:
 - blocking destructive, unsupported, evidence-free, policy-denied, and evidence-resource-mismatched actions;
 - readback drift preventing semantic publication;
 - atomic control-plane migrations and local transaction rollback behavior;
+- cross-runtime synchronization leases and whole-observation rollback when a later source document fails;
 - changed-evidence proposal identity, terminal decision isolation, and inactive-relation retrieval filtering;
+- domain/operational evidence isolation, bounded graph boosts, and MCP propagation of the requested evidence scope;
 - read-only MCP defaults with explicit mutation-tool enablement;
 - consistent masking across search, evidence, source, and operational responses;
 - strict request validation, request IDs, body limits, CORS, security headers, and optional bearer auth.
 
-Legacy seeded action tests exercise the deterministic compatibility router. They should not be used as evidence of a remote connector. The external SQLite/Git integration tests are the reference writeback proof.
+Static capability templates are explicitly tested as non-executable without a managed connector. Real temporary SQLite/Git integration tests are the reference writeback proof.
 
 No test can currently prove atomicity between a source-native commit and control-plane persistence because the implementation has no distributed transaction/outbox. Crash injection across that boundary remains a required future suite.
 
@@ -135,9 +138,9 @@ Not covered:
 
 ## Browser Coverage
 
-Playwright runs product and PoC desktop/mobile projects. It checks meaningful rendering, no Vite/page/console failures, mobile horizontal overflow, product action planning, PoC read-only behavior, and autonomous completion only after reflected readback.
+Playwright runs product and PoC desktop/mobile projects. It checks meaningful rendering, safe PoC defaults, answer citations, evidence-before-proposal-decision, plan/fingerprint visibility, fingerprint continuity after execution, no Vite/page/console failures, mobile horizontal overflow, and autonomous completion only after reflected readback.
 
-Browser tests use a dedicated local database and deterministic provider. They do not run real MLX generation. Coverage is not a complete accessibility audit and does not test production authentication, proposal review end to end, source connection forms for every failure mode, or Git approval in the browser.
+Browser tests use a dedicated local database and deterministic provider. They do not run real MLX generation. Coverage is not a complete accessibility audit and does not test production authentication, final proposal decision submission, source connection forms for every failure mode, or Git execution after approval in the browser.
 
 ## Acceptance Gates
 

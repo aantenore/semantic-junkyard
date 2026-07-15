@@ -290,6 +290,23 @@ function migrate(db: Database.Database): void {
       decision_rationale TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS source_discovery_missions (
+      id TEXT PRIMARY KEY,
+      objective TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      status TEXT NOT NULL,
+      report TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      completed_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS business_action_plans (
+      id TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL UNIQUE,
+      plan TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS business_action_runs (
       id TEXT PRIMARY KEY,
       idempotency_key TEXT NOT NULL UNIQUE,
@@ -339,6 +356,8 @@ function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_source_sync_runs_connection ON source_sync_runs(connection_id, started_at);
     CREATE INDEX IF NOT EXISTS idx_source_sync_events_run ON source_sync_events(run_id, step);
     CREATE INDEX IF NOT EXISTS idx_semantic_proposals_status ON semantic_proposals(status, connection_id);
+    CREATE INDEX IF NOT EXISTS idx_source_discovery_missions_started ON source_discovery_missions(started_at);
+    CREATE INDEX IF NOT EXISTS idx_business_action_plans_created ON business_action_plans(created_at);
     CREATE INDEX IF NOT EXISTS idx_business_action_runs_created ON business_action_runs(created_at);
     CREATE INDEX IF NOT EXISTS idx_business_action_approvals_plan ON business_action_approvals(plan_id, plan_fingerprint, status);
     CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at);

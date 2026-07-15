@@ -81,6 +81,13 @@ export interface ToolEvent {
   completedAt?: string;
 }
 
+export interface GroundedAnswer {
+  answer: string;
+  claims: Array<{ text: string; citationChunkIds: string[] }>;
+  citations: Array<{ chunkId: string; sourceName: string }>;
+  boundary: string;
+}
+
 export type ConversationArtifact =
   | { type: "intent"; value: AgentIntentPlan }
   | { type: "resources"; value: SourceResource[] }
@@ -91,6 +98,7 @@ export type ConversationArtifact =
   | { type: "context"; phase: EvidencePhase; value: ContextEnvelope }
   | { type: "evidence"; phase: EvidencePhase; value: EvidenceSpan }
   | { type: "permissions"; value: PermissionEnvelope }
+  | { type: "answer"; value: GroundedAnswer }
   | { type: "plan"; value: BusinessActionPlan }
   | { type: "run"; value: BusinessActionRun }
   | { type: "source_state"; value: SourceSystemsEnvelope };
@@ -244,14 +252,14 @@ export async function runProductConversation(input: ConversationInput, emit: Con
     });
     emit({ type: "artifact", value: { type: "discovery", value: discovery } });
 
-    const searchRequest = { query: intent.searchQuery, mode: "hybrid" as const, topK: CONVERSATION_LIMITS.searchResults };
+    const searchRequest = { query: intent.searchQuery, mode: "hybrid" as const, topK: CONVERSATION_LIMITS.searchResults, scope: "domain" as const };
     const search = await callTool({
       name: "semantic_search",
       endpoint: "POST /api/tools/semantic_search",
       request: searchRequest,
       runningTitle: "Retrieving semantic evidence",
       runningBody: `Searching the governed semantic layer for "${intent.searchQuery}".`,
-      run: () => semanticSearch(searchRequest.query, searchRequest.mode, searchRequest.topK),
+      run: () => semanticSearch(searchRequest.query, searchRequest.mode, searchRequest.topK, searchRequest.scope),
       describe: (result) =>
         result.results.length > 0
           ? `${result.results.length} governed candidates were returned. Top source: ${result.results[0]?.sourceName}; hybrid score ${result.results[0]?.hybridScore.toFixed(3)}.`
@@ -289,9 +297,10 @@ export async function runProductConversation(input: ConversationInput, emit: Con
     const contextRequest = {
       query: intent.searchQuery,
       chunkIds: search.results.slice(0, CONVERSATION_LIMITS.contextChunks).map((result) => result.chunkId),
-      entityIds: entities.slice(0, CONVERSATION_LIMITS.contextEntities).map((entity) => entity.id)
+      entityIds: entities.slice(0, CONVERSATION_LIMITS.contextEntities).map((entity) => entity.id),
+      scope: "domain" as const
     };
-    const context = await callTool({
+    const rawContext = await callTool({
       name: "expand_context",
       endpoint: "POST /api/tools/expand_context",
       request: contextRequest,
@@ -300,6 +309,7 @@ export async function runProductConversation(input: ConversationInput, emit: Con
       run: () => expandContext(contextRequest),
       describe: (result) => `${result.evidence.length} evidence spans and ${result.entities.length} entities were assembled. ${result.guidance}`
     });
+    const context = { ...rawContext, evidence: rankEvidenceForAnswer(input.message, rawContext.evidence) };
     emit({ type: "artifact", value: { type: "context", phase: "initial", value: context } });
 
     const initialEvidence = await openTopEvidence(context, "initial", callTool, emit);
@@ -325,12 +335,14 @@ export async function runProductConversation(input: ConversationInput, emit: Con
     }
 
     if (!intent.requestedAction || !intent.actionIntent) {
+      const answer = buildGroundedAnswer(input.message, context.evidence);
+      emit({ type: "artifact", value: { type: "answer", value: answer } });
       emit({
         type: "narration",
         value: {
           kind: "assistant",
           title: "Grounded read-only result",
-          body: `${context.evidence.length} governed evidence spans support this read-only response. Most relevant: ${initialEvidence.sourceName} - ${compact(initialEvidence.text, 320)} No business-action plan was created.`
+          body: `${answer.answer} Citations: ${answer.citations.map((citation) => `${citation.sourceName} [${citation.chunkId}]`).join("; ")}. ${answer.boundary} No business-action plan was created.`
         }
       });
       emit({ type: "status", value: "answered" });
@@ -491,14 +503,19 @@ export async function runProductConversation(input: ConversationInput, emit: Con
     emit({ type: "artifact", value: { type: "source_state", value: sourceState } });
 
     const reflectionQuery = run.semanticUpdates.find((update) => update.searchQuery.trim().length > 0)?.searchQuery ?? `Business Action Reflection ${intent.actionIntent}`;
-    const refreshedSearchRequest = { query: reflectionQuery, mode: "hybrid" as const, topK: CONVERSATION_LIMITS.searchResults };
+    const refreshedSearchRequest = {
+      query: reflectionQuery,
+      mode: "hybrid" as const,
+      topK: CONVERSATION_LIMITS.searchResults,
+      scope: "operational" as const
+    };
     const refreshedSearch = await callTool({
       name: "semantic_search",
       endpoint: "POST /api/tools/semantic_search",
       request: refreshedSearchRequest,
       runningTitle: "Searching refreshed semantic evidence",
       runningBody: "The source postcondition passed. The client is now retrieving evidence rebuilt from reflected source state.",
-      run: () => semanticSearch(refreshedSearchRequest.query, refreshedSearchRequest.mode, refreshedSearchRequest.topK),
+      run: () => semanticSearch(refreshedSearchRequest.query, refreshedSearchRequest.mode, refreshedSearchRequest.topK, refreshedSearchRequest.scope),
       describe: (result) =>
         result.results.length > 0
           ? `${result.results.length} refreshed candidates were returned. Top source: ${result.results[0]?.sourceName}.`
@@ -510,7 +527,7 @@ export async function runProductConversation(input: ConversationInput, emit: Con
       ...run.semanticUpdates.flatMap((update) => update.chunkIds),
       ...refreshedSearch.results.slice(0, CONVERSATION_LIMITS.contextChunks).map((result) => result.chunkId)
     ]).slice(0, 25);
-    const refreshedContextRequest = { query: reflectionQuery, chunkIds: reflectedChunkIds };
+    const refreshedContextRequest = { query: reflectionQuery, chunkIds: reflectedChunkIds, scope: "operational" as const };
     const refreshedContext = await callTool({
       name: "expand_context",
       endpoint: "POST /api/tools/expand_context",
@@ -634,6 +651,88 @@ function describeReadback(run: BusinessActionRun, sourceState: SourceSystemsEnve
     .join(" ");
 }
 
+function buildGroundedAnswer(question: string, evidence: EvidenceSpan[]): GroundedAnswer {
+  const selected = rankEvidenceForAnswer(question, evidence).slice(0, 3);
+  const claims = selected.map((item) => ({
+    text: evidenceClaim(question, item.text),
+    citationChunkIds: [item.chunkId]
+  }));
+  const primarySource = selected[0]?.sourceName;
+  const supportingSources = unique(selected.slice(1).map((item) => item.sourceName));
+  return {
+    answer: claims.length > 0
+      ? `The strongest governed evidence for "${compact(question, 120)}" is ${primarySource}: ${claims[0]?.text}${supportingSources.length > 0 ? ` Supporting evidence comes from ${supportingSources.join(", ")}.` : ""}`
+      : "No governed claim could be assembled for this request.",
+    claims,
+    citations: selected.map((item) => ({ chunkId: item.chunkId, sourceName: item.sourceName })),
+    boundary: `This answer is limited to ${selected.length} policy-filtered evidence span${selected.length === 1 ? "" : "s"}; it does not infer facts outside those sources.`
+  };
+}
+
+function rankEvidenceForAnswer(question: string, evidence: EvidenceSpan[]): EvidenceSpan[] {
+  const queryTerms = semanticTerms(question);
+  return evidence
+    .map((item, index) => {
+      const claim = evidenceClaim(question, item.text);
+      const claimTerms = semanticTerms(claim);
+      const sourceTerms = semanticTerms(item.sourceName);
+      const claimOverlap = overlapCount(queryTerms, claimTerms);
+      const sourceOverlap = overlapCount(queryTerms, sourceTerms);
+      const authorityOverlap = overlapCount(expandAuthorityTerms(queryTerms), new Set([...claimTerms, ...sourceTerms]));
+      return { item, index, score: claimOverlap * 2 + sourceOverlap + authorityOverlap * 0.75 };
+    })
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .map(({ item }) => item)
+    .filter((item, index, items) => items.findIndex((candidate) => candidate.sourceName === item.sourceName) === index);
+}
+
+function evidenceClaim(question: string, text: string): string {
+  const queryTerms = semanticTerms(question);
+  const candidates = text
+    .split(/\n+|(?<=[.!?])\s+/)
+    .map((line) => line.replace(/^[-#*\s]+/, "").replace(/^[a-zA-Z0-9_.-]+:\s*/, "").trim())
+    .filter((line) => line.length >= 24 && !/^```/.test(line));
+  const ranked = candidates
+    .map((candidate, index) => ({ candidate, index, score: overlapCount(queryTerms, semanticTerms(candidate)) }))
+    .sort((left, right) => right.score - left.score || left.index - right.index);
+  return compact(ranked[0]?.candidate ?? text, 240);
+}
+
+function semanticTerms(value: string): Set<string> {
+  return new Set(
+    value
+      .toLowerCase()
+      .replace(/[_-]+/g, " ")
+      .split(/[^a-z0-9]+/)
+      .map(semanticRoot)
+      .filter((term) => term.length >= CONVERSATION_LIMITS.minimumGroundingTokenLength && !GROUNDING_STOP_WORDS.has(term))
+  );
+}
+
+function semanticRoot(term: string): string {
+  if (term.startsWith("eligib")) return "eligib";
+  if (term.startsWith("defin")) return "defin";
+  if (term.startsWith("govern")) return "govern";
+  if (term.endsWith("ies") && term.length > 5) return `${term.slice(0, -3)}y`;
+  if (term.endsWith("ed") && term.length > 5) return term.slice(0, -2);
+  if (term.endsWith("s") && term.length > 4) return term.slice(0, -1);
+  return term;
+}
+
+function expandAuthorityTerms(queryTerms: Set<string>): Set<string> {
+  const expanded = new Set(queryTerms);
+  if (queryTerms.has("defin") || queryTerms.has("govern") || queryTerms.has("eligib")) {
+    for (const term of ["policy", "contract", "rule", "standard", "ontology"]) expanded.add(term);
+  }
+  return expanded;
+}
+
+function overlapCount(left: Set<string>, right: Set<string>): number {
+  let count = 0;
+  for (const term of left) if (right.has(term)) count += 1;
+  return count;
+}
+
 function warningSuffix(warnings: string[]): string {
   return warnings.length > 0 ? ` Warnings: ${warnings.join(" ")}` : "";
 }
@@ -658,16 +757,8 @@ function unique(values: string[]): string[] {
 }
 
 function hasMeaningfulOverlap(query: string, observedValues: string[]): boolean {
-  const terms = unique(
-    query
-      .toLowerCase()
-      .replace(/[_-]+/g, " ")
-      .split(/[^a-z0-9]+/)
-      .filter((term) => term.length >= CONVERSATION_LIMITS.minimumGroundingTokenLength && !GROUNDING_STOP_WORDS.has(term))
-  );
-  if (terms.length === 0) return false;
-
-  const observed = observedValues.join(" ").toLowerCase().replace(/[_-]+/g, " ");
-  const matchingTerms = terms.filter((term) => observed.includes(term));
-  return matchingTerms.length >= Math.min(2, terms.length);
+  const terms = semanticTerms(query);
+  if (terms.size === 0) return false;
+  const matchingTerms = overlapCount(terms, semanticTerms(observedValues.join(" ")));
+  return matchingTerms >= Math.min(2, terms.size);
 }

@@ -407,6 +407,57 @@ summary:focus-visible {
   padding: 12px 16px 16px;
 }
 
+.grounded-answer {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #a8d2c9;
+  border-left: 3px solid var(--teal);
+  background: #f3fbf8;
+  padding: 11px;
+}
+
+.grounded-answer > strong {
+  color: var(--teal-dark);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.grounded-answer p,
+.grounded-answer ul {
+  margin: 0;
+}
+
+.grounded-answer p {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.grounded-answer ul {
+  display: grid;
+  gap: 6px;
+  padding-left: 18px;
+}
+
+.grounded-answer li {
+  color: #405161;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.grounded-answer li a {
+  display: inline;
+  margin-left: 5px;
+  color: var(--teal-dark);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+
+.grounded-answer small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .message {
   display: grid;
   grid-template-columns: 76px minmax(0, 1fr);
@@ -684,6 +735,64 @@ summary:focus-visible {
 .target-list,
 .tool-list {
   border-top: 1px solid var(--border);
+}
+
+.evidence-row:target {
+  outline: 2px solid var(--teal);
+  outline-offset: -2px;
+  background: var(--teal-soft);
+}
+
+.plan-proof {
+  display: grid;
+  gap: 7px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: #f7fafb;
+  padding: 10px 12px;
+}
+
+.plan-proof dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 12px;
+  margin: 0;
+}
+
+.plan-proof dl > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.plan-proof dt,
+.plan-proof > span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 780;
+  text-transform: uppercase;
+}
+
+.plan-proof dd {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--text);
+  font-size: 10px;
+}
+
+.plan-proof code {
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  color: #314252;
+  font-size: 9px;
+  line-height: 1.45;
+  padding: 6px;
+}
+
+.plan-proof small {
+  color: var(--muted);
+  font-size: 9px;
 }
 
 .registry-list,
@@ -1109,7 +1218,7 @@ summary:focus-visible {
   }
 
   .conversation-panel {
-    min-height: 820px;
+    min-height: 620px;
   }
 
   .conversation-form {
@@ -1137,6 +1246,10 @@ summary:focus-visible {
   .status-grid,
   .action-meter {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .plan-proof dl {
+    grid-template-columns: 1fr;
   }
 
   .status-grid div:nth-child(2),

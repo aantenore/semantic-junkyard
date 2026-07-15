@@ -1,7 +1,18 @@
-import { describe, expect, it, vi } from "vitest";
+import Database from "better-sqlite3";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BusinessActionPlan } from "@semantic-junkyard/shared";
 import { createApp } from "./app.js";
 import { openMemoryDatabase } from "./storage/database.js";
+
+const temporaryPaths: string[] = [];
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  for (const temporaryPath of temporaryPaths.splice(0)) fs.rmSync(temporaryPath, { recursive: true, force: true });
+});
 
 describe("Semantic Junkyard engine", () => {
   it("seeds catalog, corpus, graph, discovery, and search", () => {
@@ -37,6 +48,15 @@ describe("Semantic Junkyard engine", () => {
     expect(permissions.manifest.capabilities.map((capability) => capability.name)).toContain("business_action_execute");
     expect(permissions.decision).toContain("business-action planning");
     expect(permissions.safeNextSteps.length).toBeGreaterThan(2);
+  });
+
+  it("does not claim objective grounding when no authoritative source resources exist", () => {
+    const { engine } = createApp(openMemoryDatabase(), { seed: false });
+    const run = engine.runDiscovery("Discover order dispatch semantics");
+    const grounding = run.events.find((event) => event.tool === "grounding.check");
+
+    expect(grounding).toMatchObject({ title: "Objective could not be grounded", severity: "warning" });
+    expect(grounding?.detail).toContain("No observed source resources");
   });
 
   it("previews ingestion without persisting and supports manual semantic curation", () => {
@@ -148,6 +168,16 @@ describe("Semantic Junkyard engine", () => {
       .find((result) => result.chunkId === chunkId)!.graphBoost;
     const baseline = graphBoost();
     repository.saveRelations([{
+      id: "rel_graph_proposed",
+      sourceEntityId: entityId!,
+      targetEntityId: "ent_graph_lifecycle_leaf",
+      type: "RELATED_TO",
+      confidence: 1,
+      evidenceChunkId: chunkId,
+      metadata: { lifecycle: "proposed" }
+    }]);
+    expect(graphBoost()).toBe(baseline);
+    repository.saveRelations([{
       id: "rel_graph_rejected",
       sourceEntityId: entityId!,
       targetEntityId: "ent_graph_lifecycle_leaf",
@@ -169,20 +199,17 @@ describe("Semantic Junkyard engine", () => {
     expect(graphBoost()).toBeGreaterThan(baseline);
   });
 
-  it("routes business actions to source writeback and reflects them into the semantic read model", () => {
-    const db = openMemoryDatabase();
-    const { engine, repository } = createApp(db, { seed: true });
+  it("routes business actions through an authoritative connector and reflects them into the semantic read model", async () => {
+    const { engine, repository } = await writableSqliteRuntime();
     const before = repository.status();
 
     const plan = engine.planBusinessAction({
-      intent: "Align Failed Payment Rate definition across Finance and Billing, then reflect it in source systems.",
+      intent: "Set order ORD-ENGINE status to dispatched",
       mode: "autonomous",
       maxAutonomousRisk: "medium"
     });
 
-    expect(plan.targets.map((target) => target.systemName)).toEqual(
-      expect.arrayContaining(["Data Catalog", "dbt Semantic Repository", "Governance Ticketing"])
-    );
+    expect(plan.targets.map((target) => target.systemName)).toEqual(["Engine Operations"]);
     expect(repository.listSourceSystemRecords()).toHaveLength(0);
 
     const run = engine.executeBusinessAction(executionFor(plan));
@@ -195,16 +222,36 @@ describe("Semantic Junkyard engine", () => {
     expect(repository.listBusinessActionRuns()[0]?.id).toBe(run.id);
     expect(repository.status().sources).toBeGreaterThan(before.sources);
 
-    const reflectedResults = engine.search({ query: "Business Action Reflection source systems Failed Payment Rate", topK: 5, mode: "hybrid" });
+    const domainResults = engine.search({ query: "Business Action Reflection ORD-ENGINE dispatched", topK: 5, mode: "hybrid" });
+    expect(domainResults.every((result) => result.evidenceClass === "domain")).toBe(true);
+    expect(domainResults.some((result) => result.sourceName.includes("business-action-reflection"))).toBe(false);
+
+    const reflectedResults = engine.search({
+      query: "Business Action Reflection ORD-ENGINE dispatched",
+      topK: 5,
+      mode: "hybrid",
+      scope: "operational"
+    });
     expect(reflectedResults.some((result) => result.sourceName.includes("business-action-reflection"))).toBe(true);
+    expect(reflectedResults.every((result) => result.evidenceClass === "operational")).toBe(true);
+    expect(reflectedResults.every((result) => result.graphBoost <= 0.35)).toBe(true);
+    const reflectedChunkId = reflectedResults[0]?.chunkId;
+    expect(reflectedChunkId).toBeTruthy();
+    const domainContext = engine.expandContext({
+      query: "ORD-ENGINE dispatch eligibility",
+      chunkIds: [reflectedChunkId!],
+      scope: "domain"
+    });
+    expect(domainContext.evidence.some((item) => item.chunkId === reflectedChunkId)).toBe(false);
+    const operationalContext = engine.expandContext({ chunkIds: [reflectedChunkId!], scope: "operational" });
+    expect(operationalContext.evidence.map((item) => item.chunkId)).toContain(reflectedChunkId);
   });
 
-  it("holds higher-risk source writes for approval when autonomy policy is stricter", () => {
-    const db = openMemoryDatabase();
-    const { engine, repository } = createApp(db, { seed: true });
+  it("holds higher-risk connector writes for approval when autonomy policy is stricter", async () => {
+    const { engine, repository } = await writableSqliteRuntime({ risk: "medium" });
 
     const plan = engine.planBusinessAction({
-      intent: "Make Billing Pipeline to Revenue Mart traceable end-to-end",
+      intent: "Set order ORD-ENGINE status to dispatched",
       mode: "autonomous",
       maxAutonomousRisk: "low"
     });
@@ -216,44 +263,46 @@ describe("Semantic Junkyard engine", () => {
     expect(repository.listSourceSystemRecords()).toHaveLength(0);
   });
 
-  it("mechanically gates actions on mapped asset sensitivity, freshness, and quality", () => {
-    const reviewRuntime = createApp(openMemoryDatabase(), { seed: true });
-    const reviewCatalog = reviewRuntime.repository.catalog();
-    reviewRuntime.engine.importCatalog({
-      ...reviewCatalog,
-      assets: reviewCatalog.assets.map((asset) => ({ ...asset, freshness: "stale" as const, qualityScore: 0.1 }))
-    });
-    const reviewPlan = reviewRuntime.engine.planBusinessAction({
-      intent: "Align Failed Payment Rate definition across Finance and Billing",
-      mode: "autonomous",
-      maxAutonomousRisk: "medium"
-    });
-    expect(reviewPlan.status).toBe("approval_required");
-    expect(reviewPlan.targets.every((target) => target.autonomy === "approval_required")).toBe(true);
-    expect(reviewPlan.warnings.some((warning) => warning.includes("requires human review"))).toBe(true);
-    expect(reviewRuntime.engine.executeBusinessAction(executionFor(reviewPlan)).writes).toHaveLength(0);
+  it("binds a persisted plan to the exact actor, roles, clearance, and policy version", async () => {
+    const { engine, repository } = await writableSqliteRuntime();
+    const planner = {
+      actor: "planner-a",
+      roles: ["semantic-reader", "business-action-planner"],
+      clearance: "confidential" as const
+    };
+    const plan = engine.planBusinessAction(
+      { intent: "Set order ORD-ENGINE status to dispatched", mode: "autonomous", maxAutonomousRisk: "medium" },
+      planner
+    );
 
-    const blockedRuntime = createApp(openMemoryDatabase(), { seed: true });
-    const blockedCatalog = blockedRuntime.repository.catalog();
-    blockedRuntime.engine.importCatalog({
-      ...blockedCatalog,
-      assets: blockedCatalog.assets.map((asset) => ({ ...asset, sensitivity: "restricted" as const }))
-    });
-    const blockedPlan = blockedRuntime.engine.planBusinessAction({
-      intent: "Align Failed Payment Rate definition across Finance and Billing",
-      mode: "autonomous",
-      maxAutonomousRisk: "medium"
-    });
-    expect(blockedPlan.status).toBe("blocked");
-    expect(blockedPlan.targets).toHaveLength(0);
-    expect(blockedPlan.warnings.some((warning) => warning.includes("not authorized"))).toBe(true);
+    expect(plan.principal).toMatchObject({ actor: "planner-a", clearance: "confidential", policyVersion: "business-action-policy-v2" });
+    expect(() =>
+      engine.executeBusinessAction(executionFor(plan), {
+        ...planner,
+        actor: "planner-b"
+      })
+    ).toThrow(/different principal or authorization context/i);
+    expect(repository.listSourceSystemRecords()).toHaveLength(0);
   });
 
-  it("separates human approval from execution and consumes an exact plan approval once", () => {
-    const db = openMemoryDatabase();
-    const { engine, repository } = createApp(db, { seed: true });
-    const request = {
+  it("treats configured source-system templates as non-executable until a connector is installed", () => {
+    const runtime = createApp(openMemoryDatabase(), { seed: true });
+    const plan = runtime.engine.planBusinessAction({
       intent: "Align Failed Payment Rate definition across Finance and Billing",
+      mode: "autonomous",
+      maxAutonomousRisk: "medium"
+    });
+    expect(plan.status).toBe("blocked");
+    expect(plan.targets.length).toBeGreaterThan(0);
+    expect(plan.targets.every((target) => target.autonomy === "blocked")).toBe(true);
+    expect(plan.warnings.some((warning) => warning.includes("no authoritative connector"))).toBe(true);
+    expect(runtime.engine.executeBusinessAction(executionFor(plan)).writes).toHaveLength(0);
+  });
+
+  it("separates human approval from execution and consumes an exact connector plan approval once", async () => {
+    const { engine, repository } = await writableSqliteRuntime({ writeMode: "approval_required" });
+    const request = {
+      intent: "Set order ORD-ENGINE status to dispatched",
       mode: "approval_required" as const,
       maxAutonomousRisk: "low" as const
     };
@@ -278,12 +327,10 @@ describe("Semantic Junkyard engine", () => {
     expect(repository.getBusinessActionApproval(approval.id)?.status).toBe("consumed");
   });
 
-  it("rejects reuse of one consumed approval with a different execution key", () => {
-    const { engine, repository } = createApp(openMemoryDatabase(), { seed: true });
-    const stableEvidence = engine.search({ query: "Request owner review for Failed Payment Rate", topK: 5, mode: "hybrid" });
-    vi.spyOn(engine, "search").mockReturnValue(stableEvidence);
+  it("rejects reuse of one consumed approval with a different execution key", async () => {
+    const { engine, repository } = await writableSqliteRuntime({ writeMode: "approval_required" });
     const request = {
-      intent: "Request owner review for Failed Payment Rate",
+      intent: "Set order ORD-ENGINE status to dispatched",
       mode: "approval_required" as const,
       maxAutonomousRisk: "low" as const
     };
@@ -300,15 +347,15 @@ describe("Semantic Junkyard engine", () => {
 
     const first = engine.executeBusinessAction({ ...executionFor(plan, "first-approved"), approvalId: approval.id });
     expect(first.status).toBe("verified");
-    expect(() => engine.executeBusinessAction({ ...executionFor(plan, "second-approved"), approvalId: approval.id })).toThrow(/Approval is missing, consumed, or does not match/);
+    expect(() => engine.executeBusinessAction({ ...executionFor(plan, "second-approved"), approvalId: approval.id })).toThrow(/plan no longer matches current source state/i);
+    expect(repository.getBusinessActionApproval(approval.id)?.status).toBe("consumed");
     expect(repository.listSourceSystemRecords()).toHaveLength(first.writes.length);
-    vi.restoreAllMocks();
   });
 
-  it("requires reconciliation and consumes approval when a source outcome is ambiguous", () => {
-    const { engine, repository } = createApp(openMemoryDatabase(), { seed: true });
+  it("requires reconciliation and consumes approval when a source outcome is ambiguous", async () => {
+    const { engine, repository } = await writableSqliteRuntime({ writeMode: "approval_required" });
     const request = {
-      intent: "Align Failed Payment Rate definition across Finance and Billing",
+      intent: "Set order ORD-ENGINE status to dispatched",
       mode: "approval_required" as const,
       maxAutonomousRisk: "medium" as const
     };
@@ -323,11 +370,9 @@ describe("Semantic Junkyard engine", () => {
       "antonio"
     );
     const originalSave = repository.saveSourceSystemRecord.bind(repository);
-    let writes = 0;
     vi.spyOn(repository, "saveSourceSystemRecord").mockImplementation((record) => {
-      writes += 1;
-      if (writes === 2) throw new Error("injected source failure");
-      return originalSave(record);
+      originalSave(record);
+      throw new Error("injected reflection persistence failure");
     });
 
     const run = engine.executeBusinessAction({ ...executionFor(plan, "rollback"), approvalId: approval.id });
@@ -337,9 +382,8 @@ describe("Semantic Junkyard engine", () => {
     expect(repository.getBusinessActionApproval(approval.id)?.status).toBe("consumed");
     expect(run.plan.warnings.join(" ")).toContain("Reconcile authoritative sources before retrying");
     expect(() => engine.executeBusinessAction({ ...executionFor(plan, "second-after-ambiguous"), approvalId: approval.id })).toThrow(
-      /Approval is missing, consumed, or does not match/
+      /plan no longer matches current source state/i
     );
-    vi.restoreAllMocks();
   });
 
   it("blocks destructive or unsupported actions and refuses evidence-free writeback", () => {
@@ -362,10 +406,10 @@ describe("Semantic Junkyard engine", () => {
     expect(empty.engine.executeBusinessAction(executionFor(evidenceFree)).writes).toHaveLength(0);
   });
 
-  it("does not publish drifted readback and replays duplicate execution idempotently", () => {
-    const { engine, repository } = createApp(openMemoryDatabase(), { seed: true });
+  it("does not publish drifted readback and replays duplicate execution idempotently", async () => {
+    const { engine, repository } = await writableSqliteRuntime();
     const plan = engine.planBusinessAction({
-      intent: "Align Failed Payment Rate definition across Finance and Billing",
+      intent: "Set order ORD-ENGINE status to dispatched",
       mode: "autonomous",
       maxAutonomousRisk: "medium"
     });
@@ -381,16 +425,18 @@ describe("Semantic Junkyard engine", () => {
     expect(drifted.semanticUpdates).toHaveLength(0);
 
     vi.restoreAllMocks();
-    const secondPlan = engine.planBusinessAction({
-      intent: "Make Billing Pipeline to Revenue Mart traceable end-to-end",
+    const replayRuntime = await writableSqliteRuntime();
+    const secondPlan = replayRuntime.engine.planBusinessAction({
+      intent: "Set order ORD-ENGINE status to dispatched",
       mode: "autonomous",
       maxAutonomousRisk: "medium"
     });
     const request = executionFor(secondPlan);
-    const first = engine.executeBusinessAction(request);
-    const replay = engine.executeBusinessAction(request);
+    const first = replayRuntime.engine.executeBusinessAction(request);
+    const replay = replayRuntime.engine.executeBusinessAction(request);
     expect(replay.id).toBe(first.id);
-    expect(repository.listSourceSystemRecords().every((record) => record.version === 1)).toBe(true);
+    expect(replayRuntime.repository.listSourceSystemRecords()).toHaveLength(1);
+    expect(replayRuntime.repository.listSourceSystemRecords()[0]?.version).toBe(1);
   });
 
   it("rolls back ingestion when a later persistence stage fails", () => {
@@ -431,4 +477,46 @@ function executionFor(plan: BusinessActionPlan, suffix = "primary") {
     maxAutonomousRisk: plan.maxAutonomousRisk,
     idempotencyKey: `${plan.id}-${suffix}`
   };
+}
+
+async function writableSqliteRuntime(
+  options: {
+    writeMode?: "autonomous" | "approval_required";
+    risk?: "low" | "medium" | "high";
+  } = {}
+) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-junkyard-engine-source-"));
+  temporaryPaths.push(root);
+  const databasePath = path.join(root, "operations.sqlite");
+  const source = new Database(databasePath);
+  source.exec("CREATE TABLE orders (order_id TEXT PRIMARY KEY, dispatch_eligible INTEGER NOT NULL, status TEXT NOT NULL)");
+  source.prepare("INSERT INTO orders VALUES (?, ?, ?)").run("ORD-ENGINE", 1, "ready");
+  source.close();
+
+  const runtime = createApp(openMemoryDatabase(), { seed: false });
+  const connection = runtime.engine.createSourceConnection({
+    name: "Engine Operations",
+    description: "Authoritative semantic-engine test source",
+    config: {
+      kind: "sqlite",
+      databasePath,
+      includeTables: ["orders"],
+      sampleRows: 1,
+      writeMode: options.writeMode ?? "autonomous",
+      writeRules: [
+        {
+          table: "orders",
+          aliases: ["order"],
+          keyColumn: "order_id",
+          allowedColumns: ["status"],
+          risk: options.risk ?? "low"
+        }
+      ]
+    }
+  });
+  await runtime.engine.syncSourceConnection(connection.id, {
+    objective: "Discover order dispatch eligibility and governed status actions.",
+    provider: "deterministic"
+  });
+  return runtime;
 }

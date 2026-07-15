@@ -1,20 +1,30 @@
-import type { SearchRequest, SearchResult } from "@semantic-junkyard/shared";
+import type { ParsedSearchRequest, SearchResult } from "@semantic-junkyard/shared";
 import { cosineSimilarity, embedText } from "./embeddings.js";
 import type { SemanticRepository } from "../storage/repository.js";
 import { tokenize } from "../core/text.js";
+import { evidenceScopeIncludes, sourceEvidenceClass } from "../core/evidenceScope.js";
 
 export class HybridQueryPlanner {
   constructor(private readonly repository: SemanticRepository) {}
 
-  search(request: SearchRequest): SearchResult[] {
-    const chunks = this.repository.getChunks();
+  search(request: ParsedSearchRequest): SearchResult[] {
+    const sourceById = new Map(this.repository.getSources().map((source) => [source.id, source]));
+    const chunks = this.repository
+      .getChunks()
+      .filter((chunk) => evidenceScopeIncludes(request.scope, sourceById.get(chunk.sourceId)?.metadata));
     const vectors = this.repository.getVectors();
     const queryVector = embedText(request.query);
     const lexical = new Map(this.repository.lexicalSearch(request.query, request.topK * 3).map((result) => [result.chunkId, result]));
     const queryTerms = new Set(tokenize(request.query));
     const relations = this.repository
       .getRelations()
-      .filter((relation) => relation.metadata.lifecycle !== "rejected" && relation.metadata.lifecycle !== "superseded");
+      .filter(
+        (relation) =>
+          relation.metadata.lifecycle !== "proposed" &&
+          relation.metadata.lifecycle !== "rejected" &&
+          relation.metadata.lifecycle !== "superseded" &&
+          (request.scope !== "domain" || relation.metadata.origin !== "business-action-reflection")
+      );
     const entities = this.repository.getEntities();
     const entityIdsByChunk = this.repository.getEntityIdsByChunk();
     const entityById = new Map(entities.map((entity) => [entity.id, entity]));
@@ -28,12 +38,12 @@ export class HybridQueryPlanner {
       const vectorScore = cosineSimilarity(queryVector, vectors.get(chunk.id) ?? []);
       const lexicalHit = lexical.get(chunk.id);
       const entityIds = entityIdsByChunk.get(chunk.id) ?? [];
-      const graphBoost = entityIds.reduce((score, entityId) => {
+      const graphBoost = Math.min(0.35, entityIds.reduce((score, entityId) => {
         const entity = entityById.get(entityId);
         const nameHit = entity ? tokenize(entity.canonicalName).some((term) => queryTerms.has(term)) : false;
         const degree = degreeByEntity.get(entityId) ?? 0;
         return score + (nameHit ? 0.18 : 0) + Math.min(0.12, degree * 0.015);
-      }, 0);
+      }, 0));
       const lexicalScore = lexicalHit?.lexicalScore ?? lexicalFallbackScore(chunk.text, queryTerms);
       const hybridScore = fuseScore(request.mode, lexicalScore, vectorScore, graphBoost);
       return {
@@ -46,6 +56,7 @@ export class HybridQueryPlanner {
         vectorScore: Number(vectorScore.toFixed(4)),
         graphBoost: Number(graphBoost.toFixed(4)),
         hybridScore: Number(hybridScore.toFixed(4)),
+        evidenceClass: sourceEvidenceClass(sourceById.get(chunk.sourceId)?.metadata),
         entityIds
       };
     });
@@ -57,7 +68,7 @@ export class HybridQueryPlanner {
   }
 }
 
-function fuseScore(mode: SearchRequest["mode"], lexicalScore: number, vectorScore: number, graphBoost: number): number {
+function fuseScore(mode: ParsedSearchRequest["mode"], lexicalScore: number, vectorScore: number, graphBoost: number): number {
   if (mode === "lexical") return lexicalScore;
   if (mode === "vector") return vectorScore;
   if (mode === "graph") return graphBoost + lexicalScore * 0.25;

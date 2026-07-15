@@ -79,10 +79,15 @@ export async function explainPermissions(intent: string) {
   });
 }
 
-export async function semanticSearch(query: string, mode: "hybrid" | "lexical" | "vector" | "graph" = "hybrid", topK = 8) {
+export async function semanticSearch(
+  query: string,
+  mode: "hybrid" | "lexical" | "vector" | "graph" = "hybrid",
+  topK = 8,
+  scope: "domain" | "operational" | "all" = "domain"
+) {
   return request<SearchEnvelope>("/api/tools/semantic_search", {
     method: "POST",
-    body: JSON.stringify({ query, mode, topK })
+    body: JSON.stringify({ query, mode, topK, scope })
   });
 }
 
@@ -100,7 +105,12 @@ export async function graphNeighbors(entityId: string, depth = 1) {
   });
 }
 
-export async function expandContext(input: { query?: string; chunkIds?: string[]; entityIds?: string[] }) {
+export async function expandContext(input: {
+  query?: string;
+  chunkIds?: string[];
+  entityIds?: string[];
+  scope?: "domain" | "operational" | "all";
+}) {
   return request<ContextEnvelope>("/api/tools/expand_context", {
     method: "POST",
     body: JSON.stringify(input)

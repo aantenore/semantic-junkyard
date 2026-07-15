@@ -1,6 +1,6 @@
 # Semantic Junkyard
 
-Semantic Junkyard is a local-first reference implementation of an **agent-safe semantic federation and verified change-control plane**.
+Semantic Junkyard is a local-first reference implementation of an **agent-safe semantic federation and verified semantic-action protocol**.
 
 It is not another data catalog and it does not become the authority for connected data. It observes configured sources, preserves evidence and source identity, separates authoritative facts from reviewable semantic proposals, exposes bounded context to agents, and permits a change only through an exact capability contract:
 
@@ -65,7 +65,8 @@ Three rules explain the system:
 
 1. **The semantic layer is a map, not the source of truth.** Every useful statement keeps its source and evidence identity.
 2. **Models may suggest; deterministic controls decide.** Model output can become a reviewable proposal or a typed intent, never an approval or an unrestricted write.
-3. **A write is complete only after authoritative readback.** A connector success response is insufficient; the expected postcondition must be observed from the source and reflected into fresh semantic evidence.
+3. **A plan belongs to one authorization context.** Actor, roles, clearance, and policy version are persisted in the plan identity; another principal must create a new plan.
+4. **A write is complete only after authoritative readback.** A connector success response is insufficient; the expected postcondition must be observed from the source and reflected into fresh semantic evidence.
 
 Start with [How Semantic Junkyard works](docs/how-it-works.md), then use the [Hands-on guide](docs/user-guide.md) to run the real read-only, autonomous SQLite, and approval-gated Git workflows. The [documentation index](docs/README.md) provides paths for operators, agent builders, connector authors, and reviewers.
 
@@ -77,6 +78,8 @@ Semantic Junkyard combines two responsibilities that are usually split across se
 2. **Verified change control.** Resolve a business request to one configured write capability, bind its exact target and preconditions into a fingerprint, enforce policy and approval, execute idempotently, reread the authoritative source, and publish reflection evidence only when the postcondition passes.
 
 The control plane stores observations, proposals, evidence, decisions, plans, approvals, runs, and audit events. The filesystem, operational SQLite database, and Git repository remain the authoritative sources.
+
+The defensible product wedge is the second responsibility: a reusable, connector-conformance protocol for proving that an agent-requested business change reached the correct authoritative source and came back as governed read evidence. Search, catalogs, graphs, and MCP access are integration surfaces, not differentiation claims. The [market scan](docs/market-scan.md) explains why production deployments should integrate established context platforms instead of rebuilding them.
 
 Source-local catalog identifiers are namespaced by connection before entering the federated read model. The original identifier remains provenance metadata, so equal IDs from different domains cannot overwrite one another and deleting a connection removes only its owned assets, metrics, policies, lineage, contracts, and ontology classes.
 
@@ -101,11 +104,11 @@ There is no generic SQL executor, shell tool, arbitrary file writer, or write pa
 Source synchronization distinguishes observation from interpretation:
 
 - **Authoritative source facts** such as SQLite columns, foreign keys, and declared contract-to-metric relations are accepted automatically, tagged `source_fact`, and cannot be rejected in the semantic layer. They must be changed at the source or in its authority mapping.
-- **Deterministic inferences** and **local-model candidates** are stored as `proposed` assertions with confidence, explanation, origin, resource IDs, and evidence chunk IDs.
+- **Connector deterministic inferences** and **local-model candidates** are stored as `proposed` assertions with confidence, explanation, origin, resource IDs, and evidence chunk IDs.
 - Operators accept or reject non-authoritative proposals with a rationale in the product UI or REST API.
 - A later source sync marks assertions that are no longer emitted as `superseded` and removes them from active navigation.
 
-Acceptance never makes an inference authoritative. Pending deterministic connector relations are graph-visible, while local-model relation candidates enter the graph only after acceptance; rejected and superseded relations are excluded. Direct ingest and manual curation currently persist derived relations immediately without proposal records. See [How semantic meaning is governed](docs/how-it-works.md#5-how-semantic-meaning-is-governed).
+Acceptance never makes an inference authoritative. Pending connector proposals are visible to operators with an explicit lifecycle, but agent graph tools and graph retrieval exclude them until acceptance. Rejected and superseded relations are inactive. Direct-ingest relations are marked `proposed` and excluded from agent graph reasoning, but they do not yet have first-class proposal records; manual curation requires a rationale and creates an accepted, non-authoritative relation. See [How semantic meaning is governed](docs/how-it-works.md#5-how-semantic-meaning-is-governed).
 
 The optional Hugging Face path can suggest concepts, classifications, relations, and conflicts from a bounded list of observed resources. Strict schemas discard malformed output, invented resource IDs, self-relations, duplicates, and over-limit candidates. A model proposal never becomes an authoritative source fact.
 
@@ -114,7 +117,7 @@ The optional Hugging Face path can suggest concepts, classifications, relations,
 | Surface | Default | Responsibility |
 | --- | --- | --- |
 | Product workbench (`apps/web`) | `http://localhost:5173` | Operator-facing source registry, connection test/sync, proposal review, retrieval/graph inspection, exact plan review, approval, execution, readback, and audit. |
-| External conversational PoC (`apps/poc`) | `http://localhost:5174` | Independent REST client with bounded read-only, plan-only, and autonomous workflows. It stops for missing evidence, no writable source, policy blocks, or required approval. |
+| External conversational PoC (`apps/poc`) | `http://localhost:5174` | Independent REST client that starts deterministic and read-only, returns an answer/claim/citation contract, and exposes opt-in plan-only and autonomous workflows. It stops for missing evidence, no writable source, policy blocks, or required approval. |
 | API (`apps/api`) | `http://127.0.0.1:8787` | HTTP control plane and generated reference OpenAPI document. |
 | MCP server (`apps/mcp`) | stdio | External agent surface over the same engine contracts. It opens the selected control-plane SQLite database directly and intentionally cannot create approvals or decide proposals. |
 
@@ -157,6 +160,8 @@ npm run poc:agent:mcp     # real MCP client/server reference run
 
 The API reads environment variables from its process. It does not automatically load the root `.env` file. The complete template is [.env.example](.env.example).
 
+From the product dashboard, **Run mission** synchronizes every selected/configured source and profiles the resulting fabric as one durable report. The equivalent operator API is `POST /api/discovery/missions`; MCP exposes `discover_sources` only when started with `--allow-sync`.
+
 ## Reference Actions
 
 The seeded SQLite action is autonomous and low-risk:
@@ -181,11 +186,13 @@ The generated OpenAPI document is at `GET /api/openapi.json`. Liveness is expose
 
 - Source federation: `GET/POST /api/source-connections`, connection `test` and `sync`, `GET /api/source-resources`, and `GET /api/source-sync-runs`.
 - Proposal governance: `GET /api/semantic/proposals` and `POST /api/semantic/proposals/:proposalId/decision`.
-- Retrieval: `semantic_search`, `source_resource_search`, `entity_lookup`, `graph_neighbors`, `find_paths`, `expand_context`, and direct evidence reads.
+- Retrieval: scoped `semantic_search`/`expand_context` (`domain` by default, `operational` for receipts), `source_resource_search`, `entity_lookup`, `graph_neighbors`, `find_paths`, and direct evidence reads.
 - Change control: `POST /api/business/actions/plan`, `/approve`, and `/execute`; run and approval listings are separate.
 - Agent integration: intent interpretation, manifest, MCP descriptors, discovery runs, audit events, and the bundled local PoC route.
 
 Request bodies are strict Zod contracts. Unknown keys, including a caller-supplied `approved` flag, are rejected.
+
+Every business-action plan is persisted before it can be approved or executed. Its identity includes the authenticated actor, normalized roles, clearance, and policy version. Execution by a different principal returns `PLAN_PRINCIPAL_MISMATCH`; a missing or stale plan cannot be reconstructed from caller input alone.
 
 ## MCP Contract
 
@@ -219,6 +226,7 @@ See [Agent contract](docs/agent-contract.md).
 
 - Connected content is untrusted data. It cannot redefine tool policy or connector configuration.
 - The local source is authoritative for source facts and postconditions; the control-plane read model is derived.
+- Capability templates describe possible integrations but are not executable. Without a managed connector, a target is blocked and cannot claim source verification.
 - Non-authoritative semantic assertions require review and remain distinguishable by lifecycle and origin.
 - The browser API boundary and the MCP process boundary are different. REST tokens do not constrain a local MCP process.
 - The default tokenless loopback profile grants a development-only local owner role. Authenticated mode requires distinct agent, operator, and approver bearer tokens, but these static tokens are not production IAM.
@@ -229,13 +237,13 @@ See [Agent contract](docs/agent-contract.md).
 - Single-node SQLite is the only control-plane store. There is no production clustering, tenancy, migration service, backup orchestration, or high-availability design.
 - Only local filesystem, SQLite, and Git connectors are implemented. There are no production DataHub, OpenMetadata, cloud object-store, warehouse, ticketing, or remote Git-provider connectors.
 - There is no production IAM, tenant isolation, source-ACL propagation, approval delegation/expiry/revocation workflow, or secrets manager.
-- Synchronization and actions run in process. There is no durable job queue, scheduler, retry service, outbox, or crash-recovery reconciler.
+- Synchronization and actions run in process. Per-connection SQLite leases prevent overlapping syncs across runtime instances, and deterministic observation replacement is transactional, but there is no durable job queue, scheduler, retry service, outbox, or crash-recovery reconciler.
 - Control-plane transactions and source-native writes are not one distributed transaction. In-process ambiguous outcomes are persisted as `reconciliation_required` and cannot reuse a consumed approval. A process crash after a source commit but before control-plane persistence can still leave no run record; there is no reconciliation worker.
 - Arbitrary unknown-source writes are intentionally unsupported. SQLite updates require an allowlisted table, key, and columns; Git writes require an allowlisted semantic-contract path; filesystem is read-only.
 - Deterministic extraction, entity resolution, intent parsing, and hash embeddings are reference-quality implementations, not production semantic quality.
 - Local-HF execution is Apple Silicon/MLX-oriented, depends on a pre-cached compatible model and runtime packages, and has no model-faithfulness release gate.
 - The product does not request or persist hidden chain-of-thought. Auditability is based on observable evidence, typed artifacts, policy decisions, tool events, diffs, and source readback.
-- Legacy in-memory demo capabilities remain for deterministic compatibility tests. They are not the reference product and must not be described as external integrations.
+- Static catalog/metadata/ticketing capability templates remain as configuration examples. They are blocked until a managed adapter exists and must not be described as external integrations.
 
 See [Architecture](docs/architecture.md) for the full boundary analysis.
 

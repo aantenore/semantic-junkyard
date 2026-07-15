@@ -240,6 +240,14 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
     response.json(engine.redactOperationalData(engine.sourceSyncRuns(connectionId)));
   });
 
+  app.post("/api/discovery/missions", requireOperatorRole, async (request, response) => {
+    response.status(201).json(engine.redactOperationalData(await engine.runSourceDiscoveryMission(request.body ?? {}, requestActor(request))));
+  });
+
+  app.get("/api/discovery/missions", requireOperatorRole, (_request, response) => {
+    response.json(engine.redactOperationalData(engine.sourceDiscoveryMissions()));
+  });
+
   app.get("/api/semantic/proposals", requireOperatorRole, (request, response) => {
     const filters = z
       .object({
@@ -255,15 +263,15 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
   });
 
   app.post("/api/business/actions/plan", (request, response) => {
-    response.json(engine.planBusinessAction(request.body));
+    response.json(engine.planBusinessAction(request.body, requestActorContext(request)));
   });
 
   app.post("/api/business/actions/approve", requireApprovalRole, (request, response) => {
-    response.status(201).json(engine.approveBusinessAction(request.body, requestActor(request)));
+    response.status(201).json(engine.approveBusinessAction(request.body, requestActorContext(request)));
   });
 
   app.post("/api/business/actions/execute", (request, response) => {
-    response.status(201).json(engine.redactOperationalData(engine.executeBusinessAction(request.body, requestActor(request))));
+    response.status(201).json(engine.redactOperationalData(engine.executeBusinessAction(request.body, requestActorContext(request))));
   });
 
   app.get("/api/business/actions/runs", (_request, response) => {
@@ -276,7 +284,14 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
 
   app.get("/api/audit/events", (request, response) => {
     const limit = z.coerce.number().int().positive().max(250).default(100).parse(request.query.limit);
-    response.json(engine.auditEventsForActor(requestActorContext(request), limit));
+    const actions = z
+      .string()
+      .max(2_000)
+      .optional()
+      .transform((value) => value?.split(",").map((action) => action.trim()).filter(Boolean) ?? [])
+      .pipe(z.array(z.string().regex(/^[a-z][a-z0-9_.-]{0,254}$/)).max(20))
+      .parse(request.query.actions);
+    response.json(engine.auditEventsForActor(requestActorContext(request), limit, actions));
   });
 
   app.post("/api/discovery/run", (request, response) => {

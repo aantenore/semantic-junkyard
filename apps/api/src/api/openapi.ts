@@ -14,6 +14,7 @@ import {
   IngestRequestSchema,
   SearchRequestSchema,
   SemanticProposalDecisionRequestSchema,
+  SourceDiscoveryMissionRequestSchema,
   SourceResourceSearchRequestSchema,
   SyncSourceConnectionRequestSchema,
   AgentIntentRequestSchema
@@ -117,6 +118,10 @@ export const openApiDocument = {
     "/api/business/actions/runs": { get: { operationId: "listBusinessActionRuns", summary: "List action runs", responses: { "200": jsonResponse("Action runs"), ...errors } } },
     "/api/business/actions/approvals": { get: { operationId: "listBusinessActionApprovals", summary: "List approval records through the approver channel", security: [{ approvalBearer: [] }], responses: { "200": jsonResponse("Approval records"), ...errors } } },
     "/api/audit/events": { get: { operationId: "listAuditEvents", summary: "List server-side audit events", responses: { "200": jsonResponse("Audit events"), ...errors } } },
+    "/api/discovery/missions": {
+      get: { operationId: "listSourceDiscoveryMissions", summary: "List durable multi-source discovery mission reports", security: [{ approvalBearer: [] }], responses: { "200": jsonResponse("Source discovery missions"), ...errors } },
+      post: { ...post("runSourceDiscoveryMission", "Synchronize selected sources, generate semantic proposals, and profile the resulting fabric", SourceDiscoveryMissionRequestSchema), security: [{ approvalBearer: [] }], responses: { "201": jsonResponse("Source discovery mission report"), ...errors } }
+    },
     "/api/discovery/run": { post: post("runDiscovery", "Profile the repository and persist a discovery run with events", DiscoveryRequestSchema) },
     "/api/discovery/runs": { get: { operationId: "listDiscoveryRuns", summary: "List discovery traces", responses: { "200": jsonResponse("Discovery runs"), ...errors } } },
     "/api/graph": { get: { operationId: "getGraph", summary: "Get graph snapshot", responses: { "200": jsonResponse("Graph snapshot"), ...errors } } },

@@ -1,16 +1,19 @@
 import type { AppSnapshot, CuratedRelationReport, IngestPreviewReport, SearchEnvelope, SnapshotSurface, SourceResourceSearchEnvelope } from "../types/app";
 import { createJsonRequester, resolveApiUrl, retryApiStartup } from "@semantic-junkyard/shared";
 import type {
+  AuditEvent,
   BusinessActionApproval,
   BusinessActionPlan,
   BusinessActionRun,
   CatalogSnapshot,
   CreateSourceConnectionRequest,
   DiscoveryRun,
+  EvidenceSpan,
   GraphSnapshot,
   IngestResponse,
   ProviderConfig,
   SemanticProposal,
+  SourceDiscoveryMissionReport,
   SemanticProposalDecisionRequest,
   SourceConnection,
   SourceConnectionTestResult,
@@ -49,7 +52,7 @@ async function loadSnapshotOnce(): Promise<AppSnapshot> {
       const message = error instanceof Error ? error.message : "Unknown API error.";
       throw new Error(`${label} unavailable: ${message}`, { cause: error });
     });
-  const [status, catalog, graph, discoveryRuns, manifest, provider, mcp, actionRuns, sourceSystemsEnvelope, sourceConnections, sourceResources, sourceSyncRuns, semanticProposals] = await Promise.all([
+  const [status, catalog, graph, discoveryRuns, manifest, provider, mcp, actionRuns, auditEvents, discoveryMissions, sourceSystemsEnvelope, sourceConnections, sourceResources, sourceSyncRuns, semanticProposals] = await Promise.all([
     required("System status", snapshotRequest<SystemStatus>("/api/status")),
     required("Catalog", snapshotRequest<CatalogSnapshot>("/api/catalog")),
     required("Graph", snapshotRequest<GraphSnapshot>("/api/graph")),
@@ -58,6 +61,8 @@ async function loadSnapshotOnce(): Promise<AppSnapshot> {
     optional<ProviderConfig | null>("provider", "provider", snapshotRequest<ProviderConfig>("/api/providers"), null),
     optional<AppSnapshot["mcp"]>("mcp", "MCP capabilities", snapshotRequest<NonNullable<AppSnapshot["mcp"]>>("/api/mcp/capabilities"), null),
     optional("actionRuns", "business action runs", snapshotRequest<BusinessActionRun[]>("/api/business/actions/runs"), []),
+    optional("auditEvents", "audit events", snapshotRequest<AuditEvent[]>("/api/audit/events?limit=20&actions=source_discovery.mission,source_connection.sync,semantic_proposal.decide,business_action.approve,business_action.execute,business_action.dry_run"), []),
+    optional("discoveryMissions", "source discovery missions", snapshotRequest<SourceDiscoveryMissionReport[]>("/api/discovery/missions"), []),
     optional("sourceSystems", "source systems", snapshotRequest<{ systems: SourceSystem[]; records: SourceSystemRecord[] }>("/api/source-systems"), { systems: [], records: [] }),
     optional("sourceConnections", "source connections", snapshotRequest<SourceConnection[]>("/api/source-connections"), []),
     optional("sourceResources", "source resources", snapshotRequest<SourceResource[]>("/api/source-resources"), []),
@@ -73,6 +78,8 @@ async function loadSnapshotOnce(): Promise<AppSnapshot> {
     provider,
     mcp,
     actionRuns,
+    auditEvents,
+    discoveryMissions,
     sourceSystems: sourceSystemsEnvelope.systems,
     sourceRecords: sourceSystemsEnvelope.records,
     sourceConnections,
@@ -105,6 +112,18 @@ export async function syncSourceConnection(connectionId: string, input: SyncSour
   });
 }
 
+export async function runSourceDiscoveryMission(input: {
+  objective: string;
+  provider: "deterministic" | "local-huggingface";
+  connectionIds?: string[];
+  continueOnError?: boolean;
+}) {
+  return longRequest<SourceDiscoveryMissionReport>("/api/discovery/missions", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
 export async function deleteSourceConnection(connectionId: string): Promise<void> {
   const response = await fetch(apiHref(`/api/source-connections/${encodeURIComponent(connectionId)}`), {
     method: "DELETE",
@@ -120,6 +139,10 @@ export async function decideSemanticProposal(proposalId: string, input: Semantic
     method: "POST",
     body: JSON.stringify(input)
   });
+}
+
+export async function getEvidence(chunkId: string) {
+  return request<EvidenceSpan>(`/api/evidence/${encodeURIComponent(chunkId)}`);
 }
 
 export async function searchSourceResources(input: { query: string; connectionId?: string; topK?: number }) {
@@ -148,7 +171,7 @@ export async function previewIngest(input: { name: string; text: string; mimeTyp
   });
 }
 
-export async function curateRelation(input: { sourceName: string; sourceType: string; targetName: string; targetType: string; relationType: string; rationale?: string }) {
+export async function curateRelation(input: { sourceName: string; sourceType: string; targetName: string; targetType: string; relationType: string; rationale: string }) {
   return request<CuratedRelationReport>("/api/semantic/relations", {
     method: "POST",
     body: JSON.stringify(input)

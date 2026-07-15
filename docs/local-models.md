@@ -119,6 +119,8 @@ Invalid local-model intent JSON fails the interpretation request without running
 
 `npm run poc:agent:hf` runs the real local supply-chain sequence against temporary filesystem, SQLite, and Git sources, then asks the model to select two IDs from a bounded set of deterministic verified audit facts. The renderer resolves those IDs back to canonical human-readable statements. Unknown, duplicate, malformed, or invented selections are rejected and mark the narration degraded; raw model claims never enter the authoritative final answer. The model cannot reorder tools, alter the plan, approve, write, verify, or override stop conditions.
 
+The acceptance command prints its report without modifying the repository. Add `-- --write-report` only when deliberately refreshing `artifacts/poc/local-agent-use-case-report.json`; temporary fixture paths make evidence chunk IDs run-specific.
+
 This CLI path allows deterministic fallback by default and reports `local-huggingface-mlx-unavailable-fallback` plus a normalized error code when generation is unavailable. `--no-fallback` turns that into a command failure. The connector workflow and every write/readback decision remain deterministic even when the optional summary uses a local model.
 
 ## No Chain-Of-Thought Contract

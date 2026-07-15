@@ -58,13 +58,13 @@ Connection creation, testing, and synchronization are separate operations:
 
 1. **Create** validates the typed configuration and stores the connection. It does not test external access.
 2. **Test** explicitly checks that the configured connector can access a valid source.
-3. **Synchronize** tests again, then asks the connector for one bounded discovery snapshot.
-4. The source manager replaces observations owned by that connection, materializes evidence, parses, chunks, indexes, and extracts semantic material.
+3. **Synchronize** tests again, acquires a per-connection SQLite lease, then asks the connector for one bounded discovery snapshot.
+4. The source manager transactionally replaces observations owned by that connection, materializes evidence, parses, chunks, indexes, and extracts semantic material.
 5. Connector-declared facts are accepted as source facts; connector inferences become proposals.
 6. Optional local Hugging Face enrichment receives at most the configured bounded resource summaries. Invalid or invented IDs are discarded.
 7. Assertions no longer emitted by a later sync become `superseded`.
 
-Every synchronization records inspectable events, counts, warnings, provider identity, checkpoint, and completion state. Synchronization runs in process; there is no durable queue or resume worker.
+Every synchronization records inspectable events, counts, warnings, provider identity, checkpoint, and completion state. The dashboard can run one source-wide discovery mission that orchestrates configured connections and persists an aggregate report. Synchronization runs in process; there is no durable queue or resume worker.
 
 ### Implemented connectors
 
@@ -86,12 +86,12 @@ Not every relation follows the same lifecycle:
 flowchart TD
   Sync["Connector synchronization"] --> Origin{"Relation origin"}
   Origin -->|"connector-declared"| Fact["Source fact\nauthoritative + accepted + graph-active"]
-  Origin -->|"deterministic inference"| DProposal["Proposed + non-authoritative\ngraph-active while pending"]
+  Origin -->|"deterministic inference"| DProposal["Proposed + non-authoritative\noperator-visible, agent-inactive"]
   Origin -->|"validated local-model candidate"| MProposal["Proposed + non-authoritative\nnot graph-active before acceptance"]
 
   DProposal --> Review{"Operator review"}
   MProposal --> Review
-  Review -->|"accept + rationale"| Accepted["Accepted but still non-authoritative\ngraph-active"]
+  Review -->|"open evidence, then accept + rationale"| Accepted["Accepted but still non-authoritative\nagent-active"]
   Review -->|"reject + rationale"| Rejected["Rejected\nnot graph-active"]
   Fact -->|"not emitted by later sync"| Superseded["Superseded\nnot graph-active"]
   DProposal -->|"not emitted by later sync"| Superseded
@@ -102,12 +102,12 @@ The practical rules are:
 
 - A source fact cannot be rejected in the semantic layer. Change the source or its authority mapping.
 - Accepting a deterministic/model proposal confirms it for navigation; it does **not** make it authoritative.
-- Pending deterministic connector relations can influence graph traversal and graph-based retrieval boosts. Clients must inspect lifecycle and authority metadata when the distinction matters.
-- Local-model relation candidates enter the graph only after acceptance.
+- Pending connector and local-model relations are visible to operators but excluded from non-operator graph traversal and graph-based retrieval boosts.
+- Accepted non-authoritative relations enter agent navigation while remaining visibly distinct from authoritative source facts.
 - Rejected and superseded relations are excluded from graph traversal and retrieval boosts.
 - Changed evidence, confidence, or explanation creates a new non-authoritative proposal identity. An older decision is not silently reused.
 
-Direct `POST /api/ingest` extraction and manual `POST /api/semantic/relations` curation currently persist derived relations immediately and do not create `SemanticProposal` records. The proposal lifecycle above applies to connector synchronization and local-model enrichment. This is a reference limitation, not a universal governance guarantee.
+Direct `POST /api/ingest` extraction and manual `POST /api/semantic/relations` curation currently persist derived relations immediately and do not create `SemanticProposal` records. Direct-ingest relations are marked proposed and excluded from agent graph reasoning. Manual curation requires evidence plus a rationale and creates an accepted, non-authoritative relation. The first-class proposal queue above applies to connector synchronization and local-model enrichment. This is a reference limitation, not a universal governance guarantee.
 
 ## 6. How An Agent Reads And Discovers
 
@@ -115,12 +115,12 @@ The intended evidence-first procedure is:
 
 1. Ask `explain_permissions` for capability and stop conditions.
 2. Use `source_resource_search` to find observed files, tables, columns, metrics, and contracts.
-3. Use `semantic_search` for policy-filtered lexical/vector/graph-ranked evidence.
+3. Use `semantic_search` with domain scope for policy-filtered lexical/vector/graph-ranked business evidence. Operational write receipts are a separate explicit scope.
 4. Resolve canonical entities, then traverse bounded graph neighborhoods or paths.
-5. Use `expand_context`, then open individual evidence chunks before answering or planning.
+5. Use `expand_context` with the same evidence scope, then open individual evidence chunks before answering or planning.
 6. Answer with source-linked evidence, or stop if the bounded context is insufficient.
 
-`run_discovery` is an objective-aware profile of the **already persisted semantic fabric**. It records a discovery timeline but does not connect to or synchronize source systems. Source discovery and ingestion happen through connection synchronization.
+`run_discovery` is an objective-aware profile of the **already persisted semantic fabric**. It records a discovery timeline but does not connect to or synchronize source systems. `POST /api/discovery/missions` and MCP `discover_sources` orchestrate actual source synchronization before profiling the resulting fabric.
 
 The conversational PoC makes this procedure visible as REST requests, typed artifacts, observations, evidence, policy decisions, stop reasons, action plans, source readbacks, and refreshed evidence. It does not request or expose hidden chain-of-thought.
 
@@ -138,9 +138,10 @@ sequenceDiagram
   participant S as Authoritative source
   participant R as Semantic read model
 
-  C->>P: Business intent + mode + risk ceiling
+  C->>P: Business intent + authenticated principal + mode + risk ceiling
   P->>S: Resolve one configured target and current version
   S-->>P: Exact diff, evidence, and preconditions
+  P->>D: Persist plan + principal + policy version
   P-->>C: Plan ID + fingerprint + policy result
 
   opt Approval required
@@ -172,7 +173,7 @@ sequenceDiagram
   Note over P,D: No distributed transaction or automatic crash reconciliation
 ```
 
-Planning is read-only. The fingerprint covers the intent, action type, mode, risk ceiling, resolved risk, complete target, preconditions, diff, and warnings. Approval and execution recompute the plan; any material change invalidates the old identity.
+Planning is source-read-only but persists its review artifact. The fingerprint covers the normalized principal, policy version, intent, action type, mode, risk ceiling, resolved risk, complete target, preconditions, diff, and warnings. Approval and execution require that persisted plan and recompute it; any material change invalidates the old identity, and a different execution principal must create a new plan.
 
 If an exception occurs after an approval has been reserved, the run becomes `reconciliation_required`, the approval remains consumed, and the idempotency key cannot authorize a blind retry. A process crash after a source commit but before control-plane persistence remains an untracked failure window.
 

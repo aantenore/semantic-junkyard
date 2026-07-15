@@ -44,6 +44,8 @@ interface McpPocReport {
     intent: string;
     status: string;
     writes: number;
+    mutations: number;
+    verifiedNoOps: number;
     verifiedReflections: number;
   };
   overallStatus: "completed" | "blocked" | "failed";
@@ -146,6 +148,8 @@ export async function runMcpAgentUseCase(options: { writeReport?: boolean; outpu
 
     const writebackVerified = actionRun.status === "verified" && actionRun.writes.length > 0 && actionRun.reflections.every((reflection) => reflection.status === "verified");
     const evidenceVerified = citations.length > 0;
+    const mutations = actionRun.writes.filter((write) => write.status === "executed").length;
+    const verifiedNoOps = actionRun.writes.filter((write) => write.status === "skipped").length;
     const overallStatus: McpPocReport["overallStatus"] =
       actionRun.status === "blocked" || actionRun.status === "approval_required" || actionRun.status === "reconciliation_required"
         ? "blocked"
@@ -165,11 +169,15 @@ export async function runMcpAgentUseCase(options: { writeReport?: boolean; outpu
         intent: businessIntent,
         status: actionRun.status,
         writes: actionRun.writes.length,
+        mutations,
+        verifiedNoOps,
         verifiedReflections: actionRun.reflections.filter((reflection) => reflection.status === "verified").length
       },
       overallStatus,
       finalAnswer: writebackVerified && evidenceVerified
-        ? "The MCP client grounded the request in the real operations SQLite source and supply-chain semantic evidence, updated ORD-1001, reread the authoritative row, and refreshed the semantic read model only after the postcondition passed."
+        ? mutations > 0
+          ? "The MCP client grounded the request in the real operations SQLite source and supply-chain semantic evidence, updated ORD-1001, reread the authoritative row, and refreshed the semantic read model only after the postcondition passed."
+          : "The MCP client grounded the request in the real operations SQLite source and supply-chain semantic evidence, found ORD-1001 already dispatched, verified that no source mutation was needed, and refreshed the semantic read model only after authoritative readback passed."
         : `The MCP client cannot claim end-to-end completion: action status ${actionRun.status}, grounded citations ${citations.length}.`,
       citations,
       promptPreview

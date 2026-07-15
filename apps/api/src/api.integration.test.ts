@@ -1,5 +1,9 @@
+import Database from "better-sqlite3";
 import request, { type Test } from "supertest";
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import type { RuntimeConfig } from "./config/runtime.js";
 import { openMemoryDatabase } from "./storage/database.js";
@@ -14,6 +18,12 @@ const baseConfig: RuntimeConfig = {
   enableLocalPoc: true,
   bootstrapReferenceSources: false
 };
+
+const temporaryPaths: string[] = [];
+
+afterEach(() => {
+  for (const temporaryPath of temporaryPaths.splice(0)) fs.rmSync(temporaryPath, { recursive: true, force: true });
+});
 
 describe("Semantic Junkyard HTTP boundary", () => {
   it("returns JSON errors, request IDs, security headers, and no framework fingerprint", async () => {
@@ -37,12 +47,12 @@ describe("Semantic Junkyard HTTP boundary", () => {
     const token = "a".repeat(32);
     const approvalToken = "b".repeat(32);
     const operatorToken = "c".repeat(32);
-    const authenticated = testApp({ apiToken: token, operatorToken, approvalToken }).app;
+    const authenticated = (await testAppWithWritableSource({ apiToken: token, operatorToken, approvalToken }, "approval_required")).app;
     expect((await request(authenticated).get("/api/status")).status).toBe(401);
     expect((await request(authenticated).get("/api/status").set("Authorization", `Bearer ${token}`)).status).toBe(200);
 
     const action = {
-      intent: "Align Failed Payment Rate definition across Finance and Billing",
+      intent: "Set order ORD-API status to dispatched",
       mode: "approval_required",
       maxAutonomousRisk: "low"
     };
@@ -53,6 +63,19 @@ describe("Semantic Junkyard HTTP boundary", () => {
       planFingerprint: plan.body.fingerprint,
       rationale: "Reviewed target systems and source diffs."
     };
+    const crossPrincipalExecution = await request(authenticated)
+      .post("/api/business/actions/execute")
+      .set("Authorization", `Bearer ${operatorToken}`)
+      .send({
+        planId: plan.body.id,
+        planFingerprint: plan.body.fingerprint,
+        intent: plan.body.intent,
+        mode: plan.body.mode,
+        maxAutonomousRisk: plan.body.maxAutonomousRisk,
+        idempotencyKey: `${plan.body.id}-cross-principal`
+      });
+    expect(crossPrincipalExecution.status).toBe(403);
+    expect(crossPrincipalExecution.body.code).toBe("PLAN_PRINCIPAL_MISMATCH");
     const agentApproval = await request(authenticated)
       .post("/api/business/actions/approve")
       .set("Authorization", `Bearer ${token}`)
@@ -75,7 +98,7 @@ describe("Semantic Junkyard HTTP boundary", () => {
     const apiToken = "c".repeat(32);
     const operatorToken = "d".repeat(32);
     const approvalToken = "e".repeat(32);
-    const { app } = testApp({ apiToken, operatorToken, approvalToken });
+    const { app } = await testAppWithWritableSource({ apiToken, operatorToken, approvalToken }, "approval_required");
     const agent = (operation: Test) => operation.set("Authorization", `Bearer ${apiToken}`);
     const operator = (operation: Test) => operation.set("Authorization", `Bearer ${operatorToken}`);
     const approver = (operation: Test) => operation.set("Authorization", `Bearer ${approvalToken}`);
@@ -92,11 +115,12 @@ describe("Semantic Junkyard HTTP boundary", () => {
       ).status
     ).toBe(403);
     expect((await agent(request(app).get("/api/source-resources"))).status).toBe(200);
+    expect((await agent(request(app).post("/api/discovery/missions").send({ objective: "Unauthorized source sync" }))).status).toBe(403);
     expect((await operator(request(app).post("/api/ingest").send({ name: "allowed.txt", text: "Operator-owned ingestion" }))).status).toBe(201);
     expect((await approver(request(app).post("/api/ingest").send({ name: "blocked-for-approver.txt", text: "blocked" }))).status).toBe(403);
 
     const plan = await agent(request(app).post("/api/business/actions/plan").send({
-      intent: "Request owner review for Failed Payment Rate",
+      intent: "Set order ORD-API status to dispatched",
       mode: "approval_required",
       maxAutonomousRisk: "low"
     }));
@@ -130,10 +154,48 @@ describe("Semantic Junkyard HTTP boundary", () => {
     expect(invalidDepth.status).toBe(400);
   });
 
+  it("orchestrates and persists an auditable multi-source discovery mission", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-junkyard-mission-"));
+    fs.writeFileSync(path.join(root, "operations.md"), "Late Dispatch Rate depends on dispatch eligible orders. Operations owns the metric.");
+    try {
+      const { app } = testApp();
+      const connection = await request(app).post("/api/source-connections").send({
+        name: "Mission knowledge",
+        description: "Temporary integration source",
+        config: { kind: "filesystem", rootPath: root }
+      });
+      expect(connection.status).toBe(201);
+
+      const mission = await request(app).post("/api/discovery/missions").send({
+        objective: "Discover the Late Dispatch Rate definition and its owner.",
+        provider: "deterministic",
+        connectionIds: [connection.body.id],
+        continueOnError: true
+      });
+      expect(mission.status).toBe(201);
+      expect(mission.body).toMatchObject({
+        status: "completed",
+        provider: "deterministic",
+        requestedConnectionIds: [connection.body.id],
+        summary: { connectionsAttempted: 1, completedSyncs: 1, failedSyncs: 0 }
+      });
+      expect(mission.body.summary.resourcesDiscovered).toBeGreaterThan(0);
+      expect(mission.body.discoveryRun.events.some((event: { tool: string }) => event.tool === "source_registry.inspect")).toBe(true);
+
+      const history = await request(app).get("/api/discovery/missions");
+      expect(history.status).toBe(200);
+      expect(history.body[0].id).toBe(mission.body.id);
+      const audit = await request(app).get("/api/audit/events");
+      expect(audit.body.some((event: { action: string; target: string }) => event.action === "source_discovery.mission" && event.target === mission.body.id)).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("binds execution to an exact reviewed plan and ignores caller-supplied approval flags", async () => {
-    const { app } = testApp();
+    const { app } = await testAppWithWritableSource();
     const planResponse = await request(app).post("/api/business/actions/plan").send({
-      intent: "Align Failed Payment Rate definition across Finance and Billing",
+      intent: "Set order ORD-API status to dispatched",
       mode: "autonomous",
       maxAutonomousRisk: "medium"
     });
@@ -170,7 +232,7 @@ describe("Semantic Junkyard HTTP boundary", () => {
     expect(executed.body.status).toBe("verified");
 
     const otherPlan = await request(app).post("/api/business/actions/plan").send({
-      intent: "Make Billing Pipeline to Revenue Mart traceable end-to-end",
+      intent: "Set order ORD-API status to ready",
       mode: "autonomous",
       maxAutonomousRisk: "medium"
     });
@@ -217,20 +279,6 @@ describe("Semantic Junkyard HTTP boundary", () => {
     expect(billing.text).toContain("[masked]");
     expect(billing.text).not.toContain("customer_id");
 
-    const sensitiveIntent = "Align Failed Payment Rate customer_id definition across Finance and Billing";
-    const plan = await request(app).post("/api/business/actions/plan").send({
-      intent: sensitiveIntent,
-      mode: "autonomous",
-      maxAutonomousRisk: "medium"
-    });
-    await request(app).post("/api/business/actions/execute").send({
-      planId: plan.body.id,
-      planFingerprint: plan.body.fingerprint,
-      intent: sensitiveIntent,
-      mode: "autonomous",
-      maxAutonomousRisk: "medium",
-      idempotencyKey: `${plan.body.id}-sensitive`
-    });
     const operationalSurfaces = await Promise.all([
       request(app).get("/api/source-systems"),
       request(app).get("/api/business/actions/runs"),
@@ -238,7 +286,6 @@ describe("Semantic Junkyard HTTP boundary", () => {
     ]);
     for (const surface of operationalSurfaces) {
       expect(JSON.stringify(surface.body)).not.toContain("customer_id");
-      expect(JSON.stringify(surface.body)).toContain("[masked]");
     }
   });
 
@@ -253,4 +300,35 @@ describe("Semantic Junkyard HTTP boundary", () => {
 
 function testApp(overrides: Partial<RuntimeConfig> = {}) {
   return createApp(openMemoryDatabase(), { seed: true, runtimeConfig: { ...baseConfig, ...overrides } });
+}
+
+async function testAppWithWritableSource(
+  overrides: Partial<RuntimeConfig> = {},
+  writeMode: "autonomous" | "approval_required" = "autonomous"
+) {
+  const runtime = testApp(overrides);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-junkyard-api-source-"));
+  temporaryPaths.push(root);
+  const databasePath = path.join(root, "operations.sqlite");
+  const source = new Database(databasePath);
+  source.exec("CREATE TABLE orders (order_id TEXT PRIMARY KEY, dispatch_eligible INTEGER NOT NULL, status TEXT NOT NULL)");
+  source.prepare("INSERT INTO orders VALUES (?, ?, ?)").run("ORD-API", 1, "ready");
+  source.close();
+  const connection = runtime.engine.createSourceConnection({
+    name: "API Operations",
+    description: "Authoritative API integration fixture",
+    config: {
+      kind: "sqlite",
+      databasePath,
+      includeTables: ["orders"],
+      sampleRows: 1,
+      writeMode,
+      writeRules: [{ table: "orders", aliases: ["order"], keyColumn: "order_id", allowedColumns: ["status"], risk: "low" }]
+    }
+  });
+  await runtime.engine.syncSourceConnection(connection.id, {
+    objective: "Discover order dispatch eligibility and governed status actions.",
+    provider: "deterministic"
+  });
+  return runtime;
 }

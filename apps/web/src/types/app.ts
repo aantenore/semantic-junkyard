@@ -1,4 +1,5 @@
 import type {
+  AuditEvent,
   BusinessActionPlan,
   BusinessActionRun,
   CatalogSnapshot,
@@ -8,6 +9,7 @@ import type {
   ProviderConfig,
   SearchResult,
   SemanticProposal,
+  SourceDiscoveryMissionReport,
   SourceConnection,
   SourceResource,
   SourceSyncRun,
@@ -22,6 +24,8 @@ export type SnapshotSurface =
   | "provider"
   | "mcp"
   | "actionRuns"
+  | "auditEvents"
+  | "discoveryMissions"
   | "sourceSystems"
   | "sourceConnections"
   | "sourceResources"
@@ -53,6 +57,8 @@ export interface AppSnapshot {
   provider: ProviderConfig | null;
   mcp: McpCapabilitySnapshot | null;
   actionRuns: BusinessActionRun[];
+  auditEvents: AuditEvent[];
+  discoveryMissions: SourceDiscoveryMissionReport[];
   sourceSystems: SourceSystem[];
   sourceRecords: SourceSystemRecord[];
   sourceConnections: SourceConnection[];

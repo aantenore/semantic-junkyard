@@ -178,14 +178,20 @@ export class SourceManager {
     if (this.activeSyncConnectionIds.has(id)) {
       throw new DomainError("SYNC_ALREADY_RUNNING", `A synchronization is already running for source connection ${id}.`, 409);
     }
+    const leaseAcquiredAt = nowIso();
+    const staleBefore = new Date(Date.now() - 15 * 60 * 1_000).toISOString();
+    if (!this.connections.tryAcquireSyncLease(id, leaseAcquiredAt, staleBefore)) {
+      throw new DomainError("SYNC_ALREADY_RUNNING", `A synchronization is already running for source connection ${id}.`, 409);
+    }
     this.activeSyncConnectionIds.add(id);
     const run = this.newRun(connection.id, request.objective, request.provider);
     const events = run.events;
     try {
-      this.connections.saveConnection({ ...connection, status: "syncing", lastError: null, updatedAt: nowIso() });
       this.connections.saveSyncRun(run);
     } catch (error) {
       this.activeSyncConnectionIds.delete(id);
+      const message = error instanceof Error ? error.message : "Synchronization could not be started.";
+      this.connections.saveConnection({ ...connection, status: "error", lastError: message, updatedAt: nowIso() });
       throw error;
     }
 
@@ -207,36 +213,38 @@ export class SourceManager {
       );
       for (const warning of snapshot.warnings) this.addEvent(events, run.id, "profile", "Connector warning", warning, "warning");
 
-      const chunkIdsByExternalId = new Map<string, string[]>();
-      const retainedSourceIds: string[] = [];
-      for (const document of snapshot.documents) {
-        const resource = snapshot.resources.find((candidate) => candidate.externalId === document.resourceExternalId);
-        const result = ingestion.ingest({
-          ...document.request,
-          metadata: {
-            ...document.request.metadata,
-            connectionId: connection.id,
-            resourceExternalId: document.resourceExternalId,
-            resourceId: resource?.id ?? null,
-            sensitivity: resource?.sensitivity ?? "internal"
-          }
-        });
-        retainedSourceIds.push(result.source.id);
-        chunkIdsByExternalId.set(document.resourceExternalId, result.chunks.map((chunk) => chunk.id));
-      }
-      this.semanticRepository.pruneConnectionEvidence(connection.id, retainedSourceIds);
-      const resources = snapshot.resources.map((resource) => ({
-        ...resource,
-        evidenceChunkIds: chunkIdsByExternalId.get(resource.externalId) ?? resource.evidenceChunkIds
-      }));
-      this.connections.replaceResources(connection.id, resources);
-      this.addEvent(events, run.id, "parse", "Evidence materialized", `${snapshot.documents.length} source documents were indexed with provenance-preserving resource links.`, "success");
+      const { resources, assets, currentProposalIds } = this.semanticRepository.transaction(() => {
+        const chunkIdsByExternalId = new Map<string, string[]>();
+        const retainedSourceIds: string[] = [];
+        for (const document of snapshot.documents) {
+          const resource = snapshot.resources.find((candidate) => candidate.externalId === document.resourceExternalId);
+          const result = ingestion.ingest({
+            ...document.request,
+            metadata: {
+              ...document.request.metadata,
+              connectionId: connection.id,
+              resourceExternalId: document.resourceExternalId,
+              resourceId: resource?.id ?? null,
+              sensitivity: resource?.sensitivity ?? "internal"
+            }
+          });
+          retainedSourceIds.push(result.source.id);
+          chunkIdsByExternalId.set(document.resourceExternalId, result.chunks.map((chunk) => chunk.id));
+        }
+        this.semanticRepository.pruneConnectionEvidence(connection.id, retainedSourceIds);
+        const materializedResources = snapshot.resources.map((resource) => ({
+          ...resource,
+          evidenceChunkIds: chunkIdsByExternalId.get(resource.externalId) ?? resource.evidenceChunkIds
+        }));
+        this.connections.replaceResources(connection.id, materializedResources);
 
-      const resourceByExternalId = new Map(resources.map((resource) => [resource.externalId, resource]));
-      const catalog = connectionCatalogSnapshot(connection.id, snapshot, resourceByExternalId);
-      const assets = catalog.assets;
-      this.semanticRepository.replaceCatalogObservations(connection.id, catalog);
-      const currentProposalIds = this.publishStructuralGraph(connection, resources, snapshot.relations, run.id);
+        const resourceByExternalId = new Map(materializedResources.map((resource) => [resource.externalId, resource]));
+        const catalog = connectionCatalogSnapshot(connection.id, snapshot, resourceByExternalId);
+        this.semanticRepository.replaceCatalogObservations(connection.id, catalog);
+        const proposalIds = this.publishStructuralGraph(connection, materializedResources, snapshot.relations, run.id);
+        return { resources: materializedResources, assets: catalog.assets, currentProposalIds: proposalIds };
+      });
+      this.addEvent(events, run.id, "parse", "Evidence materialized", `${snapshot.documents.length} source documents were indexed with provenance-preserving resource links.`, "success");
 
       let modelProposalCount = 0;
       let enrichmentFailed = false;
@@ -247,12 +255,15 @@ export class SourceManager {
         } else {
           try {
             const enrichment = await this.enricher.enrich(request.objective, enrichableResources);
-            for (const candidate of enrichment.candidates) {
-              const proposal = this.connections.saveProposal(this.proposalFromEnrichment(connection.id, run.id, candidate));
-              this.applyProposalLifecycle(proposal);
-              currentProposalIds.push(proposal.id);
-              modelProposalCount += 1;
-            }
+            const proposalIds = this.semanticRepository.transaction(() =>
+              enrichment.candidates.map((candidate) => {
+                const proposal = this.connections.saveProposal(this.proposalFromEnrichment(connection.id, run.id, candidate));
+                this.applyProposalLifecycle(proposal);
+                return proposal.id;
+              })
+            );
+            currentProposalIds.push(...proposalIds);
+            modelProposalCount = proposalIds.length;
             this.addEvent(
               events,
               run.id,
@@ -281,8 +292,11 @@ export class SourceManager {
         this.addEvent(events, run.id, "extract", "Local model enrichment skipped", "No observed resources had materialized evidence chunks, so no evidence-bound model proposal could be requested.", "warning");
       }
 
-      const superseded = this.connections.supersedeMissingProposals(connection.id, currentProposalIds, run.id, nowIso());
-      for (const proposal of superseded) this.applyProposalLifecycle(proposal);
+      const superseded = this.semanticRepository.transaction(() => {
+        const stale = this.connections.supersedeMissingProposals(connection.id, currentProposalIds, run.id, nowIso());
+        for (const proposal of stale) this.applyProposalLifecycle(proposal);
+        return stale;
+      });
       if (superseded.length > 0) {
         this.addEvent(events, run.id, "propose", "Stale semantic assertions superseded", `${superseded.length} assertions were not emitted by the latest source observation and were removed from active navigation.`, "warning");
       }
@@ -306,13 +320,15 @@ export class SourceManager {
         `${resources.length} resources, ${assets.length} governed assets, and ${proposals.filter((proposal) => proposal.status === "proposed").length} reviewable proposals are now available.`,
         "success"
       );
-      this.connections.saveSyncRun(completed);
-      this.connections.saveConnection({ ...connection, status: completed.status === "partial" ? "degraded" : "ready", lastSyncAt: completedAt, lastError: null, updatedAt: completedAt });
-      this.semanticRepository.audit("system", "source_connection.sync", connection.id, completed.status, {
-        runId: run.id,
-        resources: resources.length,
-        assets: assets.length,
-        provider: request.provider
+      this.semanticRepository.transaction(() => {
+        this.connections.saveSyncRun(completed);
+        this.connections.saveConnection({ ...connection, status: completed.status === "partial" ? "degraded" : "ready", lastSyncAt: completedAt, lastError: null, updatedAt: completedAt });
+        this.semanticRepository.audit("system", "source_connection.sync", connection.id, completed.status, {
+          runId: run.id,
+          resources: resources.length,
+          assets: assets.length,
+          provider: request.provider
+        });
       });
       return completed;
     } catch (error) {
@@ -320,8 +336,10 @@ export class SourceManager {
       const message = error instanceof Error ? error.message : "Source synchronization failed.";
       this.addEvent(events, run.id, "complete", "Synchronization failed", message, "error");
       const failed: SourceSyncRun = { ...run, status: "failed", completedAt, events };
-      this.connections.saveSyncRun(failed);
-      this.connections.saveConnection({ ...connection, status: "error", lastError: message, updatedAt: completedAt });
+      this.semanticRepository.transaction(() => {
+        this.connections.saveSyncRun(failed);
+        this.connections.saveConnection({ ...connection, status: "error", lastError: message, updatedAt: completedAt });
+      });
       throw error;
     } finally {
       this.activeSyncConnectionIds.delete(id);
@@ -437,7 +455,30 @@ export class SourceManager {
       after: this.recordParameter(target.parameters.after) ?? {},
       parameters: { ...target.parameters, intent: request.intent }
     };
-    return connector.executeAction(connection, candidate);
+    const result = connector.executeAction(connection, candidate);
+    if (!result.postconditionPassed) return result;
+
+    // Refresh the observed source projection only after the connector has reread and
+    // verified its own postcondition. Existing evidence remains bound until the next
+    // full synchronization rematerializes source documents.
+    const previousResources = new Map(
+      this.connections.listResources(connection.id).map((resource) => [resource.externalId, resource])
+    );
+    const observed = connector.discover(connection);
+    const refreshedResources = observed.resources.map((resource) => ({
+      ...resource,
+      evidenceChunkIds: previousResources.get(resource.externalId)?.evidenceChunkIds ?? resource.evidenceChunkIds
+    }));
+    this.connections.replaceResources(connection.id, refreshedResources);
+    return {
+      ...result,
+      metadata: {
+        ...result.metadata,
+        authoritativeRediscovery: true,
+        observedResources: refreshedResources.length,
+        sourceCheckpoint: observed.checkpoint
+      }
+    };
   }
 
   counts(): { connections: number; resources: number; proposals: number } {

@@ -1,8 +1,9 @@
 import type Database from "better-sqlite3";
-import { GraphAnnotationSchema } from "@semantic-junkyard/shared";
+import { BusinessActionPlanSchema, GraphAnnotationSchema, SourceDiscoveryMissionReportSchema } from "@semantic-junkyard/shared";
 import type {
   AuditEvent,
   BusinessActionApproval,
+  BusinessActionPlan,
   BusinessActionRun,
   CatalogSnapshot,
   Chunk,
@@ -25,6 +26,7 @@ import type {
   SemanticAsset,
   SemanticContract,
   SourceArtifact,
+  SourceDiscoveryMissionReport,
   SourceSystemRecord,
   SystemStatus
 } from "@semantic-junkyard/shared";
@@ -112,6 +114,10 @@ interface BusinessActionRunRow {
   completed_at: string | null;
 }
 
+interface BusinessActionPlanRow {
+  plan: string;
+}
+
 interface BusinessActionApprovalRow {
   id: string;
   plan_id: string;
@@ -121,6 +127,10 @@ interface BusinessActionApprovalRow {
   status: BusinessActionApproval["status"];
   created_at: string;
   consumed_at: string | null;
+}
+
+interface SourceDiscoveryMissionRow {
+  report: string;
 }
 
 interface AuditEventRow {
@@ -547,7 +557,7 @@ export class SemanticRepository {
     };
   }
 
-  lexicalSearch(query: string, topK: number): Array<SearchResult & { rawRank: number }> {
+  lexicalSearch(query: string, topK: number): Array<Omit<SearchResult, "evidenceClass"> & { rawRank: number }> {
     const ftsQuery = query
       .replace(/[^\p{L}\p{N}\s_-]+/gu, " ")
       .trim()
@@ -784,6 +794,45 @@ export class SemanticRepository {
     return rows.map((row) => this.toSourceSystemRecord(row));
   }
 
+  saveSourceDiscoveryMission(report: SourceDiscoveryMissionReport): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO source_discovery_missions
+         (id, objective, provider, status, report, started_at, completed_at)
+         VALUES (@id, @objective, @provider, @status, @report, @startedAt, @completedAt)`
+      )
+      .run({
+        id: report.id,
+        objective: report.objective,
+        provider: report.provider,
+        status: report.status,
+        report: encodeJson(report),
+        startedAt: report.startedAt,
+        completedAt: report.completedAt
+      });
+  }
+
+  listSourceDiscoveryMissions(limit = 12): SourceDiscoveryMissionReport[] {
+    const rows = this.db
+      .prepare("SELECT report FROM source_discovery_missions ORDER BY started_at DESC LIMIT ?")
+      .all(Math.min(Math.max(limit, 1), 100)) as SourceDiscoveryMissionRow[];
+    return rows.map((row) => SourceDiscoveryMissionReportSchema.parse(decodeJson(row.report, {})));
+  }
+
+  saveBusinessActionPlan(plan: BusinessActionPlan): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO business_action_plans (id, fingerprint, plan, created_at)
+         VALUES (@id, @fingerprint, @plan, @createdAt)`
+      )
+      .run({ id: plan.id, fingerprint: plan.fingerprint, plan: encodeJson(plan), createdAt: plan.createdAt });
+  }
+
+  getBusinessActionPlan(id: string): BusinessActionPlan | null {
+    const row = this.db.prepare("SELECT plan FROM business_action_plans WHERE id = ?").get(id) as BusinessActionPlanRow | undefined;
+    return row ? BusinessActionPlanSchema.parse(decodeJson(row.plan, {})) : null;
+  }
+
   saveBusinessActionRun(run: BusinessActionRun): void {
     this.db
       .prepare(
@@ -899,8 +948,14 @@ export class SemanticRepository {
       .run(`audit_${nanoid(12)}`, actor.slice(0, 255), action.slice(0, 255), target.slice(0, 1_000), decision.slice(0, 100), encodeJson(metadata), nowIso());
   }
 
-  listAuditEvents(limit = 100): AuditEvent[] {
-    const rows = this.db.prepare("SELECT * FROM audit_log ORDER BY created_at DESC LIMIT ?").all(Math.min(Math.max(limit, 1), 250)) as AuditEventRow[];
+  listAuditEvents(limit = 100, actions: string[] = []): AuditEvent[] {
+    const boundedLimit = Math.min(Math.max(limit, 1), 250);
+    const normalizedActions = [...new Set(actions)].slice(0, 20);
+    const rows = normalizedActions.length > 0
+      ? (this.db
+          .prepare(`SELECT * FROM audit_log WHERE action IN (${normalizedActions.map(() => "?").join(", ")}) ORDER BY created_at DESC LIMIT ?`)
+          .all(...normalizedActions, boundedLimit) as AuditEventRow[])
+      : (this.db.prepare("SELECT * FROM audit_log ORDER BY created_at DESC LIMIT ?").all(boundedLimit) as AuditEventRow[]);
     return rows.map((row) => ({
       id: row.id,
       actor: row.actor,

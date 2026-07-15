@@ -24,6 +24,7 @@ import {
   runProductConversation,
   type ConversationArtifact,
   type ConversationEvent,
+  type GroundedAnswer,
   type ConversationMode,
   type ConversationStatus,
   type MessageKind,
@@ -48,7 +49,7 @@ import "./styles.css";
 
 const PRODUCT_APP_URL = import.meta.env.VITE_PRODUCT_URL || "http://localhost:5173";
 const POC_APP_URL = import.meta.env.VITE_POC_URL || globalThis.location.href;
-const DEFAULT_REQUEST = "Set order ORD-1001 status to dispatched";
+const DEFAULT_REQUEST = "Explain which governed source defines dispatch eligibility for order ORD-1001";
 
 interface ConversationMessage extends NarrationEvent {
   id: string;
@@ -62,8 +63,8 @@ function App() {
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [input, setInput] = useState(DEFAULT_REQUEST);
   const [activeRequest, setActiveRequest] = useState(DEFAULT_REQUEST);
-  const [provider, setProvider] = useState<IntentInterpreterProvider>("local-huggingface");
-  const [conversationMode, setConversationMode] = useState<ConversationMode>("autonomous");
+  const [provider, setProvider] = useState<IntentInterpreterProvider>("deterministic");
+  const [conversationMode, setConversationMode] = useState<ConversationMode>("read_only");
   const [conversationStatus, setConversationStatus] = useState<ConversationStatus>("idle");
   const [conversationError, setConversationError] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([
@@ -85,6 +86,7 @@ function App() {
   const [initialEvidence, setInitialEvidence] = useState<EvidenceSpan | null>(null);
   const [refreshedEvidence, setRefreshedEvidence] = useState<EvidenceSpan | null>(null);
   const [permissions, setPermissions] = useState<PermissionEnvelope | null>(null);
+  const [groundedAnswer, setGroundedAnswer] = useState<GroundedAnswer | null>(null);
   const [plan, setPlan] = useState<BusinessActionPlan | null>(null);
   const [run, setRun] = useState<BusinessActionRun | null>(null);
   const [discoveryTitle, setDiscoveryTitle] = useState("waiting");
@@ -186,6 +188,9 @@ function App() {
       case "permissions":
         setPermissions(artifact.value);
         break;
+      case "answer":
+        setGroundedAnswer(artifact.value);
+        break;
       case "plan":
         setPlan(artifact.value);
         break;
@@ -248,6 +253,7 @@ function App() {
     setInitialEvidence(null);
     setRefreshedEvidence(null);
     setPermissions(null);
+    setGroundedAnswer(null);
     setPlan(null);
     setRun(null);
     setDiscoveryTitle("waiting");
@@ -390,7 +396,7 @@ function App() {
             />
             <button className="primary-command" disabled={conversationBusy || input.trim().length === 0}>
               {conversationBusy ? <Loader2 className="spin-icon" size={16} /> : <Send size={16} />}
-              {conversationBusy ? "Running" : "Ask product"}
+              {conversationBusy ? "Running" : conversationMode === "autonomous" ? "Plan & execute" : conversationMode === "plan_only" ? "Build plan" : "Ask product"}
             </button>
           </form>
 
@@ -410,6 +416,23 @@ function App() {
                 </div>
               </article>
             ))}
+            {groundedAnswer ? (
+              <section className="grounded-answer" aria-label="Grounded answer with citations">
+                <strong>Answer contract</strong>
+                <p>{groundedAnswer.answer}</p>
+                <ul>
+                  {groundedAnswer.claims.map((claim) => (
+                    <li key={`${claim.text}:${claim.citationChunkIds.join(":")}`}>
+                      <span>{claim.text}</span>
+                      {claim.citationChunkIds.map((chunkId) => (
+                        <a key={chunkId} href={`#poc-evidence-${chunkId}`}>{chunkId}</a>
+                      ))}
+                    </li>
+                  ))}
+                </ul>
+                <small>{groundedAnswer.boundary}</small>
+              </section>
+            ) : null}
           </div>
         </section>
 
@@ -432,7 +455,7 @@ function App() {
             </div>
             <div className="inline-facts">
               <span>Semantic chunks <strong>{snapshot?.status.chunks ?? 0}</strong></span>
-              <span>Provider <strong>{snapshot?.provider.kind ?? "waiting"}</strong></span>
+              <span>Semantic runtime <strong>{snapshot?.provider.kind ?? "waiting"}</strong></span>
             </div>
           </section>
 
@@ -527,7 +550,7 @@ function App() {
             ) : null}
             <div className="evidence-list">
               {evidenceItems.length > 0 ? evidenceItems.map((item) => (
-                <div className="evidence-row" key={item.chunkId}>
+                <div className="evidence-row" id={`poc-evidence-${item.chunkId}`} key={item.chunkId}>
                   <strong>{item.sourceName}</strong>
                   <p>{item.text}</p>
                   <small>{item.chunkId}</small>
@@ -551,8 +574,20 @@ function App() {
               <div><span>Chunks</span><strong>{refreshedChunks}</strong></div>
             </div>
             {displayedPlan ? (
-              <div className="target-list">
-                {displayedPlan.targets.map((target) => (
+              <>
+                <div className="plan-proof" role="group" aria-label="Plan identity and evidence binding">
+                  <dl>
+                    <div><dt>Plan ID</dt><dd>{displayedPlan.id}</dd></div>
+                    <div><dt>Principal</dt><dd>{displayedPlan.principal.actor} / {displayedPlan.principal.clearance}</dd></div>
+                    <div><dt>Run ID</dt><dd>{run?.id ?? "not executed"}</dd></div>
+                    <div><dt>Continuity</dt><dd>{run ? (run.plan.id === displayedPlan.id && run.plan.fingerprint === displayedPlan.fingerprint ? "executed fingerprint matches reviewed fingerprint" : "identity mismatch") : "awaiting execution"}</dd></div>
+                  </dl>
+                  <span>Full plan fingerprint</span>
+                  <code>{displayedPlan.fingerprint}</code>
+                  <small>{uniqueValues(displayedPlan.targets.flatMap((target) => target.evidenceChunkIds)).length} bound evidence chunks</small>
+                </div>
+                <div className="target-list">
+                  {displayedPlan.targets.map((target) => (
                   <div className="target-row" key={target.stepId}>
                     <div className="target-heading">
                       <div>
@@ -567,8 +602,9 @@ function App() {
                       <pre>{formatJson({ before: target.diff.before, after: target.diff.after })}</pre>
                     </details>
                   </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              </>
             ) : <EmptyState text="Read-only turns do not create a business-action plan." />}
 
             {reflectedDetails.length > 0 ? (
@@ -717,6 +753,10 @@ function formatValue(value: unknown): string | null {
 
 function formatTimestamp(value: string): string {
   return new Date(value).toLocaleTimeString();
+}
+
+function uniqueValues(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 declare global {
