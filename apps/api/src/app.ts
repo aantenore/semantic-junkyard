@@ -140,7 +140,7 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
           durationMs: Number((performance.now() - startedAt).toFixed(2))
         });
       } catch (error) {
-        console.error(`[${String(response.locals.requestId ?? "unknown")}] Failed to persist request audit`, error);
+        console.error("Failed to persist request audit", String(response.locals.requestId ?? "unknown"), error);
       }
     });
     next();
