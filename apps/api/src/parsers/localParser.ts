@@ -1,10 +1,21 @@
 import type { DocumentElement } from "@semantic-junkyard/shared";
 import { stableId } from "../core/hash.js";
-import { normalizeWhitespace, stripHtml } from "../core/text.js";
+import {
+  DEFAULT_HTML_TEXT_LIMITS,
+  normalizeWhitespace,
+  stripHtml,
+  validateHtmlTextLimits,
+  type HtmlTextLimits
+} from "../core/text.js";
 import type { Parser } from "./parser.js";
 
 export class LocalTextParser implements Parser {
   id = "parser.local-text-markdown-html";
+  private readonly htmlTextLimits: HtmlTextLimits;
+
+  constructor(htmlTextLimits: Readonly<HtmlTextLimits> = DEFAULT_HTML_TEXT_LIMITS) {
+    this.htmlTextLimits = validateHtmlTextLimits(htmlTextLimits);
+  }
 
   supports(mimeType: string): boolean {
     return [
@@ -22,7 +33,9 @@ export class LocalTextParser implements Parser {
   }
 
   parse(input: { sourceId: string; text: string; mimeType: string }): DocumentElement[] {
-    const normalized = normalizeWhitespace(input.mimeType === "text/html" ? stripHtml(input.text) : input.text);
+    const normalized = normalizeWhitespace(
+      input.mimeType === "text/html" ? stripHtml(input.text, this.htmlTextLimits) : input.text
+    );
     const blocks = normalized.split(/\n{2,}/).filter((block) => block.trim().length > 0);
     const elements: DocumentElement[] = [];
     let cursor = 0;

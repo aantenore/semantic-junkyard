@@ -38,6 +38,7 @@ export interface SemanticRuntime {
 export interface SemanticRuntimeOptions {
   seed?: boolean;
   maxAutonomousRisk?: RuntimeConfig["maxAutonomousRisk"];
+  htmlTextLimits?: RuntimeConfig["htmlTextLimits"];
   sourceSystems?: SourceSystem[];
   connectors?: SourceConnector[];
   semanticEnricher?: SemanticEnrichmentProvider | null;
@@ -77,6 +78,7 @@ export function createSemanticRuntime(db: Database.Database, options: SemanticRu
   });
   const engine = new SemanticEngine(repository, {
     maxAutonomousRisk: options.maxAutonomousRisk,
+    htmlTextLimits: options.htmlTextLimits,
     sourceSystems: options.sourceSystems ?? loadSourceSystems(),
     sourceManager
   });
@@ -96,6 +98,7 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
   const runtime = createSemanticRuntime(db, {
     seed: seedLegacyDemo,
     maxAutonomousRisk: options.maxAutonomousRisk ?? config.maxAutonomousRisk,
+    htmlTextLimits: options.htmlTextLimits ?? config.htmlTextLimits,
     sourceSystems: options.sourceSystems ?? (config.sourceSystemsFile ? loadSourceSystems(config.sourceSystemsFile) : seedLegacyDemo ? loadSourceSystems() : []),
     connectors: options.connectors,
     semanticEnricher: options.semanticEnricher

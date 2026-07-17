@@ -51,7 +51,7 @@ import { HybridQueryPlanner } from "../indexing/queryPlanner.js";
 import { LocalTextParser } from "../parsers/localParser.js";
 import { nowIso, sha256, stableId } from "./hash.js";
 import { DomainError } from "./errors.js";
-import { summarize, tokenize } from "./text.js";
+import { summarize, tokenize, type HtmlTextLimits } from "./text.js";
 import { PolicyEngine } from "../storage/policy.js";
 import type { ActorContext } from "../storage/policy.js";
 import type { SemanticRepository } from "../storage/repository.js";
@@ -67,6 +67,7 @@ export interface SemanticEngineOptions {
   maxAutonomousRisk?: Exclude<RiskLevel, "blocked">;
   sourceSystems?: SourceSystem[];
   sourceManager?: SourceManager;
+  htmlTextLimits?: Readonly<HtmlTextLimits>;
 }
 
 class BusinessActionExecutionFailure extends Error {
@@ -102,7 +103,7 @@ const BUSINESS_ACTION_POLICY_VERSION = "business-action-policy-v2";
 
 export class SemanticEngine {
   private readonly connector = new InlineTextConnector();
-  private readonly parser = new LocalTextParser();
+  private readonly parser: LocalTextParser;
   private readonly chunker = new SemanticWindowChunker();
   private readonly extractor = new DeterministicSemanticExtractor();
   private readonly planner: HybridQueryPlanner;
@@ -115,6 +116,7 @@ export class SemanticEngine {
   private readonly sourceManager?: SourceManager;
 
   constructor(private readonly repository: SemanticRepository, options: SemanticEngineOptions = {}) {
+    this.parser = new LocalTextParser(options.htmlTextLimits);
     this.maxAutonomousRisk = options.maxAutonomousRisk ?? "medium";
     this.configuredSourceSystems = structuredClone(options.sourceSystems ?? loadSourceSystems());
     this.sourceManager = options.sourceManager;
