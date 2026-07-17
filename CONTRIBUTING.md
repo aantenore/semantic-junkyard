@@ -15,7 +15,7 @@ Semantic Junkyard is intended to become modular, but the current runtime still c
 
 ## Local Development
 
-Node.js 20 or later is required. Install exactly from the lockfile:
+Node.js 20.19 or later is required. Install exactly from the lockfile:
 
 ```bash
 npm ci
