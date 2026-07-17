@@ -191,6 +191,7 @@ The generated OpenAPI document is at `GET /api/openapi.json`. Liveness is expose
 - Agent integration: intent interpretation, manifest, MCP descriptors, discovery runs, audit events, and the bundled local PoC route.
 
 Request bodies are strict Zod contracts. Unknown keys, including a caller-supplied `approved` flag, are rejected.
+HTML ingestion also fails closed when configurable input-length, tree-depth, or child-node limits are exceeded; the safe defaults are documented in `.env.example`.
 
 Every business-action plan is persisted before it can be approved or executed. Its identity includes the authenticated actor, normalized roles, clearance, and policy version. Execution by a different principal returns `PLAN_PRINCIPAL_MISMATCH`; a missing or stale plan cannot be reconstructed from caller input alone.
 

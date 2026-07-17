@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  HTML_TEXT_LIMIT_BOUNDS,
+  type HtmlTextLimits
+} from "../core/text.js";
 
 const DEFAULT_CORS_ORIGINS = [
   "http://localhost:5173",
@@ -14,6 +18,18 @@ const EnvironmentSchema = z.object({
   SEMANTIC_JUNKYARD_SOURCE_SYSTEMS_FILE: z.string().trim().min(1).optional().or(z.literal("")),
   SEMANTIC_JUNKYARD_CORS_ORIGINS: z.string().default(DEFAULT_CORS_ORIGINS),
   SEMANTIC_JUNKYARD_REQUEST_BODY_LIMIT: z.string().regex(/^\d+(?:kb|mb)$/i).default("5mb"),
+  SEMANTIC_JUNKYARD_HTML_MAX_INPUT_LENGTH: z.coerce.number().int()
+    .min(HTML_TEXT_LIMIT_BOUNDS.maxInputLength.minimum)
+    .max(HTML_TEXT_LIMIT_BOUNDS.maxInputLength.maximum)
+    .default(HTML_TEXT_LIMIT_BOUNDS.maxInputLength.default),
+  SEMANTIC_JUNKYARD_HTML_MAX_DEPTH: z.coerce.number().int()
+    .min(HTML_TEXT_LIMIT_BOUNDS.maxDepth.minimum)
+    .max(HTML_TEXT_LIMIT_BOUNDS.maxDepth.maximum)
+    .default(HTML_TEXT_LIMIT_BOUNDS.maxDepth.default),
+  SEMANTIC_JUNKYARD_HTML_MAX_CHILD_NODES: z.coerce.number().int()
+    .min(HTML_TEXT_LIMIT_BOUNDS.maxChildNodes.minimum)
+    .max(HTML_TEXT_LIMIT_BOUNDS.maxChildNodes.maximum)
+    .default(HTML_TEXT_LIMIT_BOUNDS.maxChildNodes.default),
   SEMANTIC_JUNKYARD_MAX_AUTONOMOUS_RISK: z.enum(["low", "medium", "high"]).default("medium"),
   SEMANTIC_JUNKYARD_ENABLE_LOCAL_POC: z.enum(["true", "false"]).default("true"),
   SEMANTIC_JUNKYARD_BOOTSTRAP_REFERENCE_SOURCES: z.enum(["true", "false"]).default("true"),
@@ -29,6 +45,7 @@ export interface RuntimeConfig {
   sourceSystemsFile?: string;
   corsOrigins: string[];
   requestBodyLimit: string;
+  htmlTextLimits: HtmlTextLimits;
   maxAutonomousRisk: "low" | "medium" | "high";
   enableLocalPoc: boolean;
   bootstrapReferenceSources: boolean;
@@ -76,6 +93,11 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env, 
     sourceSystemsFile: parsed.SEMANTIC_JUNKYARD_SOURCE_SYSTEMS_FILE || undefined,
     corsOrigins,
     requestBodyLimit: parsed.SEMANTIC_JUNKYARD_REQUEST_BODY_LIMIT,
+    htmlTextLimits: {
+      maxInputLength: parsed.SEMANTIC_JUNKYARD_HTML_MAX_INPUT_LENGTH,
+      maxDepth: parsed.SEMANTIC_JUNKYARD_HTML_MAX_DEPTH,
+      maxChildNodes: parsed.SEMANTIC_JUNKYARD_HTML_MAX_CHILD_NODES
+    },
     maxAutonomousRisk: parsed.SEMANTIC_JUNKYARD_MAX_AUTONOMOUS_RISK,
     enableLocalPoc: parsed.SEMANTIC_JUNKYARD_ENABLE_LOCAL_POC === "true",
     bootstrapReferenceSources: parsed.SEMANTIC_JUNKYARD_BOOTSTRAP_REFERENCE_SOURCES === "true",

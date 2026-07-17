@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import type { RuntimeConfig } from "./config/runtime.js";
+import { DEFAULT_HTML_TEXT_LIMITS } from "./core/text.js";
 import { openMemoryDatabase } from "./storage/database.js";
 
 const baseConfig: RuntimeConfig = {
@@ -14,6 +15,7 @@ const baseConfig: RuntimeConfig = {
   databasePath: ":memory:",
   corsOrigins: ["http://localhost:5173", "http://localhost:5174"],
   requestBodyLimit: "5mb",
+  htmlTextLimits: { ...DEFAULT_HTML_TEXT_LIMITS },
   maxAutonomousRisk: "medium",
   enableLocalPoc: true,
   bootstrapReferenceSources: false
@@ -295,6 +297,27 @@ describe("Semantic Junkyard HTTP boundary", () => {
     expect(tooLarge.status).toBe(413);
     expect(tooLarge.body.code).toBe("REQUEST_TOO_LARGE");
     expect((await request(app).get("/api/poc/local-agent?provider=deterministic")).status).toBe(404);
+  });
+
+  it("returns a controlled error for deeply nested HTML and remains healthy", async () => {
+    const { app } = testApp();
+    const deeplyNested = `${"<div>".repeat(5_000)}visible${"</div>".repeat(5_000)}`;
+    expect(deeplyNested.length).toBeLessThan(DEFAULT_HTML_TEXT_LIMITS.maxInputLength);
+
+    const rejected = await request(app).post("/api/ingest").send({
+      name: "deeply-nested.html",
+      mimeType: "text/html",
+      text: deeplyNested
+    });
+    expect(rejected.status).toBe(422);
+    expect(rejected.body).toMatchObject({ code: "HTML_STRUCTURE_LIMIT_EXCEEDED" });
+
+    expect((await request(app).get("/api/health")).status).toBe(200);
+    expect((await request(app).post("/api/ingest").send({
+      name: "bounded.html",
+      mimeType: "text/html",
+      text: "<p>Bounded semantic content</p>"
+    })).status).toBe(201);
   });
 });
 

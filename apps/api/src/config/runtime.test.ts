@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_HTML_TEXT_LIMITS } from "../core/text.js";
 import { loadRuntimeConfig } from "./runtime.js";
 
 describe("runtime configuration", () => {
@@ -6,8 +7,21 @@ describe("runtime configuration", () => {
     const config = loadRuntimeConfig({});
     expect(config.host).toBe("127.0.0.1");
     expect(config.bootstrapReferenceSources).toBe(true);
+    expect(config.htmlTextLimits).toEqual(DEFAULT_HTML_TEXT_LIMITS);
     expect(config.apiToken).toBeUndefined();
     expect(config.approvalToken).toBeUndefined();
+  });
+
+  it("accepts only bounded HTML parser limits", () => {
+    const config = loadRuntimeConfig({
+      SEMANTIC_JUNKYARD_HTML_MAX_INPUT_LENGTH: "1000000",
+      SEMANTIC_JUNKYARD_HTML_MAX_DEPTH: "64",
+      SEMANTIC_JUNKYARD_HTML_MAX_CHILD_NODES: "5000"
+    });
+
+    expect(config.htmlTextLimits).toEqual({ maxInputLength: 1_000_000, maxDepth: 64, maxChildNodes: 5_000 });
+    expect(() => loadRuntimeConfig({ SEMANTIC_JUNKYARD_HTML_MAX_DEPTH: "513" })).toThrow();
+    expect(() => loadRuntimeConfig({ SEMANTIC_JUNKYARD_HTML_MAX_CHILD_NODES: "50001" })).toThrow();
   });
 
   it("requires distinct agent and approver credentials whenever token auth is enabled", () => {
