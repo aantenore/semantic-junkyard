@@ -6,7 +6,7 @@ This guide runs the real Semantic Junkyard reference environment and explains wh
 
 Prerequisites:
 
-- Node.js 20 or later;
+- Node.js 20.19 or later;
 - npm;
 - Git;
 - macOS/Apple Silicon plus `uv` only for the optional local Hugging Face path.

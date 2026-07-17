@@ -1,3 +1,5 @@
+import { convert } from "html-to-text";
+
 export const STOP_WORDS = new Set([
   "a",
   "an",
@@ -42,14 +44,21 @@ export function normalizeWhitespace(value: string): string {
 }
 
 export function stripHtml(value: string): string {
-  return value
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">");
+  return convert(value, {
+    wordwrap: false,
+    selectors: [
+      { selector: "a", options: { ignoreHref: true } },
+      { selector: "h1", options: { uppercase: false } },
+      { selector: "h2", options: { uppercase: false } },
+      { selector: "h3", options: { uppercase: false } },
+      { selector: "h4", options: { uppercase: false } },
+      { selector: "h5", options: { uppercase: false } },
+      { selector: "h6", options: { uppercase: false } },
+      { selector: "img", format: "skip" },
+      { selector: "script", format: "skip" },
+      { selector: "style", format: "skip" }
+    ]
+  }).replaceAll("\u00a0", " ");
 }
 
 export function tokenize(value: string): string[] {
@@ -90,4 +99,3 @@ export function topTerms(texts: string[], limit = 12): Array<{ term: string; cou
     .slice(0, limit)
     .map(([term, count]) => ({ term, count }));
 }
-
