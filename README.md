@@ -139,7 +139,7 @@ Local Hugging Face generation through MLX is optional and has three bounded role
 
 ## Quick Start
 
-Prerequisites: Node.js 20 or later, npm, SQLite support supplied by the lockfile, and Git for the reference contract repository.
+Prerequisites: Node.js 20.19 or later, npm, SQLite support supplied by the lockfile, and Git for the reference contract repository.
 
 ```bash
 npm ci
