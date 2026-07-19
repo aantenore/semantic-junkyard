@@ -1,5 +1,40 @@
 # Semantic Junkyard
 
+## What this changes in the real world
+
+Important business knowledge is often scattered across documents, databases, and repositories. An
+AI agent may find a plausible answer but lose where it came from, or update the wrong record without
+checking the result. **Semantic Junkyard builds one searchable map across those sources while
+keeping the originals in charge, then makes every supported change pass through a reviewable plan
+and an authoritative readback.**
+
+### A concrete example
+
+An operations user asks an agent to mark order `ORD-1001` as dispatched. The system identifies the
+exact configured database row, records its current version, checks policy, performs the allowlisted
+update, and reads the row again. Only when the source itself says `dispatched` does the semantic map
+publish fresh evidence. If the row changed in the meantime, execution stops instead of overwriting
+someone else's work.
+
+Semantic Junkyard is for data, platform, and operations teams that want agents to work across
+existing knowledge sources without turning a model or a new catalog into the source of truth.
+
+| Feature | Practical benefit |
+| --- | --- |
+| Federated map across files, SQLite, and Git | People and agents can discover related knowledge without moving ownership away from existing systems. |
+| Source-linked evidence and provenance | An answer can show where a fact came from and which version was observed. |
+| Reviewable semantic proposals | Model suggestions remain suggestions until deterministic checks or a person accepts them. |
+| Exact change plans with policy and optional approval | A reviewer can see the target, expected change, and authorization context before a write. |
+| Authoritative post-write readback | Success means the requested state was observed at the real source, not merely that a connector returned `200 OK`. |
+| Read-only MCP defaults | An external agent starts with bounded discovery rather than silent write authority. |
+
+> **Maturity:** This is a local-first reference product, not a production multi-tenant platform.
+> It currently implements local filesystem, SQLite, and Git connectors with a single-node SQLite
+> control plane. Production IAM, tenant isolation, source-ACL propagation, high availability, and
+> managed cloud connectors remain outside the current implementation.
+
+## Technical scope
+
 Semantic Junkyard is a local-first reference implementation of an **agent-safe semantic federation and verified semantic-action protocol**.
 
 It is not another data catalog and it does not become the authority for connected data. It observes configured sources, preserves evidence and source identity, separates authoritative facts from reviewable semantic proposals, exposes bounded context to agents, and permits a change only through an exact capability contract:
