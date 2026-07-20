@@ -1,6 +1,6 @@
 {
   "name": "semantic-junkyard",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
   "private": true,
   "description": "Open-source verified semantic-action protocol for evidence-grounded discovery, governed source writeback, and authoritative readback.",
   "license": "Apache-2.0",
@@ -25,6 +25,7 @@
     "check": "npm run docs:check && npm run typecheck && npm test && npm run build",
     "mcp": "npm run mcp:build && npm run start -w apps/mcp",
     "mcp:build": "npm run build -w packages/shared && npm run build -w apps/api && npm run build -w apps/mcp",
+    "benchmark:reference": "npm run --silent build -w packages/shared && npm run --silent build -w apps/api && node benchmarks/reference.mjs",
     "poc:agent:mcp": "npm run build -w packages/shared && npm run build -w apps/api && npm run build -w apps/mcp && npm run poc:agent:mcp -w apps/mcp",
     "seed": "npm run seed -w apps/api",
     "poc:agent": "npm run poc:agent -w apps/api",
@@ -32,6 +33,8 @@
     "start": "npm run start -w apps/api"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "^12.5.0",
     "concurrently": "^9.2.1",
     "playwright": "^1.61.1",
     "typescript": "^5.9.3"

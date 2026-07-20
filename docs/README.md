@@ -10,6 +10,7 @@ This documentation explains the shipped local reference implementation. It disti
 | Start the apps and try the real reference cases | [Hands-on guide](user-guide.md) |
 | Define product scope, principles, and non-goals | [Product definition](product-definition.md) |
 | Inspect components, boundaries, and failure windows | [Architecture](architecture.md) |
+| Review assets, attackers, controls, and residual risks | [Threat model](threat-model.md) |
 | Integrate an AI agent over REST or MCP | [Agent contract](agent-contract.md) |
 | Implement or replace a connector or policy adapter | [Adapter contracts](adapter-contracts.md) |
 | Configure and evaluate local Hugging Face behavior | [Local models](local-models.md) |
@@ -30,5 +31,14 @@ Semantic Junkyard has two paths that share one governed control plane:
 The repository currently proves these behaviors with local filesystem, SQLite, and Git connectors, a single-node SQLite control-plane database, an Express API, two separate React applications, an MCP stdio server, deterministic semantic processing, and optional local Hugging Face inference through MLX.
 
 It does **not** claim production tenancy, IAM, source ACL propagation, high availability, distributed transactions, durable job orchestration, remote enterprise connectors, or automatic crash reconciliation. Those boundaries are detailed in [Architecture](architecture.md#current-deployment-limits).
+
+## Release Assurance
+
+The first alpha is distributed from source. Its CI gate installs the locked dependency graph,
+validates documentation, types, tests, and production builds, runs the browser acceptance path, and
+starts the built API and MCP server on Linux and Windows. The built-artifact smoke checks API
+liveness, readiness, OpenAPI, the MCP handshake, read-only tool discovery, and temporary-storage
+isolation. See the [changelog](../CHANGELOG.md) for the exact release contents and the
+[threat model](threat-model.md) for guarantees that the gate does not make.
 
 Return to the [project README](../README.md).

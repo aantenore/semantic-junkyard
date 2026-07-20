@@ -1,4 +1,4 @@
-import type { DiscoveryEvent, DiscoveryRun } from "@semantic-junkyard/shared";
+import { SEMANTIC_JUNKYARD_VERSION, type DiscoveryEvent, type DiscoveryRun } from "@semantic-junkyard/shared";
 import { nanoid } from "nanoid";
 import { nowIso } from "../core/hash.js";
 import { topTerms } from "../core/text.js";
@@ -108,7 +108,7 @@ export class DiscoveryAgent {
   manifest(): AgentManifest {
     return {
       name: "Semantic Junkyard Agent Access Layer",
-      version: "0.1.0",
+      version: SEMANTIC_JUNKYARD_VERSION,
       modelAgnostic: true,
       autonomyBoundary:
         "Agents may autonomously read policy-filtered metadata, search indexed content, traverse bounded graph neighborhoods, assemble evidence, and plan business actions. Configured writes may execute only against the exact reviewed plan fingerprint and server-side risk ceiling, and completion requires verified source reflection. Privileged, destructive, access-policy, secret, unsupported, or evidence-free actions are blocked.",

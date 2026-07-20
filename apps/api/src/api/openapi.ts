@@ -13,6 +13,7 @@ import {
   GraphNeighborsRequestSchema,
   IngestRequestSchema,
   SearchRequestSchema,
+  SEMANTIC_JUNKYARD_VERSION,
   SemanticProposalDecisionRequestSchema,
   SourceDiscoveryMissionRequestSchema,
   SourceResourceSearchRequestSchema,
@@ -52,7 +53,7 @@ export const openApiDocument = {
   openapi: "3.1.0",
   info: {
     title: "Semantic Junkyard API",
-    version: "0.1.0",
+    version: SEMANTIC_JUNKYARD_VERSION,
     description: "Agent-native semantic layer API. Write execution is bound to an exact plan fingerprint, server-side risk ceiling, idempotency key, and optional separately issued approval."
   },
   servers: [{ url: "http://127.0.0.1:8787", description: "Default local API" }],

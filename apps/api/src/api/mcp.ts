@@ -1,3 +1,4 @@
+import { SEMANTIC_JUNKYARD_VERSION } from "@semantic-junkyard/shared";
 import type { AgentManifest } from "../agent/discoveryAgent.js";
 
 export interface McpDescriptor {
@@ -84,7 +85,7 @@ export function mcpCapabilitySnapshot(manifest: AgentManifest) {
   return {
     server: {
       name: "semantic-junkyard-mcp",
-      version: "0.1.0",
+      version: SEMANTIC_JUNKYARD_VERSION,
       transport: "stdio",
       command: "node apps/mcp/dist/server.js",
       defaultAccess: "read_only",

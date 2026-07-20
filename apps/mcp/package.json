@@ -1,6 +1,7 @@
 {
   "name": "@semantic-junkyard/mcp",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
+  "private": true,
   "type": "module",
   "main": "dist/server.js",
   "bin": {
@@ -16,8 +17,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@semantic-junkyard/api": "0.1.0",
-    "@semantic-junkyard/shared": "0.1.0",
+    "@semantic-junkyard/api": "0.1.0-alpha.1",
+    "@semantic-junkyard/shared": "0.1.0-alpha.1",
     "zod": "^4.1.13"
   },
   "devDependencies": {

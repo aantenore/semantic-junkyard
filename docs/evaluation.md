@@ -16,14 +16,46 @@ Run the non-browser checks:
 npm run check
 ```
 
-`npm run check` runs type checking, API/MCP Vitest, and all production builds. MCP tests require built API/shared workspace exports, which the root scripts prepare.
+`npm run check` validates documentation, runs type checking and API/MCP Vitest, and creates all
+production builds. MCP tests require built API/shared workspace exports, which the root scripts
+prepare.
+
+Run the deterministic reference benchmark:
+
+```bash
+npm run benchmark:reference
+```
 
 Run browser checks separately:
 
 ```bash
-npx playwright install chromium
-npm run test:e2e
+npx --no-install playwright install chromium
+npx --no-install playwright test
 ```
+
+## Deterministic Reference Benchmark
+
+`benchmarks/reference.mjs` is a release regression gate over one versioned synthetic fixture. It
+exercises the shipped deterministic retrieval and SQLite action path without a hosted or local
+model. The gate requires:
+
+| Metric | Alpha threshold |
+| --- | --- |
+| Evidence recall at five | 7/7 expected items found across seven fixed queries |
+| Exact action target | 3/3 plans select the expected system, object, key, operation, and new value |
+| Unsupported-intent abstention | 3/3 destructive, unmapped, or unauthorized requests remain blocked without a source change |
+| False verified rate | 0/6 across a valid write, drifted readback, stale state, and three blocked requests |
+| Idempotent replay | 1/1 retry returns the same run and produces exactly one authoritative mutation |
+| Stale-precondition rejection | 1/1 concurrent source change is preserved and the requested update is not applied |
+
+The command exits nonzero when a case or aggregate threshold fails and emits machine-readable JSON.
+Optional `--timings` output is classified as hardware-dependent and is not a latency gate.
+
+The fixture is deliberately small and synthetic. Passing it does **not** establish general retrieval
+quality, cross-domain relevance, production safety, model quality, scalability, remote connector
+reliability, or superiority over another system. It catches deterministic regressions in a narrow,
+auditable reference path. A representative labeled corpus, adversarial cases, repeated runs, and
+deployment-specific service-level measurements remain future work.
 
 ## Source Connector Coverage
 
@@ -88,11 +120,12 @@ The local enrichment suite verifies strict provider-neutral proposal output, saf
 
 The deterministic/local-HF intent interpreter suite verifies deterministic output, prevention of model-invented mutation when the original request has no explicit action verb, and fail-closed malformed output.
 
-Current gaps:
+Current gaps beyond the fixed synthetic reference benchmark:
 
 - proposal precision, recall, and reviewer agreement are not measured against a labeled corpus;
 - no real MLX inference runs in the default suite;
-- no labeled benchmark measures proposal precision/recall, entity resolution, retrieval relevance, or model faithfulness;
+- no representative multi-domain benchmark measures proposal precision/recall, entity resolution,
+  retrieval quality, citation faithfulness, or model faithfulness;
 - prompt-injection defenses are schema/rule tested but not evaluated against a maintained adversarial corpus.
 
 The manual local-HF acceptance run must use `--no-fallback` and report `modelSummaryStatus: grounded`. The model selects only verified fact IDs; the deterministic renderer rejects malformed, duplicate, unknown, or invented selections.
@@ -153,7 +186,8 @@ A release candidate for the reference product should satisfy all of these:
 5. Exact-plan, approval, idempotency, stale-precondition, and postcondition-negative tests pass.
 6. MCP schemas remain strict and approval creation remains absent.
 7. Product and PoC Playwright flows claim completion only for `verified` runs.
-8. Documentation local links and cited official market links resolve.
+8. The deterministic reference benchmark passes every case and aggregate threshold.
+9. Documentation local links and cited official market links resolve.
 
 The manual product checklist is in [Reference workflow](reference-workflow.md).
 

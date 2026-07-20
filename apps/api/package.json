@@ -1,6 +1,7 @@
 {
   "name": "@semantic-junkyard/api",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
+  "private": true,
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -18,7 +19,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@semantic-junkyard/shared": "0.1.0",
+    "@semantic-junkyard/shared": "0.1.0-alpha.1",
     "better-sqlite3": "^12.5.0",
     "cors": "^2.8.5",
     "express": "^5.2.1",

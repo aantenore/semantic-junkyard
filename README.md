@@ -96,14 +96,14 @@ flowchart LR
   Connectors <-->|"discover, bounded commit, reread"| Git
 ```
 
-Three rules explain the system:
+Four rules explain the system:
 
 1. **The semantic layer is a map, not the source of truth.** Every useful statement keeps its source and evidence identity.
 2. **Models may suggest; deterministic controls decide.** Model output can become a reviewable proposal or a typed intent, never an approval or an unrestricted write.
 3. **A plan belongs to one authorization context.** Actor, roles, clearance, and policy version are persisted in the plan identity; another principal must create a new plan.
 4. **A write is complete only after authoritative readback.** A connector success response is insufficient; the expected postcondition must be observed from the source and reflected into fresh semantic evidence.
 
-Start with [How Semantic Junkyard works](docs/how-it-works.md), then use the [Hands-on guide](docs/user-guide.md) to run the real read-only, autonomous SQLite, and approval-gated Git workflows. The [documentation index](docs/README.md) provides paths for operators, agent builders, connector authors, and reviewers.
+Start with [How Semantic Junkyard works](docs/how-it-works.md), then use the [Hands-on guide](docs/user-guide.md) to run the real read-only, autonomous SQLite, and approval-gated Git workflows. The [documentation index](docs/README.md) provides paths for operators, agent builders, connector authors, and reviewers. Security reviewers should begin with the concrete [threat model](docs/threat-model.md).
 
 ## What The Product Is
 
@@ -181,6 +181,33 @@ npm ci
 npm run dev
 ```
 
+### Install the alpha from source
+
+The `v0.1.0-alpha.1` release is a locked source distribution, not an npm package. A clean install
+uses only the repository, the committed lockfile, Node.js 20.19 or later, npm, and Git:
+
+```bash
+git clone https://github.com/aantenore/semantic-junkyard.git
+cd semantic-junkyard
+git checkout v0.1.0-alpha.1
+npm ci
+npm run check
+npm run benchmark:reference
+node scripts/smoke-release.mjs
+```
+
+`npm run check` validates documentation, types, tests, and every production build. The reference
+benchmark then gates its fixed synthetic fixture at 7/7 relevant items retrieved in the top five,
+3/3 exact action targets, 3/3 unsupported-intent abstentions, 0/6 false verified outcomes, one
+idempotent replay, and one stale-precondition rejection. These numbers are a deterministic regression
+signal, not evidence of general retrieval quality, production safety, or comparative model
+performance. The final command starts the built artifacts in temporary storage, checks API health,
+readiness, and OpenAPI, then performs an MCP handshake and confirms the default tool set is read-only.
+CI repeats that release smoke on Linux and Windows and runs the browser path separately on Node.js
+22. See the [evaluation guide](docs/evaluation.md#deterministic-reference-benchmark),
+[changelog](CHANGELOG.md), and [threat model](docs/threat-model.md) before using the reference outside
+a local environment.
+
 `npm run dev` builds the shared contracts and starts the API, product workbench, and conversational PoC. The persistent API start reconciles the three deterministic reference connections and retries connections that are `configured`, `syncing`, `error`, missing a last sync, or missing published resources. Set `SEMANTIC_JUNKYARD_BOOTSTRAP_REFERENCE_SOURCES=false` to disable that bootstrap.
 
 Focused commands:
@@ -254,7 +281,7 @@ Example client configuration:
 
 The MCP server is read-only by default. It exposes bounded tools for permission explanation, resource/semantic search, entity and graph navigation, context/evidence retrieval, proposal listing, and action planning. Persisted discovery, configured-source synchronization, and business execution are registered only with `--allow-discovery`, `--allow-sync`, and `--allow-write` respectively. It exposes no tool for connection creation, proposal decisions, or approval creation. An `approvalId` may be consumed only if a human-facing API channel created it for the exact plan.
 
-Use `--db <path>` or `SEMANTIC_JUNKYARD_DB=<path>` to select the control-plane database, `--memory` for an in-memory seeded runtime, and `--no-seed` to disable that memory seed. Grant mutation flags independently and only to a trusted client. The bundled MCP PoC explicitly starts its private server with `--allow-write`. MCP does not inherit REST authentication or CORS. The spawned process has its operating-system filesystem authority, including access to local source paths stored in the selected database.
+Use `--db <relative-path>` or `SEMANTIC_JUNKYARD_DB=<relative-path>` to select a control-plane database inside the product-owned `apps/api/data` root. The default launchers do not accept an alternate root from the environment or command line; absolute, drive-qualified, traversal, file-URI, reserved-device, symbolic-link, multiply linked, and orphaned rollback/WAL sidecar layouts fail closed. Embedding hosts that need another location must call `openControlPlaneDatabase({ authorizedRoot, databasePath })` with an absolute, pre-existing real root and a relative database path. Use `--memory` for an in-memory seeded runtime and `--no-seed` to disable that memory seed. Grant mutation flags independently and only to a trusted client. The bundled MCP PoC explicitly starts its private server with `--allow-write`. MCP does not inherit REST authentication or CORS. The spawned process has its operating-system filesystem authority, including access to local source paths stored in the selected database.
 
 See [Agent contract](docs/agent-contract.md).
 

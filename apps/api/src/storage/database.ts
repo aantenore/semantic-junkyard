@@ -1,19 +1,37 @@
 import Database from "better-sqlite3";
 import fs from "node:fs";
-import path from "node:path";
+import {
+  prepareControlPlaneStorage,
+  sqliteSidecarPaths,
+  type ControlPlaneStorageOptions,
+  type ControlPlaneStoragePaths
+} from "./databasePathPolicy.js";
 
-export function openDatabase(filePath = process.env.SEMANTIC_JUNKYARD_DB ?? "data/semantic-junkyard.sqlite"): Database.Database {
-  const resolved = path.resolve(filePath);
-  fs.mkdirSync(path.dirname(resolved), { recursive: true });
-  const db = new Database(resolved);
+export interface OpenedControlPlaneDatabase extends ControlPlaneStoragePaths {
+  db: Database.Database;
+  databaseWasCreated: boolean;
+}
+
+export function openControlPlaneDatabase(options: ControlPlaneStorageOptions): OpenedControlPlaneDatabase {
+  const storage = prepareControlPlaneStorage(options);
+  let db: Database.Database;
+  try {
+    db = new Database(storage.databasePath, { fileMustExist: true });
+  } catch (error) {
+    if (storage.databaseWasCreated) removeNewDatabaseFiles(storage.databasePath);
+    throw error;
+  }
+
   try {
     db.pragma("journal_mode = WAL");
     db.pragma("busy_timeout = 5000");
     db.pragma("foreign_keys = ON");
     migrate(db);
-    return db;
+    setDatabaseModeWhereSupported(storage.databasePath);
+    return { db, ...storage };
   } catch (error) {
     db.close();
+    if (storage.databaseWasCreated) removeNewDatabaseFiles(storage.databasePath);
     throw error;
   }
 }
@@ -29,6 +47,33 @@ export function openMemoryDatabase(): Database.Database {
     db.close();
     throw error;
   }
+}
+
+function setDatabaseModeWhereSupported(databasePath: string): void {
+  try {
+    fs.chmodSync(databasePath, 0o600);
+  } catch (error) {
+    if (process.platform === "win32" && isNodeError(error) && error.code !== undefined && ["ENOSYS", "ENOTSUP", "EPERM"].includes(error.code)) {
+      return;
+    }
+    throw error;
+  }
+}
+
+function removeNewDatabaseFiles(databasePath: string): void {
+  for (const candidate of [databasePath, ...sqliteSidecarPaths(databasePath)]) {
+    try {
+      const status = fs.lstatSync(candidate);
+      if (status.isSymbolicLink() || !status.isFile() || status.nlink !== 1) continue;
+      fs.unlinkSync(candidate);
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "ENOENT") throw error;
+    }
+  }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }
 
 function migrate(db: Database.Database): void {

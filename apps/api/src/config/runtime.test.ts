@@ -6,6 +6,7 @@ describe("runtime configuration", () => {
   it("defaults to loopback without authentication", () => {
     const config = loadRuntimeConfig({});
     expect(config.host).toBe("127.0.0.1");
+    expect(config.databaseRelativePath).toBe("semantic-junkyard.sqlite");
     expect(config.bootstrapReferenceSources).toBe(true);
     expect(config.htmlTextLimits).toEqual(DEFAULT_HTML_TEXT_LIMITS);
     expect(config.apiToken).toBeUndefined();

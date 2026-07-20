@@ -1,10 +1,18 @@
 import { createApp } from "./app.js";
 import { loadRuntimeConfig } from "./config/runtime.js";
-import { openDatabase } from "./storage/database.js";
+import { openControlPlaneDatabase } from "./storage/database.js";
+import { ensureDefaultControlPlaneRoot } from "./storage/defaultControlPlaneRoot.js";
 
 const config = loadRuntimeConfig();
-const db = openDatabase(config.databasePath);
-const { app, ready } = createApp(db, { runtimeConfig: config });
+const storage = openControlPlaneDatabase({
+  authorizedRoot: ensureDefaultControlPlaneRoot(),
+  databasePath: config.databaseRelativePath
+});
+const { db } = storage;
+const { app, ready } = createApp(db, {
+  runtimeConfig: config,
+  referenceSourcesRoot: storage.referenceSourcesRoot
+});
 const bootstrap = await ready;
 if (bootstrap.status === "partial") {
   console.warn(`Reference source bootstrap is degraded: ${bootstrap.failures.map((failure) => `${failure.connectionName} (${failure.code})`).join(", ")}`);

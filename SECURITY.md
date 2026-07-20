@@ -4,7 +4,21 @@ Semantic Junkyard is a local reference implementation, not a hardened multi-tena
 
 ## Reporting
 
-No private vulnerability-reporting address is published in this repository. Before a public production release, configure GitHub private vulnerability reporting or publish a dedicated security contact. Do not include credentials, source payloads, or personal data in a public issue.
+Use [GitHub private vulnerability reporting](https://github.com/aantenore/semantic-junkyard/security/advisories/new)
+to disclose a suspected vulnerability to the maintainer. Do not open a public issue for an
+unresolved security concern and do not include credentials, source payloads, or personal data in
+the report. Include the affected revision, deployment profile, reproduction preconditions, expected
+impact, and the smallest safe proof needed to validate the finding.
+
+The private channel is for coordinated assessment; it is not a production support or incident-
+response service. If a report is confirmed, the advisory will track remediation and disclosure.
+
+## Supported Versions
+
+Until a stable release exists, security fixes target only the latest published alpha. The `main`
+branch may contain unreleased changes and is not a substitute for a tagged release. Earlier alpha
+tags receive no guaranteed backports; upgrade to the latest tag and consult its changelog before
+reporting a finding. This open-source reference project provides no incident-response SLA.
 
 ## Default Exposure
 
@@ -72,13 +86,26 @@ Agent-facing source-resource and artifact responses replace local file URIs with
 
 ## MCP Boundary
 
-The MCP server uses stdio and opens SQLite directly. REST bearer authentication, HTTP audit middleware, request IDs, body limits, and CORS do not protect this path. The spawning process controls the database path and inherits filesystem authority.
+The MCP server uses stdio and opens SQLite directly. REST bearer authentication, HTTP audit middleware, request IDs, body limits, and CORS do not protect this path. The spawning process may select only a relative database path inside the deterministic product-owned `apps/api/data` root and inherits filesystem authority for configured source paths. The default launcher does not accept an alternate control-plane root from the environment or command line.
 
 - The MCP server registers read and planning tools by default; mutation tools require explicit `--allow-discovery`, `--allow-sync`, or `--allow-write` startup flags.
 - Run MCP only for trusted local clients.
 - Use a dedicated database copy for untrusted experiments.
 - Restrict access to the MCP command and SQLite file.
 - Do not assume the REST approval role separates users inside one MCP process.
+
+File-backed control-plane storage rejects absolute, drive-qualified, traversal, file-URI,
+reserved-device, symbolic-link, and multiply linked database layouts before SQLite opens the target.
+It also rejects recognized orphaned rollback/WAL sidecars for a missing database and validates
+existing sidecars as regular, singly linked files. Default API and MCP
+launchers derive the same product-owned root from their installed module location. A programmatic
+embedding may use another root only through
+`openControlPlaneDatabase({ authorizedRoot, databasePath })`; that root must already be an absolute,
+real directory and the database path remains relative and confined within it.
+
+These checks are startup hardening, not an operating-system sandbox. The account running the process
+must protect the storage root from concurrent replacement; races performed by another process with
+the same filesystem authority are outside the alpha guarantee.
 
 ## Local Model Boundary
 
@@ -90,7 +117,7 @@ Use trusted model snapshots and pinned package controls in any deployment. The c
 
 The reference product implements real local filesystem discovery, SQLite discovery/write/readback, and Git discovery/commit/readback. It does not implement remote network connectors or credential exchange. Legacy capability declarations used by compatibility tests are not external integrations. Treat source paths and any optional source-system configuration as trusted startup configuration and validate their filesystem permissions. Before adding a connector:
 
-The Git connector supplies explicit command timeouts, disables terminal prompting, repository hooks, fsmonitor, and commit signing for its subprocesses, and verifies committed content independently. Connecting a worktree still grants the process read/write authority over that configured repository path.
+The Git connector supplies explicit command timeouts, disables terminal prompting, repository hooks, fsmonitor, and commit signing for its subprocesses, and verifies committed content independently. The bundled reference bootstrap additionally strips inherited Git control variables, isolates global and system configuration, rejects redirected metadata and attributes, stages only the literal contract path, and compares the committed blob with the source bytes. Connecting a worktree still grants the process read/write authority over that configured repository path.
 
 - Keep secrets outside source records, prompts, logs, and frontend variables.
 - Declare read, write, rollback, and approval capabilities separately.

@@ -14,7 +14,7 @@ const DEFAULT_CORS_ORIGINS = [
 const EnvironmentSchema = z.object({
   HOST: z.string().trim().min(1).default("127.0.0.1"),
   PORT: z.coerce.number().int().min(1).max(65_535).default(8787),
-  SEMANTIC_JUNKYARD_DB: z.string().trim().min(1).default("data/semantic-junkyard.sqlite"),
+  SEMANTIC_JUNKYARD_DB: z.string().trim().min(1).default("semantic-junkyard.sqlite"),
   SEMANTIC_JUNKYARD_SOURCE_SYSTEMS_FILE: z.string().trim().min(1).optional().or(z.literal("")),
   SEMANTIC_JUNKYARD_CORS_ORIGINS: z.string().default(DEFAULT_CORS_ORIGINS),
   SEMANTIC_JUNKYARD_REQUEST_BODY_LIMIT: z.string().regex(/^\d+(?:kb|mb)$/i).default("5mb"),
@@ -41,7 +41,7 @@ const EnvironmentSchema = z.object({
 export interface RuntimeConfig {
   host: string;
   port: number;
-  databasePath: string;
+  databaseRelativePath: string;
   sourceSystemsFile?: string;
   corsOrigins: string[];
   requestBodyLimit: string;
@@ -89,7 +89,7 @@ export function loadRuntimeConfig(environment: NodeJS.ProcessEnv = process.env, 
   return {
     host: parsed.HOST,
     port: parsed.PORT,
-    databasePath: parsed.SEMANTIC_JUNKYARD_DB,
+    databaseRelativePath: parsed.SEMANTIC_JUNKYARD_DB,
     sourceSystemsFile: parsed.SEMANTIC_JUNKYARD_SOURCE_SYSTEMS_FILE || undefined,
     corsOrigins,
     requestBodyLimit: parsed.SEMANTIC_JUNKYARD_REQUEST_BODY_LIMIT,

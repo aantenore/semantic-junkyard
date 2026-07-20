@@ -18,6 +18,7 @@ import {
   GovernedSourceResourceSchema,
   SearchRequestSchema,
   SearchResultSchema,
+  SEMANTIC_JUNKYARD_VERSION,
   SemanticProposalSchema,
   SourceDiscoveryMissionReportSchema,
   SourceDiscoveryMissionRequestSchema,
@@ -49,7 +50,7 @@ export function createSemanticJunkyardMcpServer(runtime: SemanticRuntime, option
     options.allowBusinessWrites ? "business writeback" : null
   ].filter((item): item is string => Boolean(item));
   const server = new McpServer(
-    { name: "semantic-junkyard-mcp", version: "0.1.0" },
+    { name: "semantic-junkyard-mcp", version: SEMANTIC_JUNKYARD_VERSION },
     {
       instructions: [
         "Semantic Junkyard exposes a policy-governed semantic fabric for AI agents.",

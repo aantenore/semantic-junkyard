@@ -15,6 +15,18 @@ afterEach(() => {
 });
 
 describe("application bootstrap", () => {
+  it("fails closed when persistent reference bootstrap has no confined root", () => {
+    const db = openMemoryDatabase();
+    try {
+      expect(() => createApp(db, {
+        seed: false,
+        bootstrapReferenceSources: true
+      })).toThrow(/referenceSourcesRoot is required/);
+    } finally {
+      db.close();
+    }
+  });
+
   it("recovers only incomplete reference connections after a partial bootstrap", async () => {
     const root = temporaryRoot();
     const calls = new Map<string, number>();

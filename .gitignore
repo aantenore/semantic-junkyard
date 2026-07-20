@@ -10,6 +10,7 @@ dist/
 apps/api/data/
 *.sqlite
 *.sqlite-shm
+*.sqlite-journal
 *.sqlite-wal
 coverage/
 playwright-report/

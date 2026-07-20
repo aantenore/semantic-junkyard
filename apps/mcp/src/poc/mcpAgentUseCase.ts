@@ -6,7 +6,8 @@ import {
   EvidenceSpanSchema,
   GovernedSourceResourceSchema,
   GraphSnapshotSchema,
-  SearchResultSchema
+  SearchResultSchema,
+  SEMANTIC_JUNKYARD_VERSION
 } from "@semantic-junkyard/shared";
 import fs from "node:fs";
 import path from "node:path";
@@ -59,7 +60,7 @@ const question = "Which governed source defines dispatch eligibility, and can th
 export async function runMcpAgentUseCase(options: { writeReport?: boolean; outputPath?: string } = {}): Promise<McpPocReport> {
   const repoRoot = findRepoRoot();
   const server = resolveServerCommand(repoRoot);
-  const client = new Client({ name: "semantic-junkyard-mcp-poc-agent", version: "0.1.0" });
+  const client = new Client({ name: "semantic-junkyard-mcp-poc-agent", version: SEMANTIC_JUNKYARD_VERSION });
   const transport = new StdioClientTransport({
     command: server.command,
     args: server.args,
@@ -219,7 +220,7 @@ function resolveServerCommand(repoRoot: string): { command: string; args: string
   const tsxCli = path.join(repoRoot, "node_modules/tsx/dist/cli.mjs");
   return {
     command: process.execPath,
-    args: [tsxCli, path.join(repoRoot, "apps/mcp/src/server.ts"), "--db", path.join(repoRoot, "apps/api/data/semantic-junkyard.sqlite"), "--allow-write"]
+    args: [tsxCli, path.join(repoRoot, "apps/mcp/src/server.ts"), "--db", "semantic-junkyard.sqlite", "--allow-write"]
   };
 }
 

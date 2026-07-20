@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const SEMANTIC_JUNKYARD_VERSION = "0.1.0-alpha.1";
+
 export const ModuleKindSchema = z.enum([
   "business-action-router",
   "connector",

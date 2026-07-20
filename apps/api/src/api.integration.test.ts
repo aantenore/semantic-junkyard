@@ -12,7 +12,7 @@ import { openMemoryDatabase } from "./storage/database.js";
 const baseConfig: RuntimeConfig = {
   host: "127.0.0.1",
   port: 8787,
-  databasePath: ":memory:",
+  databaseRelativePath: "semantic-junkyard.sqlite",
   corsOrigins: ["http://localhost:5173", "http://localhost:5174"],
   requestBodyLimit: "5mb",
   htmlTextLimits: { ...DEFAULT_HTML_TEXT_LIMITS },

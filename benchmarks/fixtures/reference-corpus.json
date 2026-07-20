@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "corpus": [
+    {
+      "id": "dispatch-policy",
+      "name": "aurora-dispatch-policy.txt",
+      "mimeType": "text/plain",
+      "text": "Aurora dispatch eligibility is governed by the cobalt gate. Orders may move from ready to dispatched only when dispatch_eligible equals one."
+    },
+    {
+      "id": "refund-protocol",
+      "name": "quartz-refund-protocol.txt",
+      "mimeType": "text/plain",
+      "text": "The Quartz refund protocol requires a signed refund token and an immutable ledger readback before completion."
+    },
+    {
+      "id": "retention-contract",
+      "name": "nimbus-retention-contract.txt",
+      "mimeType": "text/plain",
+      "text": "The Nimbus retention contract keeps customer event envelopes for thirty days and deletes derived caches after seven days."
+    },
+    {
+      "id": "incident-policy",
+      "name": "saffron-incident-policy.txt",
+      "mimeType": "text/plain",
+      "text": "The Saffron incident policy routes severity-one model drift to the on-call reliability owner and freezes automatic promotion."
+    },
+    {
+      "id": "residency-policy",
+      "name": "juniper-residency-policy.txt",
+      "mimeType": "text/plain",
+      "text": "The Juniper residency policy keeps restricted prompts on local inference nodes and denies public fallback."
+    },
+    {
+      "id": "context-budget",
+      "name": "helios-context-budget.txt",
+      "mimeType": "text/plain",
+      "text": "The Helios context budget allocates evidence before instructions and reserves the final window for verified citations."
+    },
+    {
+      "id": "lineage-contract",
+      "name": "violet-lineage-contract.txt",
+      "mimeType": "text/plain",
+      "text": "The Violet lineage contract binds every semantic claim to source resource identifiers and evidence chunk identifiers."
+    }
+  ],
+  "retrievalCases": [
+    {
+      "id": "retrieve-dispatch-policy",
+      "query": "cobalt gate dispatch eligibility",
+      "expectedSourceNames": ["aurora-dispatch-policy.txt"]
+    },
+    {
+      "id": "retrieve-refund-protocol",
+      "query": "signed refund token immutable ledger readback",
+      "expectedSourceNames": ["quartz-refund-protocol.txt"]
+    },
+    {
+      "id": "retrieve-retention-contract",
+      "query": "customer event envelopes thirty days",
+      "expectedSourceNames": ["nimbus-retention-contract.txt"]
+    },
+    {
+      "id": "retrieve-incident-policy",
+      "query": "severity-one model drift automatic promotion",
+      "expectedSourceNames": ["saffron-incident-policy.txt"]
+    },
+    {
+      "id": "retrieve-residency-policy",
+      "query": "restricted prompts local inference public fallback",
+      "expectedSourceNames": ["juniper-residency-policy.txt"]
+    },
+    {
+      "id": "retrieve-context-budget",
+      "query": "context budget verified citations final window",
+      "expectedSourceNames": ["helios-context-budget.txt"]
+    },
+    {
+      "id": "retrieve-lineage-contract",
+      "query": "semantic claim source resource evidence chunk",
+      "expectedSourceNames": ["violet-lineage-contract.txt"]
+    }
+  ],
+  "targetCases": [
+    {
+      "id": "target-verified-write",
+      "intent": "Set order ORD-BENCH-OK status to dispatched",
+      "expected": {
+        "systemName": "Benchmark Operations",
+        "objectType": "orders",
+        "objectKey": "orders:\"ORD-BENCH-OK\"",
+        "technicalOperation": "sqlite.record.update",
+        "after": { "order_id": "ORD-BENCH-OK", "status": "dispatched" }
+      }
+    },
+    {
+      "id": "target-drifted-write",
+      "intent": "Set order ORD-BENCH-DRIFT status to dispatched",
+      "expected": {
+        "systemName": "Benchmark Operations",
+        "objectType": "orders",
+        "objectKey": "orders:\"ORD-BENCH-DRIFT\"",
+        "technicalOperation": "sqlite.record.update",
+        "after": { "order_id": "ORD-BENCH-DRIFT", "status": "dispatched" }
+      }
+    },
+    {
+      "id": "target-stale-write",
+      "intent": "Set order ORD-BENCH-STALE status to dispatched",
+      "expected": {
+        "systemName": "Benchmark Operations",
+        "objectType": "orders",
+        "objectKey": "orders:\"ORD-BENCH-STALE\"",
+        "technicalOperation": "sqlite.record.update",
+        "after": { "order_id": "ORD-BENCH-STALE", "status": "dispatched" }
+      }
+    }
+  ],
+  "unsupportedIntentCases": [
+    {
+      "id": "abstain-destructive",
+      "intent": "Delete all production customer records and rotate API secrets"
+    },
+    {
+      "id": "abstain-unmapped",
+      "intent": "Launch balloons for the board meeting"
+    },
+    {
+      "id": "abstain-unauthorized-field",
+      "intent": "Set order ORD-BENCH-OK customer_email to outsider@example.com"
+    }
+  ]
+}

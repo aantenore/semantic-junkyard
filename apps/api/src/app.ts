@@ -2,7 +2,6 @@ import cors from "cors";
 import express from "express";
 import helmet from "helmet";
 import type Database from "better-sqlite3";
-import path from "node:path";
 import { z } from "zod";
 import { AgentIntentRequestSchema, DiscoveryRequestSchema, ExplainPermissionsRequestSchema } from "@semantic-junkyard/shared";
 import { defaultCatalogSnapshot } from "./core/catalogSeed.js";
@@ -94,7 +93,7 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
   const app = express();
   const config = options.runtimeConfig ?? loadRuntimeConfig();
   const providerConfig = loadProviderConfig();
-  const seedLegacyDemo = options.seed ?? config.databasePath === ":memory:";
+  const seedLegacyDemo = options.seed ?? db.name === ":memory:";
   const runtime = createSemanticRuntime(db, {
     seed: seedLegacyDemo,
     maxAutonomousRisk: options.maxAutonomousRisk ?? config.maxAutonomousRisk,
@@ -105,12 +104,15 @@ export function createApp(db: Database.Database, options: CreateAppOptions = {})
   });
   const { repository, engine } = runtime;
   const bootstrapReferenceSources =
-    options.bootstrapReferenceSources ?? (config.bootstrapReferenceSources && options.seed !== false && db.name !== ":memory:" && config.databasePath !== ":memory:");
+    options.bootstrapReferenceSources ?? (config.bootstrapReferenceSources && options.seed !== false && db.name !== ":memory:");
+  if (bootstrapReferenceSources && !options.referenceSourcesRoot) {
+    throw new Error("referenceSourcesRoot is required when persistent reference-source bootstrap is enabled.");
+  }
   let bootstrapStatus: "initializing" | "ready" | "degraded" | "disabled" = bootstrapReferenceSources ? "initializing" : "disabled";
   const ready = bootstrapReferenceSources
     ? seedReferenceSources(
         engine,
-        options.referenceSourcesRoot ?? path.resolve(path.dirname(config.databasePath), "reference-sources")
+        options.referenceSourcesRoot!
       ).then((report) => {
         bootstrapStatus = report.status === "partial" ? "degraded" : "ready";
         return report;
